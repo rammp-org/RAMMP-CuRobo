@@ -24,33 +24,51 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     args = [
-        DeclareLaunchArgument('config', default_value='gen3.yaml',
-                              description='planner YAML (packaged name or path)'),
-        DeclareLaunchArgument('world', default_value='',
-                              description='world YAML override (empty = config default)'),
-        DeclareLaunchArgument('execute', default_value='false',
-                              description='allow motion (default: dry-run only)'),
-        DeclareLaunchArgument('speed_scale', default_value='0.0',
-                              description='execution speed scale; 0 = config default (0.25)'),
-        DeclareLaunchArgument('use_sim_time', default_value='false',
-                              description='true when running against the MuJoCo sim'),
         DeclareLaunchArgument(
-            'controller_action',
-            default_value='/joint_trajectory_controller/follow_joint_trajectory'),
+            "config",
+            default_value="gen3.yaml",
+            description="planner YAML (packaged name or path)",
+        ),
+        DeclareLaunchArgument(
+            "world",
+            default_value="",
+            description="world YAML override (empty = config default)",
+        ),
+        DeclareLaunchArgument(
+            "execute",
+            default_value="false",
+            description="allow motion (default: dry-run only)",
+        ),
+        DeclareLaunchArgument(
+            "speed_scale",
+            default_value="0.0",
+            description="execution speed scale; 0 = config default (0.25)",
+        ),
+        DeclareLaunchArgument(
+            "use_sim_time",
+            default_value="false",
+            description="true when running against the MuJoCo sim",
+        ),
+        DeclareLaunchArgument(
+            "controller_action",
+            default_value="/joint_trajectory_controller/follow_joint_trajectory",
+        ),
     ]
     node = Node(
-        package='rammp_curobo_ros',
-        executable='planner_node',
-        name='rammp_curobo',
-        output='screen',
+        package="rammp_curobo_ros",
+        executable="planner_node",
+        name="rammp_curobo",
+        output="screen",
         emulate_tty=True,
-        parameters=[{
-            'config': LaunchConfiguration('config'),
-            'world': LaunchConfiguration('world'),
-            'execute': LaunchConfiguration('execute'),
-            'speed_scale': LaunchConfiguration('speed_scale'),
-            'use_sim_time': LaunchConfiguration('use_sim_time'),
-            'controller_action': LaunchConfiguration('controller_action'),
-        }],
+        parameters=[
+            {
+                "config": LaunchConfiguration("config"),
+                "world": LaunchConfiguration("world"),
+                "execute": LaunchConfiguration("execute"),
+                "speed_scale": LaunchConfiguration("speed_scale"),
+                "use_sim_time": LaunchConfiguration("use_sim_time"),
+                "controller_action": LaunchConfiguration("controller_action"),
+            }
+        ],
     )
     return LaunchDescription(args + [node])

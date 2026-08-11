@@ -9,17 +9,17 @@ plans in the sim-kitchen world.
 import numpy as np
 import pytest
 
-torch = pytest.importorskip('torch')
-pytest.importorskip('curobo')
+torch = pytest.importorskip("torch")
+pytest.importorskip("curobo")
 if not torch.cuda.is_available():
-    pytest.skip('CUDA is not available', allow_module_level=True)
+    pytest.skip("CUDA is not available", allow_module_level=True)
 
 from rammp_curobo import CuRoboPlanner  # noqa: E402
 
 
-@pytest.fixture(scope='session')
+@pytest.fixture(scope="session")
 def planner():
-    return CuRoboPlanner.from_config('gen3.yaml')
+    return CuRoboPlanner.from_config("gen3.yaml")
 
 
 def _pose_error(planner, q, target_pos):
@@ -66,7 +66,7 @@ def test_plan_to_joints_fk_pose_fallback(planner):
     q_goal[1] -= 0.25
     q_goal[3] += 0.30
 
-    res = planner.plan_to_joints(q_goal, method='fk_pose')
+    res = planner.plan_to_joints(q_goal, method="fk_pose")
     assert res.success, res.error
     assert res.goal_mismatch_rad is not None
     goal_pos, _ = planner.fk(q_goal)
@@ -87,7 +87,7 @@ def test_retimed_trajectory_stays_valid(planner):
     q_target[0] += 0.2
     q_target[4] += 0.4
     ok, detail = planner.check_state_valid(q_target)
-    assert ok, 'test goal invalid in this world: %s' % detail
+    assert ok, "test goal invalid in this world: %s" % detail
     pos, quat = planner.fk(q_target)
     res = planner.plan_to_pose(pos, quat)
     assert res.success, res.error
@@ -96,9 +96,12 @@ def test_retimed_trajectory_stays_valid(planner):
     assert slow.duration == pytest.approx(res.joint_traj.duration * 4)
     lim = planner.joint_limits()
     from rammp_curobo import validate_trajectory
-    assert validate_trajectory(slow, lim['position'], lim['velocity']) == []
-    assert np.abs(slow.velocities).max() <= np.abs(
-        res.joint_traj.velocities).max() * 0.25 + 1e-9
+
+    assert validate_trajectory(slow, lim["position"], lim["velocity"]) == []
+    assert (
+        np.abs(slow.velocities).max()
+        <= np.abs(res.joint_traj.velocities).max() * 0.25 + 1e-9
+    )
 
 
 def test_check_state_valid(planner):
@@ -111,22 +114,25 @@ def test_check_state_valid(planner):
 
 
 def test_update_world_guards_and_round_trip(planner):
-    with pytest.raises(ValueError, match='empty'):
+    with pytest.raises(ValueError, match="empty"):
         planner.update_world([])
-    too_many = [{'name': 'b%d' % i, 'position': [2 + i, 5, 5],
-                 'dims': [0.01, 0.01, 0.01]} for i in range(41)]
-    with pytest.raises(ValueError, match='collision_cache_obb'):
+    too_many = [
+        {"name": "b%d" % i, "position": [2 + i, 5, 5], "dims": [0.01, 0.01, 0.01]}
+        for i in range(41)
+    ]
+    with pytest.raises(ValueError, match="collision_cache_obb"):
         planner.update_world(too_many)
     try:
         # a fresh world (one distant box) still plans
-        planner.update_world([{'name': 'crate', 'position': [1.5, 1.5, 0.5],
-                               'dims': [0.2, 0.2, 0.2]}])
+        planner.update_world(
+            [{"name": "crate", "position": [1.5, 1.5, 0.5], "dims": [0.2, 0.2, 0.2]}]
+        )
         pos, quat = planner.fk(planner.home_pose)
         pos[2] -= 0.10
         res = planner.plan_to_pose(pos, quat)
         assert res.success, res.error
     finally:
-        planner.update_world('world_sim_kitchen.yaml')
+        planner.update_world("world_sim_kitchen.yaml")
     pos, quat = planner.fk(planner.home_pose)
     res = planner.plan_to_pose(pos, quat)
     assert res.success, res.error

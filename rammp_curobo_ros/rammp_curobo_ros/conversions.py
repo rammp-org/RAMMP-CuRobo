@@ -37,8 +37,9 @@ def msg_arrays(msg):
     """
     pos = np.array([p.positions for p in msg.points], dtype=float)
     times = np.array(
-        [p.time_from_start.sec + p.time_from_start.nanosec * 1e-9
-         for p in msg.points], dtype=float)
+        [p.time_from_start.sec + p.time_from_start.nanosec * 1e-9 for p in msg.points],
+        dtype=float,
+    )
     if all(len(p.velocities) == len(msg.joint_names) for p in msg.points):
         vel = np.array([p.velocities for p in msg.points], dtype=float)
     else:

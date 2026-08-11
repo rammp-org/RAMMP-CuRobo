@@ -12,14 +12,14 @@ from rammp_curobo.types import PlanResult, Trajectory
 from rammp_curobo.validate import start_state_matches, validate_trajectory
 
 __all__ = [
-    'CuRoboPlanner',
-    'PlanResult',
-    'Trajectory',
-    'Scene',
-    'load_scene',
-    'scale_trajectory',
-    'validate_trajectory',
-    'start_state_matches',
+    "CuRoboPlanner",
+    "PlanResult",
+    "Trajectory",
+    "Scene",
+    "load_scene",
+    "scale_trajectory",
+    "validate_trajectory",
+    "start_state_matches",
 ]
 
-__version__ = '0.1.0'
+__version__ = "0.1.0"

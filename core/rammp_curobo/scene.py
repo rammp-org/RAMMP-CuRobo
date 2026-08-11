@@ -16,14 +16,14 @@ from rammp_curobo.geometry import euler_deg_to_quat_xyzw
 class Obstacle:
     """Static furniture: an oriented box the arm must route around."""
 
-    __slots__ = ('name', 'position', 'rpy_deg', 'dims', 'color')
+    __slots__ = ("name", "position", "rpy_deg", "dims", "color")
 
     def __init__(self, d):
-        self.name = d['name']
-        self.position = [float(v) for v in d['position']]
-        self.rpy_deg = [float(v) for v in d.get('rpy_deg', [0, 0, 0])]
-        self.dims = [float(v) for v in d['dims']]
-        self.color = [float(v) for v in d.get('color', [0.55, 0.4, 0.3, 0.85])]
+        self.name = d["name"]
+        self.position = [float(v) for v in d["position"]]
+        self.rpy_deg = [float(v) for v in d.get("rpy_deg", [0, 0, 0])]
+        self.dims = [float(v) for v in d["dims"]]
+        self.color = [float(v) for v in d.get("color", [0.55, 0.4, 0.3, 0.85])]
 
 
 class SceneObject:
@@ -32,26 +32,36 @@ class SceneObject:
     also dodge it). Types: box (dims=full extents), cylinder
     (radius+height), sphere (radius)."""
 
-    __slots__ = ('name', 'type', 'position', 'rpy_deg', 'dims', 'radius',
-                 'height', 'color', 'free', 'density')
+    __slots__ = (
+        "name",
+        "type",
+        "position",
+        "rpy_deg",
+        "dims",
+        "radius",
+        "height",
+        "color",
+        "free",
+        "density",
+    )
 
     def __init__(self, d):
-        self.name = d['name']
-        self.type = d.get('type', 'box')
-        self.position = [float(v) for v in d['position']]
-        self.rpy_deg = [float(v) for v in d.get('rpy_deg', [0, 0, 0])]
-        self.dims = [float(v) for v in d.get('dims', [0.05, 0.05, 0.05])]
-        self.radius = float(d.get('radius', 0.03))
-        self.height = float(d.get('height', 0.1))
-        self.color = [float(v) for v in d.get('color', [0.8, 0.8, 0.8, 1.0])]
-        self.free = bool(d.get('free', False))
-        self.density = float(d.get('density', 400.0))
+        self.name = d["name"]
+        self.type = d.get("type", "box")
+        self.position = [float(v) for v in d["position"]]
+        self.rpy_deg = [float(v) for v in d.get("rpy_deg", [0, 0, 0])]
+        self.dims = [float(v) for v in d.get("dims", [0.05, 0.05, 0.05])]
+        self.radius = float(d.get("radius", 0.03))
+        self.height = float(d.get("height", 0.1))
+        self.color = [float(v) for v in d.get("color", [0.8, 0.8, 0.8, 1.0])]
+        self.free = bool(d.get("free", False))
+        self.density = float(d.get("density", 400.0))
 
     def bounding_dims(self):
         """Axis-aligned bounding box (full extents) — the collision proxy."""
-        if self.type == 'cylinder':
+        if self.type == "cylinder":
             return [2 * self.radius, 2 * self.radius, self.height]
-        if self.type == 'sphere':
+        if self.type == "sphere":
             return [2 * self.radius] * 3
         return list(self.dims)
 
@@ -59,21 +69,29 @@ class SceneObject:
 class Target:
     """A named goal pose for the end effector (fingertip midpoint)."""
 
-    __slots__ = ('name', 'position', 'rpy_deg', 'keywords', 'description',
-                 'ignore_objects', 'standoff', 'standoff_position',
-                 'standoff_rpy_deg')
+    __slots__ = (
+        "name",
+        "position",
+        "rpy_deg",
+        "keywords",
+        "description",
+        "ignore_objects",
+        "standoff",
+        "standoff_position",
+        "standoff_rpy_deg",
+    )
 
     def __init__(self, d):
-        self.name = d['name']
-        self.position = [float(v) for v in d['position']]
-        self.rpy_deg = [float(v) for v in d.get('rpy_deg', [180, 0, 0])]
-        self.keywords = [str(k).lower() for k in d.get('keywords', [])]
-        self.description = str(d.get('description', ''))
-        self.ignore_objects = [str(n) for n in d.get('ignore_objects', [])]
-        self.standoff = float(d.get('standoff', 0.10))
-        sp = d.get('standoff_position')
+        self.name = d["name"]
+        self.position = [float(v) for v in d["position"]]
+        self.rpy_deg = [float(v) for v in d.get("rpy_deg", [180, 0, 0])]
+        self.keywords = [str(k).lower() for k in d.get("keywords", [])]
+        self.description = str(d.get("description", ""))
+        self.ignore_objects = [str(n) for n in d.get("ignore_objects", [])]
+        self.standoff = float(d.get("standoff", 0.10))
+        sp = d.get("standoff_position")
         self.standoff_position = [float(v) for v in sp] if sp else None
-        sr = d.get('standoff_rpy_deg')
+        sr = d.get("standoff_rpy_deg")
         self.standoff_rpy_deg = [float(v) for v in sr] if sr else None
 
     def quat_xyzw(self):
@@ -99,17 +117,17 @@ class Scene:
 
 
 def load_scene(path):
-    with open(path, 'r') as f:
+    with open(path, "r") as f:
         data = yaml.safe_load(f)
     return Scene(
-        base_frame=data.get('base_frame', 'base_link'),
-        obstacles=[Obstacle(o) for o in data.get('obstacles', [])],
-        targets=[Target(t) for t in data.get('targets', [])],
-        objects=[SceneObject(o) for o in data.get('objects', [])],
+        base_frame=data.get("base_frame", "base_link"),
+        obstacles=[Obstacle(o) for o in data.get("obstacles", [])],
+        targets=[Target(t) for t in data.get("targets", [])],
+        objects=[SceneObject(o) for o in data.get("objects", [])],
     )
 
 
-def scene_from_obstacles(entries, base_frame='base_link'):
+def scene_from_obstacles(entries, base_frame="base_link"):
     """Build a Scene from plain dicts (the `update_world(obstacles)` path).
 
     Each entry follows the YAML object schema: name + position required,

@@ -27,15 +27,17 @@ def scale_trajectory(traj: Trajectory, speed_scale: float) -> Trajectory:
     s = float(speed_scale)
     if not 0.0 < s <= 1.0:
         raise ValueError(
-            'speed_scale must be in (0, 1], got %g — execution may only '
-            'slow a plan down, never speed it up' % s)
+            "speed_scale must be in (0, 1], got %g — execution may only "
+            "slow a plan down, never speed it up" % s
+        )
     if s == 1.0:
         return traj
     return replace(
         traj,
         dt=traj.dt / s,
         velocities=None if traj.velocities is None else traj.velocities * s,
-        accelerations=(None if traj.accelerations is None
-                       else traj.accelerations * (s * s)),
+        accelerations=(
+            None if traj.accelerations is None else traj.accelerations * (s * s)
+        ),
         speed_scale=traj.speed_scale * s,
     )

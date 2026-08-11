@@ -24,43 +24,75 @@ from rammp_curobo.geometry import euler_deg_to_quat_xyzw
 
 def main():
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--config', default='gen3.yaml',
-                    help='planner YAML (packaged name or path)')
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--config", default="gen3.yaml", help="planner YAML (packaged name or path)"
+    )
     goal = ap.add_mutually_exclusive_group(required=True)
-    goal.add_argument('--joints', type=float, nargs=7, metavar='RAD',
-                      help='goal joint positions, controller order')
-    goal.add_argument('--pos', type=float, nargs=3, metavar=('X', 'Y', 'Z'),
-                      help='goal tool_frame position (m, base frame)')
-    ap.add_argument('--rpy-deg', type=float, nargs=3, metavar=('R', 'P', 'Y'),
-                    help='goal orientation as roll/pitch/yaw degrees')
-    ap.add_argument('--quat', type=float, nargs=4, metavar=('X', 'Y', 'Z', 'W'),
-                    help='goal orientation as xyzw quaternion')
-    ap.add_argument('--start', type=float, nargs=7, metavar='RAD',
-                    help='start joints (default: configured home)')
-    ap.add_argument('--speed-scale', type=float, default=None,
-                    help='preview execution-side retiming (0 < s <= 1)')
+    goal.add_argument(
+        "--joints",
+        type=float,
+        nargs=7,
+        metavar="RAD",
+        help="goal joint positions, controller order",
+    )
+    goal.add_argument(
+        "--pos",
+        type=float,
+        nargs=3,
+        metavar=("X", "Y", "Z"),
+        help="goal tool_frame position (m, base frame)",
+    )
+    ap.add_argument(
+        "--rpy-deg",
+        type=float,
+        nargs=3,
+        metavar=("R", "P", "Y"),
+        help="goal orientation as roll/pitch/yaw degrees",
+    )
+    ap.add_argument(
+        "--quat",
+        type=float,
+        nargs=4,
+        metavar=("X", "Y", "Z", "W"),
+        help="goal orientation as xyzw quaternion",
+    )
+    ap.add_argument(
+        "--start",
+        type=float,
+        nargs=7,
+        metavar="RAD",
+        help="start joints (default: configured home)",
+    )
+    ap.add_argument(
+        "--speed-scale",
+        type=float,
+        default=None,
+        help="preview execution-side retiming (0 < s <= 1)",
+    )
     args = ap.parse_args()
 
-    print('Initializing planner (GPU init + warmup — first run takes a while)...')
+    print("Initializing planner (GPU init + warmup — first run takes a while)...")
     planner = CuRoboPlanner.from_config(args.config)
 
     if args.joints is not None:
         res = planner.plan_to_joints(args.joints, start=args.start)
-        label = 'joints %s' % np.round(args.joints, 3).tolist()
+        label = "joints %s" % np.round(args.joints, 3).tolist()
     else:
         if args.quat is not None:
             quat = args.quat
         elif args.rpy_deg is not None:
             quat = euler_deg_to_quat_xyzw(args.rpy_deg)
         else:
-            ap.error('--pos needs --rpy-deg or --quat')
+            ap.error("--pos needs --rpy-deg or --quat")
         res = planner.plan_to_pose(args.pos, quat, start=args.start)
-        label = 'pose %s' % np.round(args.pos, 3).tolist()
+        label = "pose %s" % np.round(args.pos, 3).tolist()
 
     if not res.success:
-        print('PLAN FAILED (%s) after %.2fs:\n  %s'
-              % (res.status, res.timing, res.error))
+        print(
+            "PLAN FAILED (%s) after %.2fs:\n  %s" % (res.status, res.timing, res.error)
+        )
         return 1
 
     traj = res.joint_traj
@@ -69,23 +101,42 @@ def main():
         scale = 1.0
     if scale != 1.0:
         traj = traj.scaled(scale)
-    print('Planned to %s in %.2fs: %d points, %.2fs at scale %.2f (validated=%s)'
-          % (label, res.timing, traj.n_points, traj.duration,
-             traj.speed_scale, res.validated))
+    print(
+        "Planned to %s in %.2fs: %d points, %.2fs at scale %.2f (validated=%s)"
+        % (
+            label,
+            res.timing,
+            traj.n_points,
+            traj.duration,
+            traj.speed_scale,
+            res.validated,
+        )
+    )
     if res.goal_mismatch_rad is not None:
-        print('joint-goal mismatch (FK-pose method): %.4f rad'
-              % res.goal_mismatch_rad)
+        print("joint-goal mismatch (FK-pose method): %.4f rad" % res.goal_mismatch_rad)
     lo = traj.positions.min(axis=0)
     hi = traj.positions.max(axis=0)
-    vmax = (np.abs(traj.velocities).max(axis=0) if traj.velocities is not None
-            else np.zeros(traj.dof))
-    print('\n%-9s %10s %10s %10s %10s' % ('joint', 'start', 'end', 'excursion', 'max |v|'))
+    vmax = (
+        np.abs(traj.velocities).max(axis=0)
+        if traj.velocities is not None
+        else np.zeros(traj.dof)
+    )
+    print(
+        "\n%-9s %10s %10s %10s %10s" % ("joint", "start", "end", "excursion", "max |v|")
+    )
     for j, name in enumerate(traj.joint_names):
-        print('%-9s %10.3f %10.3f %10.3f %10.3f'
-              % (name, traj.positions[0, j], traj.positions[-1, j],
-                 hi[j] - lo[j], vmax[j]))
+        print(
+            "%-9s %10.3f %10.3f %10.3f %10.3f"
+            % (
+                name,
+                traj.positions[0, j],
+                traj.positions[-1, j],
+                hi[j] - lo[j],
+                vmax[j],
+            )
+        )
     return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

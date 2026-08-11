@@ -29,9 +29,13 @@ from pathlib import Path
 
 import yaml
 
-OUT = (Path(__file__).resolve().parent.parent
-       / 'core' / 'rammp_curobo' / 'configs'
-       / 'robot_gen3_2f85.yaml')
+OUT = (
+    Path(__file__).resolve().parent.parent
+    / "core"
+    / "rammp_curobo"
+    / "configs"
+    / "robot_gen3_2f85.yaml"
+)
 
 HOME_POSE = [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]
 PAD_SPHERE_RADIUS = 0.02
@@ -40,19 +44,37 @@ PAD_SPHERE_RADIUS = 0.02
 # The base sphere bottom must stay ABOVE the pedestal box top or the robot
 # permanently collides with its own mount and every start state is invalid.
 ARM_SPHERES = {
-    'base_link': [([0, 0, 0.065], 0.075), ([0, 0, 0.125], 0.065)],
-    'shoulder_link': [([0, 0, -0.04], 0.07), ([0, 0, -0.10], 0.072),
-                      ([0, 0, -0.16], 0.062)],
-    'half_arm_1_link': [([0, 0, 0], 0.062), ([0, -0.06, 0], 0.062),
-                        ([0, -0.12, 0], 0.062), ([0, -0.17, 0], 0.06)],
-    'half_arm_2_link': [([0, 0, 0], 0.058), ([0, 0, -0.07], 0.056),
-                        ([0, 0, -0.15], 0.056), ([0, 0, -0.21], 0.056)],
-    'forearm_link': [([0, 0, 0], 0.06), ([0, -0.06, 0], 0.058),
-                     ([0, -0.12, 0], 0.058), ([0, -0.17, 0], 0.055)],
-    'spherical_wrist_1_link': [([0, 0, 0], 0.06), ([0, 0, -0.085], 0.06)],
-    'spherical_wrist_2_link': [([0, 0, 0], 0.055), ([0, -0.085, 0], 0.055)],
-    'bracelet_link': [([0, 0, -0.045], 0.045), ([0, -0.05, -0.045], 0.045),
-                      ([0.045, 0, -0.05], 0.036)],
+    "base_link": [([0, 0, 0.065], 0.075), ([0, 0, 0.125], 0.065)],
+    "shoulder_link": [
+        ([0, 0, -0.04], 0.07),
+        ([0, 0, -0.10], 0.072),
+        ([0, 0, -0.16], 0.062),
+    ],
+    "half_arm_1_link": [
+        ([0, 0, 0], 0.062),
+        ([0, -0.06, 0], 0.062),
+        ([0, -0.12, 0], 0.062),
+        ([0, -0.17, 0], 0.06),
+    ],
+    "half_arm_2_link": [
+        ([0, 0, 0], 0.058),
+        ([0, 0, -0.07], 0.056),
+        ([0, 0, -0.15], 0.056),
+        ([0, 0, -0.21], 0.056),
+    ],
+    "forearm_link": [
+        ([0, 0, 0], 0.06),
+        ([0, -0.06, 0], 0.058),
+        ([0, -0.12, 0], 0.058),
+        ([0, -0.17, 0], 0.055),
+    ],
+    "spherical_wrist_1_link": [([0, 0, 0], 0.06), ([0, 0, -0.085], 0.06)],
+    "spherical_wrist_2_link": [([0, 0, 0], 0.055), ([0, -0.085, 0], 0.055)],
+    "bracelet_link": [
+        ([0, 0, -0.045], 0.045),
+        ([0, -0.05, -0.045], 0.045),
+        ([0.045, 0, -0.05], 0.036),
+    ],
 }
 
 # Sphere shell for the whole open 2F-85, on the gripper base link (its frame
@@ -61,15 +83,23 @@ ARM_SPHERES = {
 # mounting twist; the grasp gap between the fingertips stays OPEN.
 GRIPPER_SHELL = [
     ([0.0, 0.0, 0.055], 0.042),
-    ([0.04, 0.0, 0.06], 0.032), ([-0.04, 0.0, 0.06], 0.032),
-    ([0.0, 0.04, 0.06], 0.032), ([0.0, -0.04, 0.06], 0.032),
+    ([0.04, 0.0, 0.06], 0.032),
+    ([-0.04, 0.0, 0.06], 0.032),
+    ([0.0, 0.04, 0.06], 0.032),
+    ([0.0, -0.04, 0.06], 0.032),
     ([0.0, 0.0, 0.078], 0.035),
-    ([0.045, 0.0, 0.10], 0.026), ([-0.045, 0.0, 0.10], 0.026),
-    ([0.0, 0.045, 0.10], 0.026), ([0.0, -0.045, 0.10], 0.026),
-    ([0.045, 0.0, 0.13], 0.022), ([-0.045, 0.0, 0.13], 0.022),
-    ([0.0, 0.045, 0.13], 0.022), ([0.0, -0.045, 0.13], 0.022),
-    ([0.045, 0.0, 0.145], 0.018), ([-0.045, 0.0, 0.145], 0.018),
-    ([0.0, 0.045, 0.145], 0.018), ([0.0, -0.045, 0.145], 0.018),
+    ([0.045, 0.0, 0.10], 0.026),
+    ([-0.045, 0.0, 0.10], 0.026),
+    ([0.0, 0.045, 0.10], 0.026),
+    ([0.0, -0.045, 0.10], 0.026),
+    ([0.045, 0.0, 0.13], 0.022),
+    ([-0.045, 0.0, 0.13], 0.022),
+    ([0.0, 0.045, 0.13], 0.022),
+    ([0.0, -0.045, 0.13], 0.022),
+    ([0.045, 0.0, 0.145], 0.018),
+    ([-0.045, 0.0, 0.145], 0.018),
+    ([0.0, 0.045, 0.145], 0.018),
+    ([0.0, -0.045, 0.145], 0.018),
 ]
 
 HEADER = """\
@@ -91,37 +121,36 @@ HEADER = """\
 def main():
     from curobo.util_file import get_robot_configs_path, join_path, load_yaml
 
-    cfg = load_yaml(join_path(get_robot_configs_path(), 'kinova_gen3.yml'))
-    kin = cfg['robot_cfg']['kinematics']
+    cfg = load_yaml(join_path(get_robot_configs_path(), "kinova_gen3.yml"))
+    kin = cfg["robot_cfg"]["kinematics"]
 
-    spheres = kin['collision_spheres']
+    spheres = kin["collision_spheres"]
     if isinstance(spheres, str):
         loaded = load_yaml(join_path(get_robot_configs_path(), spheres))
-        spheres = loaded.get('collision_spheres', loaded)
+        spheres = loaded.get("collision_spheres", loaded)
     spheres = {link: [dict(s) for s in ss] for link, ss in spheres.items()}
 
-    for link in ('left_inner_finger_pad', 'right_inner_finger_pad'):
+    for link in ("left_inner_finger_pad", "right_inner_finger_pad"):
         for s in spheres.get(link, []):
-            s['radius'] = max(float(s['radius']), PAD_SPHERE_RADIUS)
-    spheres.setdefault('robotiq_arg2f_base_link', []).extend(
-        {'center': list(c), 'radius': r} for c, r in GRIPPER_SHELL)
+            s["radius"] = max(float(s["radius"]), PAD_SPHERE_RADIUS)
+    spheres.setdefault("robotiq_arg2f_base_link", []).extend(
+        {"center": list(c), "radius": r} for c, r in GRIPPER_SHELL
+    )
     for link, ss in ARM_SPHERES.items():
-        spheres[link] = [{'center': [float(v) for v in c], 'radius': r}
-                         for c, r in ss]
-    kin['collision_spheres'] = spheres
+        spheres[link] = [{"center": [float(v) for v in c], "radius": r} for c, r in ss]
+    kin["collision_spheres"] = spheres
 
-    cspace = kin['cspace']
-    assert cspace['joint_names'] == ['joint_%d' % i for i in range(1, 8)]
-    cspace['retract_config'] = [float(v) for v in HOME_POSE]
+    cspace = kin["cspace"]
+    assert cspace["joint_names"] == ["joint_%d" % i for i in range(1, 8)]
+    cspace["retract_config"] = [float(v) for v in HOME_POSE]
 
     buf = io.StringIO()
-    yaml.safe_dump(cfg, buf, sort_keys=False, default_flow_style=None,
-                   width=100)
+    yaml.safe_dump(cfg, buf, sort_keys=False, default_flow_style=None, width=100)
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(HEADER + buf.getvalue())
     n = sum(len(ss) for ss in spheres.values())
-    print('wrote %s (%d links, %d spheres)' % (OUT, len(spheres), n))
+    print("wrote %s (%d links, %d spheres)" % (OUT, len(spheres), n))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

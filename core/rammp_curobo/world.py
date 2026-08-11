@@ -13,8 +13,7 @@ in RAMMP-Kinova):
 from rammp_curobo.geometry import euler_deg_to_quat_xyzw
 
 
-def world_cuboids(scene, padding=0.02, ignore=frozenset(),
-                  no_pad_names=frozenset()):
+def world_cuboids(scene, padding=0.02, ignore=frozenset(), no_pad_names=frozenset()):
     """The scene's obstacles + props as padded cuboid dicts.
 
     `padding` is per SIDE (each dim grows by 2*padding). Names in
@@ -29,35 +28,39 @@ def world_cuboids(scene, padding=0.02, ignore=frozenset(),
         x, y, z, w = euler_deg_to_quat_xyzw(o.rpy_deg)
         p = 0.0 if o.name in no_pad_names else pad
         cuboids[o.name] = {
-            'dims': [d + p for d in o.dims],
-            'pose': [o.position[0], o.position[1], o.position[2], w, x, y, z],
+            "dims": [d + p for d in o.dims],
+            "pose": [o.position[0], o.position[1], o.position[2], w, x, y, z],
         }
     for o in scene.objects:
         if o.name in ignore:
             continue
         x, y, z, w = euler_deg_to_quat_xyzw(o.rpy_deg)
         # 'obj_' prefix so a prop can share a name with an obstacle.
-        cuboids['obj_' + o.name] = {
-            'dims': [d + pad for d in o.bounding_dims()],
-            'pose': [o.position[0], o.position[1], o.position[2], w, x, y, z],
+        cuboids["obj_" + o.name] = {
+            "dims": [d + pad for d in o.bounding_dims()],
+            "pose": [o.position[0], o.position[1], o.position[2], w, x, y, z],
         }
     return cuboids
 
 
-def make_world_config(scene, padding=0.02, ignore=frozenset(),
-                      no_pad_names=frozenset(), cache_obb=40):
+def make_world_config(
+    scene, padding=0.02, ignore=frozenset(), no_pad_names=frozenset(), cache_obb=40
+):
     """A guarded cuRobo WorldConfig for this scene (see module docstring)."""
     from curobo.geom.types import WorldConfig
 
-    cuboids = world_cuboids(scene, padding=padding, ignore=ignore,
-                            no_pad_names=no_pad_names)
+    cuboids = world_cuboids(
+        scene, padding=padding, ignore=ignore, no_pad_names=no_pad_names
+    )
     n = len(cuboids)
     if n < 1:
         raise ValueError(
-            'collision world is empty; refusing to build it — cuRobo would '
-            'silently keep the previous world on update')
+            "collision world is empty; refusing to build it — cuRobo would "
+            "silently keep the previous world on update"
+        )
     if n > int(cache_obb):
         raise ValueError(
-            '%d collision boxes > collision_cache_obb=%d; raise the cache '
-            'setting in the planner config' % (n, cache_obb))
-    return WorldConfig.from_dict({'cuboid': cuboids})
+            "%d collision boxes > collision_cache_obb=%d; raise the cache "
+            "setting in the planner config" % (n, cache_obb)
+        )
+    return WorldConfig.from_dict({"cuboid": cuboids})

@@ -27,21 +27,21 @@ def load_robot_config(path, home_pose_rad=None, joint_names=None):
     The baked YAML already carries the right retract; applying it again is
     a harmless no-op that also covers stock-config users.
     """
-    with open(path, 'r') as f:
-        cfg = yaml.safe_load(f)['robot_cfg']
-    kin = cfg['kinematics']
+    with open(path, "r") as f:
+        cfg = yaml.safe_load(f)["robot_cfg"]
+    kin = cfg["kinematics"]
 
-    spheres = kin.get('collision_spheres')
+    spheres = kin.get("collision_spheres")
     if isinstance(spheres, str):
         # Stock-style reference into cuRobo's own content tree.
         from curobo.util_file import get_robot_configs_path, join_path
-        with open(join_path(get_robot_configs_path(), spheres), 'r') as f:
+
+        with open(join_path(get_robot_configs_path(), spheres), "r") as f:
             loaded = yaml.safe_load(f)
-        kin['collision_spheres'] = loaded.get('collision_spheres', loaded)
+        kin["collision_spheres"] = loaded.get("collision_spheres", loaded)
 
     if home_pose_rad is not None and joint_names is not None:
-        cspace = kin['cspace']
+        cspace = kin["cspace"]
         by_name = dict(zip(joint_names, home_pose_rad))
-        cspace['retract_config'] = [
-            float(by_name[n]) for n in cspace['joint_names']]
+        cspace["retract_config"] = [float(by_name[n]) for n in cspace["joint_names"]]
     return cfg
