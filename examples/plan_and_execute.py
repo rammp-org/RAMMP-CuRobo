@@ -92,6 +92,10 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     goal = ap.add_mutually_exclusive_group(required=True)
     goal.add_argument('--joints', type=float, nargs=7, metavar='RAD')
+    goal.add_argument('--joints-relative', type=float, nargs=7, metavar='RAD',
+                      help='deltas added to the CURRENT joint positions — '
+                           'the first-hardware-move primitive (small, known '
+                           'displacement from wherever the arm is)')
     goal.add_argument('--pos', type=float, nargs=3, metavar=('X', 'Y', 'Z'))
     ap.add_argument('--quat', type=float, nargs=4, metavar=('X', 'Y', 'Z', 'W'),
                     help='orientation for --pos (xyzw)')
@@ -108,6 +112,13 @@ def main():
     node = Node('rammp_curobo_example')
     executor = rclpy.executors.SingleThreadedExecutor()
     executor.add_node(node)
+
+    if args.joints_relative is not None:
+        q_now = read_joint_state(node, executor)
+        target = [q + d for q, d in zip(q_now, args.joints_relative)]
+        print('current joints: %s' % np.round(q_now, 3).tolist())
+        print('target joints:  %s' % np.round(target, 3).tolist())
+        args.joints = target
 
     if args.joints is not None:
         plan_goal = PlanToJoints.Goal(target_joints=[float(v) for v in args.joints])
@@ -170,6 +181,30 @@ def pose_goal(pose):
     g = PlanToPose.Goal()
     g.target = pose
     return g
+
+
+def read_joint_state(node, executor, timeout_s=5.0):
+    """One fresh /joint_states sample, mapped to joint_1..joint_7 order."""
+    import time
+
+    from sensor_msgs.msg import JointState
+    names = ['joint_%d' % i for i in range(1, 8)]
+    slot = {}
+    sub = node.create_subscription(JointState, '/joint_states',
+                                   lambda m: slot.update(msg=m), 10)
+    t0 = time.monotonic()
+    while 'msg' not in slot:
+        executor.spin_once(timeout_sec=0.1)
+        if time.monotonic() - t0 > timeout_s:
+            sys.exit('No /joint_states within %.0f s — is the arm/sim '
+                     'bringup running?' % timeout_s)
+    node.destroy_subscription(sub)
+    msg = slot['msg']
+    idx = {n: i for i, n in enumerate(msg.name)}
+    try:
+        return [float(msg.position[idx[n]]) for n in names]
+    except KeyError as exc:
+        sys.exit('joint %s missing from /joint_states' % exc)
 
 
 if __name__ == '__main__':

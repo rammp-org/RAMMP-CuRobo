@@ -118,6 +118,19 @@ class RammpCuroboNode(Node):
             self.create_service(Trigger, '~/close_gripper',
                                 self._close_gripper_cb, callback_group=self._cb)
 
+        # Real-arm misconfiguration tripwire: without sim time this node is
+        # presumably talking to the REAL Gen3, and the sim kitchen's
+        # obstacles do not exist on the real bench — cuRobo would dodge
+        # phantom furniture and happily route through real objects.
+        use_sim_time = bool(self.get_parameter('use_sim_time').value)
+        world_name = self.world or str(self.planner._cfg.get('world', ''))
+        if not use_sim_time and 'sim' in world_name:
+            self.get_logger().warning(
+                '=== Planning against the SIM world (%s) WITHOUT sim time — '
+                'if this node is driving the real arm, relaunch with '
+                'world:=world_real_bench.yaml (MEASURED first; see '
+                'docs/HARDWARE_BRINGUP.md). ===' % world_name)
+
         exec_on = bool(self.get_parameter('execute').value)
         self.get_logger().info(
             'rammp_curobo ready — execute=%s, speed_scale=%.2f, controller=%s'
