@@ -1,0 +1,261 @@
+# Simulated kitchen world — carried over from RAMMP-Kinova
+# (ros2_ws/src/curobo_planner/config/scene.yaml), the scene the MuJoCo sim
+# builds and the planner was field-tuned in. Use it for the hardware-free
+# smoke test and for sim-parity runs against RAMMP-Kinova's bringup.
+#
+# Frame: base_link (arm base at origin, +x forward, +z up). Metres + degrees.
+# obstacles = static furniture boxes; objects = props (avoided as bounding
+# boxes); targets = named fingertip goals kept for parity testing — note
+# they were authored WITH tool corrections (spin_deg 90, tip_offset 0.021)
+# enabled, so reaching them exactly needs those values set in gen3.yaml.
+#
+# NOT the real bench. For hardware use world_real_bench.yaml (measured).
+
+base_frame: base_link
+
+# Axis-aligned-ish boxes the arm must route around (collision + display).
+# Names key the MuJoCo styling in scenery.py; unknown names render plain.
+obstacles:
+  - name: table                        # the kitchen ISLAND the arm stands on
+    position: [0.15, 0.0, -0.10]       # top at -0.07; arm near the center
+    dims: [1.3, 1.4, 0.06]
+    color: [0.45, 0.32, 0.22, 1.0]
+  - name: back_wall
+    position: [1.07, 0.0, 0.40]
+    dims: [0.04, 2.4, 1.0]
+    color: [0.68, 0.70, 0.73, 1.0]
+  - name: wall_counter                 # counter strip along the wall
+    position: [0.92, 0.0, -0.085]      # top at -0.04
+    dims: [0.26, 2.0, 0.09]
+    color: [0.40, 0.41, 0.44, 1.0]
+  - name: cabinet                      # base cabinet on the island, right side
+    position: [0.45, -0.52, 0.28]
+    dims: [0.30, 0.30, 0.55]
+    color: [0.38, 0.26, 0.17, 1.0]
+  - name: shelf                        # open shelf on the island, left side
+    position: [0.55, 0.42, 0.50]
+    dims: [0.34, 0.30, 0.03]
+    color: [0.45, 0.32, 0.22, 1.0]
+  - name: upper_cabinet                # wall-mounted, right of the window gap
+    position: [0.95, -0.35, 0.95]
+    dims: [0.30, 0.70, 0.45]
+    color: [0.44, 0.30, 0.19, 1.0]
+  - name: microwave                    # on the wall counter, back-left
+    position: [0.90, 0.42, 0.085]
+    dims: [0.30, 0.45, 0.25]
+    color: [0.20, 0.20, 0.22, 1.0]
+  - name: fridge                       # floor-standing, right of the wall counter
+    position: [0.55, -1.05, -0.05]
+    dims: [0.65, 0.65, 1.40]
+    color: [0.90, 0.91, 0.93, 1.0]
+  - name: stool                        # behind-left of the island, on the floor
+    position: [-0.80, 0.55, -0.45]
+    dims: [0.35, 0.35, 0.60]
+    color: [0.40, 0.28, 0.18, 1.0]
+  - name: trash_bin                    # behind-right, on the floor
+    position: [-0.70, -0.60, -0.50]
+    dims: [0.25, 0.25, 0.50]
+    color: [0.25, 0.26, 0.28, 1.0]
+  - name: pedestal                     # the arm's mounting column (MuJoCo
+    position: [0.0, 0.0, -0.05]        # renders it as a cylinder). Top at
+    dims: [0.14, 0.14, 0.04]           # -0.03: 2 cm below the (boosted)
+    color: [0.22, 0.23, 0.25, 1.0]     # base sphere, so starts stay valid.
+
+# Props: rendered in MuJoCo (free=true -> real physics, rests on furniture)
+# AND avoided by the planner (as bounding boxes) — except the
+# props a target lists in `ignore_objects` (the thing you reach FOR can't also
+# be dodged). box: dims / cylinder: radius+height / sphere: radius.
+objects:
+  - name: bottle
+    type: cylinder
+    radius: 0.033
+    height: 0.22
+    position: [0.45, 0.12, 0.04]       # standing on the island (top -0.07)
+    color: [0.25, 0.55, 0.85, 1.0]
+    free: true
+    density: 300.0
+  - name: mug
+    type: cylinder
+    radius: 0.032
+    height: 0.09
+    position: [-0.45, -0.14, -0.025]   # BEHIND the arm, near the island's
+    rpy_deg: [0, 0, 197]               # back edge — far enough out that the
+    color: [0.15, 0.55, 0.35, 1.0]     # green: chromatically distinct from
+    free: true                         # the apple (perception tracks both)
+  - name: plate
+    type: cylinder
+    radius: 0.09
+    height: 0.02
+    position: [0.08, -0.45, -0.06]     # island, right side
+    color: [0.20, 0.62, 0.60, 1.0]     # teal ceramic: decisively saturated —
+                                       # pale blue cross-matched the counter
+                                       # up close in the D405 view
+    free: true
+    density: 800.0
+  - name: snack_box
+    type: box
+    dims: [0.055, 0.14, 0.19]
+    position: [0.52, 0.40, 0.61]       # standing ON the shelf (top 0.515)
+    color: [0.48, 0.22, 0.58, 1.0]     # berry-purple box (was orange — too
+    free: true                         # close to the pill bottle's amber)
+    density: 150.0
+  - name: bowl
+    type: cylinder
+    radius: 0.075
+    height: 0.05
+    position: [-0.30, 0.30, -0.045]    # island, behind-left
+    color: [0.85, 0.25, 0.50, 1.0]     # raspberry: mustard cross-matched the
+                                       # banana's yellow (field probe: each
+                                       # label also found the other object)
+    free: true
+    density: 500.0
+  - name: pill_bottle
+    type: cylinder
+    radius: 0.022
+    height: 0.09
+    position: [0.52, 0.06, -0.025]     # island front, well clear of the
+    color: [0.93, 0.50, 0.12, 1.0]     # padded shelf; pharmacy amber
+    free: true
+    density: 250.0
+  - name: banana
+    type: box                          # planner proxy; scenery renders the
+    dims: [0.19, 0.05, 0.04]           # curved fruit inside this envelope
+    position: [-0.18, 0.53, -0.05]     # island back-left — clear of the
+    rpy_deg: [0, 0, -25]               # bowl's padded box (12 cm away left
+                                       # no collision-free grasp; field IK_FAIL)
+    color: [0.91, 0.79, 0.18, 1.0]
+    free: true
+    density: 300.0
+  - name: placemat
+    type: box
+    dims: [0.30, 0.22, 0.006]
+    position: [0.08, -0.45, -0.067]    # under the plate (static decor)
+    color: [0.35, 0.28, 0.45, 1.0]
+  - name: kettle
+    type: cylinder
+    radius: 0.09
+    height: 0.20
+    position: [0.90, -0.30, 0.06]      # on the wall counter (out of reach,
+    color: [0.30, 0.32, 0.36, 1.0]     # pure kitchen dressing + obstacle)
+  - name: apple
+    type: sphere
+    radius: 0.035
+    position: [-0.46, 0.16, -0.035]    # island left, clear of the bowl's
+    color: [0.75, 0.15, 0.12, 1.0]     # padded box (a gripper needs ~10 cm
+                                       # of free span around a grasp)
+    free: true
+    density: 700.0
+  - name: cutting_board
+    type: box
+    dims: [0.26, 0.18, 0.016]
+    position: [0.08, 0.48, -0.062]     # island, left side (static)
+    color: [0.62, 0.46, 0.28, 1.0]
+  - name: cabinet_door
+    type: box
+    dims: [0.015, 0.24, 0.44]
+    position: [0.295, -0.52, 0.30]     # flush on the cabinet's front face
+    color: [0.30, 0.20, 0.13, 1.0]
+  - name: cabinet_handle_bar
+    type: box
+    dims: [0.02, 0.025, 0.12]
+    position: [0.278, -0.41, 0.34]     # the handle the cabinet_handle target points at
+    color: [0.75, 0.75, 0.78, 1.0]
+  - name: shelf_post_front
+    type: box
+    dims: [0.03, 0.03, 0.555]
+    position: [0.68, 0.30, 0.2075]     # island top -> shelf underside
+    color: [0.35, 0.25, 0.17, 1.0]
+  - name: shelf_post_back
+    type: box
+    dims: [0.03, 0.03, 0.555]
+    position: [0.68, 0.54, 0.2075]
+    color: [0.35, 0.25, 0.17, 1.0]
+
+# Named goals for the fingertip midpoint (tool_frame). keywords/description
+# feed the NL layer. All are SIDE approaches: tool axis horizontal (or gently
+# tilted), pointing at the object, poised to grasp. (Straight-down poses go
+# kinematically unreachable above tool_frame z ~ 0.35.)
+targets:
+  - name: bottle
+    # TOP-DOWN neck grasp: tool down, fingertips straddling the bottle neck
+    # from directly above. The side grasp sat exactly on the reachability
+    # cliff AND its geometry forced the wrist through the bottle column on
+    # approach (check_traj: 42 mm wrist-vs-cap) with a 250Â°+ winding retreat.
+    # A vertical descent has zero reorientation and touches nothing: the
+    # whole approach lives in the field-proven [180,0,0] family.
+    # z: the BUILT bottle narrows above the body — shoulder to z≈0.082,
+    # neck 0.080..0.119 (r 15 mm), cap 0.119..0.150 (r 18 mm). The PALM
+    # rides ~50-55 mm above the pad centers (measured via palm-cap
+    # interference: 13 mm deep at pads 0.088, 4.9 mm at 0.10), so the
+    # workable window is NARROW: pads in [0.105, 0.119] put the palm past
+    # the cap top while the pad faces still pinch the upper neck under
+    # the cap flange. 0.110 is its center. Above the window the pads ride
+    # the cap (jam); below it the palm lands on the cap (shove + miss).
+    position: [0.45, 0.12, 0.110]
+    rpy_deg: [180, 0, 0]
+    ignore_objects: [bottle]
+    standoff_position: [0.45, 0.12, 0.30]
+    standoff_rpy_deg: [180, 0, 0]
+    keywords: [bottle, water, drink]
+    description: a water bottle standing on the island in front of the arm
+  - name: mug
+    # BEHIND the arm (bearing 197Â°), descending 60Â° onto the mug from above;
+    # fingertips ~8 cm short of the rim. IK-verified 30/30 restarts, all
+    # collision-free. Flatter approaches (90Â°-125Â° pitch) at this radius are
+    # unreachable: the wrist stack self-collides with the base column.
+    position: [-0.42, -0.13, 0.10]
+    rpy_deg: [0, 150, 197]
+    ignore_objects: [mug]
+    # Pre-grasp above the mug, slightly steeper (IK-verified 30/30; the
+    # straight pull-back is unreachable at this radius behind the base).
+    standoff_position: [-0.40, -0.125, 0.20]
+    standoff_rpy_deg: [0, 160, 197]
+    keywords: [mug, coffee, cup, tea]
+    description: a red coffee mug on the island behind the arm
+  - name: cabinet_handle
+    # Straight along +x at the handle bar, fingertips ~2 cm short of the bar
+    # face. Pulled out from x=0.22 when the 2 cm world padding squeezed that
+    # goal into IK_FAIL; standoff 0.08 lands the pre-pose exactly on the
+    # previously IK-verified point [0.12, -0.41, 0.34]. Validate edits here
+    # with the `check` command.
+    # x re-authored +0.021 (tool_tip_offset): authored = pad centers now;
+    # cuRobo still plans its tool to the proven [0.20, -0.41, 0.34].
+    position: [0.221, -0.41, 0.34]
+    rpy_deg: [0, 90, 0]
+    standoff: 0.08
+    ignore_objects: [cabinet_handle_bar]   # the handle is the reach-for object
+    keywords: [cabinet, handle, door, cupboard, drawer]
+    description: the handle on the cabinet door to the right
+  - name: shelf_edge
+    # Horizontal reach toward the shelf's front face at slab height — a
+    # "take something off the shelf" pose (the snack box lives up there).
+    position: [0.331, 0.35, 0.55]   # +0.021: authored = pad centers now
+    rpy_deg: [0, 90, 0]
+    keywords: [shelf, ledge, top, snack, cereal]
+    description: the front edge of the shelf on the left
+  - name: pills
+    # TOP-DOWN grasp of the pill bottle, same proven family as the bottle
+    # target: descend from a standoff straight above, fingertips just over
+    # the cap. Validate with `check` after edits.
+    # Moved from [0.55, 0.20] — the padded shelf slab (y >= 0.25) left the
+    # tool-down wrist column no valid IK there (field IK_FAIL; `check`
+    # would have caught it before the tour).
+    # z re-authored -0.021 when the planner gained tool_tip_offset: authored
+    # coordinates now mean the PAD CENTERS, and 0.039 is where they really
+    # were all along.
+    position: [0.52, 0.06, 0.039]
+    rpy_deg: [180, 0, 0]
+    ignore_objects: [pill_bottle]
+    standoff_position: [0.52, 0.06, 0.25]
+    standoff_rpy_deg: [180, 0, 0]
+    keywords: [pills, pill, medicine, meds, medication]
+    description: the amber pill bottle on the island, front-left
+  - name: rest
+    # Essentially the Home pose's natural fingertip point (IK-verified 30/30;
+    # anything much closer to the base at this height is unreachable with a
+    # horizontal tool — the wrist cannot fold that tight).
+    position: [0.571, 0.0, 0.43]     # +0.021: authored = pad centers now
+    rpy_deg: [0, 90, 0]              # tool level, facing forward: ready pose
+    keywords: [rest, middle, center, neutral, ready]
+    description: a neutral ready position out in front
+

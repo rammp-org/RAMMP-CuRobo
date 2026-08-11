@@ -1,0 +1,37 @@
+# Real-bench collision world — PLACEHOLDER GEOMETRY, MEASURE BEFORE USE.
+#
+# ============================================================================
+# STOP: every value below except the pedestal is a conservative guess copied
+# from the sim kitchen's island. Before ANY hardware execution, measure the
+# real workspace (tape measure from the arm's base_link origin, +x forward,
+# +z up) and edit this file to match: table top height, table extents, and
+# any wall/shelf within reach. A collision world that doesn't match reality
+# is worse than none — the planner will confidently route through the gap
+# that isn't there.
+# ============================================================================
+#
+# The first hardware milestone (small joint move near home, away from the
+# table) only needs the table plane height to be conservative (err HIGH: a
+# table modeled too tall costs reachable volume, never safety).
+#
+# cuRobo v0.7.8 refuses an EMPTY world (silently keeps the previous one on
+# update), so at minimum keep the pedestal + table entries.
+
+base_frame: base_link
+
+obstacles:
+  - name: pedestal                   # the arm's mounting column. Top at
+    position: [0.0, 0.0, -0.05]      # -0.03: 2 cm below the base collision
+    dims: [0.14, 0.14, 0.04]         # sphere, so start states stay valid.
+                                     # Sized to the baked base_link spheres —
+                                     # do not enlarge without re-checking.
+  - name: table                      # MEASURE ME: the surface the arm is
+    position: [0.15, 0.0, -0.10]     # mounted over. Copied from the sim
+    dims: [1.3, 1.4, 0.06]           # island: top at -0.07 m relative to
+                                     # base_link. Set from the real mount!
+
+# No props on the real bench yet. Add objects/targets as the workspace gets
+# mapped — same schema as world_sim_kitchen.yaml.
+objects: []
+
+targets: []
