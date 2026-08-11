@@ -180,14 +180,14 @@ class CuRoboPlanner:
     def plan_to_joints(self, q_goal, start=None, method=None):
         """Plan a collision-free trajectory to a joint configuration.
 
-        method 'fk_pose' (Jetson default): plan in POSE space to the FK of
-        q_goal — plan_single_js is unusable on the Jetson torch wheel (its
-        graph fallback needs a cuSOLVER newer than JetPack ships). The
-        trajectory reaches the same tool pose; the result records
-        goal_mismatch_rad = how far the achieved joints landed from q_goal
-        (retract_config seeding keeps the arm in the home elbow family, so
-        near-home goals land close). method 'js': native plan_single_js,
-        for platforms with a full cuSOLVER.
+        method 'auto' (default): try native plan_single_js — exact joint
+        goal, no elbow-family surprises (verified working on the Jetson's
+        torch 2.10 jp6/cu126 wheel; the graph fallback that killed it on
+        older wheels stays hard-disabled either way) — and on any failure
+        fall back to 'fk_pose'. method 'fk_pose': plan in POSE space to the
+        FK of q_goal; reaches the same tool pose but redundancy may land a
+        DIFFERENT joint vector — goal_mismatch_rad records the gap, check
+        it before executing anything that assumes specific joints.
         """
         t0 = time.monotonic()
         q_goal = [float(v) for v in q_goal]
@@ -196,6 +196,15 @@ class CuRoboPlanner:
                              % (len(q_goal), len(self.joint_names)))
         method = method or self.joint_space_method
 
+        if method == 'auto':
+            res = self.plan_to_joints(q_goal, start=start, method='js')
+            if res.success:
+                return res
+            log.warning('plan_single_js failed (%s) — falling back to '
+                        'FK-pose planning', res.status)
+            res = self.plan_to_joints(q_goal, start=start, method='fk_pose')
+            res.timing = time.monotonic() - t0
+            return res
         if method == 'js':
             from curobo.types.robot import JointState as CuJointState
             by_name = dict(zip(self.joint_names, q_goal))
@@ -220,8 +229,8 @@ class CuRoboPlanner:
                 res.goal_mismatch_rad = float(
                     np.abs(res.final_joints - np.asarray(q_goal)).max())
             return res
-        raise ValueError("joint-space method must be 'fk_pose' or 'js', "
-                         'got %r' % method)
+        raise ValueError("joint-space method must be 'auto', 'js', or "
+                         "'fk_pose', got %r" % method)
 
     def update_world(self, world, ignore=()):
         """Replace the collision world.

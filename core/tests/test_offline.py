@@ -32,7 +32,7 @@ def test_planner_config_loads_and_merges():
     assert cfg['robot'] == 'robot_gen3_2f85.yaml'
     assert cfg['joint_names'] == ['joint_%d' % i for i in range(1, 8)]
     assert cfg['planner']['enable_graph'] is False
-    assert cfg['planner']['joint_space_method'] == 'fk_pose'
+    assert cfg['planner']['joint_space_method'] == 'auto'
     assert cfg['execution']['speed_scale'] == 0.25
     assert resolve_config(cfg['world'], relative_to=cfg_dir).is_file()
 

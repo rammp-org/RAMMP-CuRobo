@@ -32,7 +32,7 @@ PLANNER_DEFAULTS = {
         'collision_activation_distance': 0.03,
         'world_padding': 0.02,
         'no_pad_names': ['pedestal'],
-        'joint_space_method': 'fk_pose',
+        'joint_space_method': 'auto',
         'warmup': True,
     },
     'tool': {

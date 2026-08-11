@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""Plan a motion, preview it, and (only on explicit request) execute it.
+
+DRY-RUN IS THE DEFAULT: without --execute this plans and prints the
+trajectory, and nothing can move. Real motion needs ALL of:
+  1. an arm-side bringup (MuJoCo sim, or ros2_kortex on the real Gen3),
+  2. the planner node launched with execute:=true,
+  3. this script run with --execute,
+  4. typing exactly 'yes' at the confirmation prompt.
+On real hardware a human holds the physical e-stop the entire time.
+
+Examples (planner node running — see rammp_curobo_ros/launch/planner.launch.py):
+
+    # dry-run a small joint move near home
+    python3 examples/plan_and_execute.py --joints 0.2 0.262 3.142 -2.269 0.0 0.960 1.571
+
+    # same move, executed at 15% speed after confirmation
+    python3 examples/plan_and_execute.py --joints 0.2 0.262 3.142 -2.269 0.0 0.960 1.571 \
+        --execute --speed-scale 0.15
+
+Ctrl+C during execution cancels the goal: the controller stops and holds.
+"""
+
+import argparse
+import sys
+import threading
+
+import numpy as np
+import rclpy
+from geometry_msgs.msg import Pose
+from rclpy.action import ActionClient
+from rclpy.node import Node
+
+from rammp_curobo_interfaces.action import (ExecuteTrajectory, PlanToJoints,
+                                            PlanToPose)
+
+SERVER_PREFIX = '/rammp_curobo'
+
+
+def wait(future, executor, timeout_s=None):
+    done = threading.Event()
+    future.add_done_callback(lambda _f: done.set())
+    import time
+    t0 = time.monotonic()
+    while not done.is_set():
+        executor.spin_once(timeout_sec=0.1)
+        if timeout_s and time.monotonic() - t0 > timeout_s:
+            return None
+    return future.result()
+
+
+def call_action(node, executor, action_type, name, goal, timeout_s=300.0):
+    client = ActionClient(node, action_type, name)
+    if not client.wait_for_server(timeout_sec=5.0):
+        sys.exit('Action server %s not available — is the planner node '
+                 'running? (ros2 launch rammp_curobo_ros planner.launch.py)'
+                 % name)
+    send = wait(client.send_goal_async(goal), executor, 10.0)
+    if send is None or not send.accepted:
+        sys.exit('%s: goal not accepted' % name)
+    result_future = send.get_result_async()
+    try:
+        wrapped = wait(result_future, executor, timeout_s)
+    except KeyboardInterrupt:
+        print('\n^C — cancelling goal (controller stops and holds)...')
+        wait(send.cancel_goal_async(), executor, 5.0)
+        wrapped = wait(result_future, executor, 10.0)
+        if wrapped is not None:
+            print('Cancelled: %s' % wrapped.result.message)
+        sys.exit(130)
+    if wrapped is None:
+        sys.exit('%s: timed out' % name)
+    return wrapped.result
+
+
+def summarize(traj, scale):
+    pos = np.array([p.positions for p in traj.points])
+    t_end = (traj.points[-1].time_from_start.sec
+             + traj.points[-1].time_from_start.nanosec * 1e-9)
+    print('\nPlanned trajectory: %d points, %.2f s at full speed '
+          '(%.2f s at scale %.2f)' % (len(traj.points), t_end,
+                                      t_end / scale, scale))
+    lo, hi = pos.min(axis=0), pos.max(axis=0)
+    print('%-9s %10s %10s %10s' % ('joint', 'start', 'end', 'excursion'))
+    for j, name in enumerate(traj.joint_names):
+        print('%-9s %10.3f %10.3f %10.3f'
+              % (name, pos[0, j], pos[-1, j], hi[j] - lo[j]))
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    goal = ap.add_mutually_exclusive_group(required=True)
+    goal.add_argument('--joints', type=float, nargs=7, metavar='RAD')
+    goal.add_argument('--pos', type=float, nargs=3, metavar=('X', 'Y', 'Z'))
+    ap.add_argument('--quat', type=float, nargs=4, metavar=('X', 'Y', 'Z', 'W'),
+                    help='orientation for --pos (xyzw)')
+    ap.add_argument('--execute', action='store_true',
+                    help='after previewing, offer to execute (needs the node '
+                         'launched with execute:=true)')
+    ap.add_argument('--speed-scale', type=float, default=0.25)
+    ap.add_argument('--allow-mismatch', action='store_true',
+                    help='execute even if a joint goal was reached in a '
+                         'different joint family (pose-space fallback)')
+    args = ap.parse_args()
+
+    rclpy.init()
+    node = Node('rammp_curobo_example')
+    executor = rclpy.executors.SingleThreadedExecutor()
+    executor.add_node(node)
+
+    if args.joints is not None:
+        plan_goal = PlanToJoints.Goal(target_joints=[float(v) for v in args.joints])
+        result = call_action(node, executor, PlanToJoints,
+                             SERVER_PREFIX + '/plan_to_joints', plan_goal)
+    else:
+        if args.quat is None:
+            ap.error('--pos requires --quat')
+        pose = Pose()
+        pose.position.x, pose.position.y, pose.position.z = args.pos
+        (pose.orientation.x, pose.orientation.y,
+         pose.orientation.z, pose.orientation.w) = args.quat
+        result = call_action(node, executor, PlanToPose,
+                             SERVER_PREFIX + '/plan_to_pose', pose_goal(pose))
+
+    if not result.success:
+        sys.exit('PLAN FAILED: %s' % result.message)
+    print(result.message)
+    mismatch = getattr(result, 'goal_mismatch_rad', None)
+    if mismatch and mismatch > 1e-3:
+        print('note: joint-goal mismatch %.4f rad (pose-space fallback — '
+              'the POSE is exact, the joint split may differ)' % mismatch)
+    summarize(result.trajectory, args.speed_scale)
+
+    if not args.execute:
+        print('\nDry run complete — nothing moved. Re-run with --execute '
+              'to move the arm (planner node must be launched with '
+              'execute:=true).')
+        return
+
+    if mismatch and mismatch > 0.5 and not args.allow_mismatch:
+        sys.exit('REFUSING to execute: the plan reaches the requested POSE '
+                 'but via a different joint family (%.2f rad from the '
+                 'requested joints) — the motion would be much larger than '
+                 'asked for. Re-run with --allow-mismatch to override.'
+                 % mismatch)
+
+    print('\n*** ABOUT TO MOVE THE ARM at %.0f%% speed. ***' % (args.speed_scale * 100))
+    print('Confirm a human is holding the physical e-stop.')
+    try:
+        answer = input("Type 'yes' to execute, anything else to abort: ")
+    except EOFError:
+        answer = ''
+    if answer.strip() != 'yes':
+        print('Aborted — nothing moved.')
+        return
+
+    exec_goal = ExecuteTrajectory.Goal()
+    exec_goal.trajectory = result.trajectory
+    exec_goal.speed_scale = float(args.speed_scale)
+    exec_result = call_action(node, executor, ExecuteTrajectory,
+                              SERVER_PREFIX + '/execute_trajectory', exec_goal)
+    if exec_result.success:
+        print('EXECUTED: %s' % exec_result.message)
+    else:
+        sys.exit('EXECUTION FAILED: %s' % exec_result.message)
+
+
+def pose_goal(pose):
+    g = PlanToPose.Goal()
+    g.target = pose
+    return g
+
+
+if __name__ == '__main__':
+    main()

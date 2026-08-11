@@ -35,8 +35,12 @@ planner:
   world_padding: 0.02                # metres per side on every collision box
   no_pad_names: [pedestal]           # the arm's own mount: padding it would put
                                      # every start state in collision
-  joint_space_method: fk_pose        # 'fk_pose' (Jetson-safe) | 'js' (needs full
-                                     # cuSOLVER; plan_single_js dies on the Orin wheel)
+  joint_space_method: auto           # 'auto' = native plan_single_js (exact joint
+                                     # goal; verified OK on the torch 2.10 jp6/cu126
+                                     # wheel) with automatic 'fk_pose' fallback.
+                                     # fk_pose alone reaches the POSE but redundancy
+                                     # may pick another joint family — check
+                                     # goal_mismatch_rad before executing.
   warmup: true                       # first-run kernel compile at init, not mid-task
 
 tool:

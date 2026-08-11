@@ -1,0 +1,6 @@
+# Swap the planner's collision world: a world YAML path, or the bare name
+# of a packaged world (world_sim_kitchen.yaml, world_real_bench.yaml).
+string world
+---
+bool success
+string message

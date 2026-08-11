@@ -1,0 +1,15 @@
+# Plan a collision-free trajectory to a joint configuration (rad, joint_1..7).
+# Uses native joint-space planning where the wheel supports it (exact goal),
+# with an automatic FK-pose fallback; goal_mismatch_rad reports how far the
+# achieved joints landed from the request — near 0 on the native path, check
+# it before executing anything that assumes exact joints on the fallback.
+# Planning only — nothing moves.
+float64[] target_joints
+---
+bool success
+string message
+trajectory_msgs/JointTrajectory trajectory
+float64 planning_time
+float64 goal_mismatch_rad
+---
+string state

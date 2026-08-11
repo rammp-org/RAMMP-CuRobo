@@ -49,19 +49,28 @@ def test_plan_to_pose_from_home(planner):
     assert _pose_error(planner, res.final_joints, pos) < 0.005
 
 
-def test_plan_to_joints_fk_pose_fallback(planner):
+def test_plan_to_joints_default_is_exact(planner):
+    # default method 'auto' uses native plan_single_js on this wheel:
+    # the JOINT goal is the contract, not just the pose
     q_goal = list(planner.home_pose)
     q_goal[1] -= 0.25
     q_goal[3] += 0.30
 
     res = planner.plan_to_joints(q_goal)
     assert res.success, res.error
+    assert res.goal_mismatch_rad is not None and res.goal_mismatch_rad < 1e-3
+
+
+def test_plan_to_joints_fk_pose_fallback(planner):
+    q_goal = list(planner.home_pose)
+    q_goal[1] -= 0.25
+    q_goal[3] += 0.30
+
+    res = planner.plan_to_joints(q_goal, method='fk_pose')
+    assert res.success, res.error
     assert res.goal_mismatch_rad is not None
     goal_pos, _ = planner.fk(q_goal)
     assert _pose_error(planner, res.final_joints, goal_pos) < 0.005
-    # near home, retract seeding should keep the same elbow family — the
-    # joint gap stays small even though only the pose is guaranteed
-    assert res.goal_mismatch_rad < 0.5
 
 
 def test_unreachable_goal_fails_cleanly(planner):

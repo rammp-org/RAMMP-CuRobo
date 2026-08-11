@@ -1,0 +1,10 @@
+# Plan a collision-free trajectory to a tool_frame pose in the base frame.
+# Planning only — nothing moves. Execute the result via ExecuteTrajectory.
+geometry_msgs/Pose target
+---
+bool success
+string message                              # failure explanation when !success
+trajectory_msgs/JointTrajectory trajectory  # time-parameterized at full speed
+float64 planning_time                       # seconds
+---
+string state
