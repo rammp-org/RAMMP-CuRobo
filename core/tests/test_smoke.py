@@ -118,7 +118,7 @@ def test_update_world_guards_and_round_trip(planner):
         planner.update_world([])
     too_many = [
         {"name": "b%d" % i, "position": [2 + i, 5, 5], "dims": [0.01, 0.01, 0.01]}
-        for i in range(41)
+        for i in range(61)  # cache is 60
     ]
     with pytest.raises(ValueError, match="collision_cache_obb"):
         planner.update_world(too_many)

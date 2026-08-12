@@ -1,0 +1,10 @@
+# The Gen3's built-in wrist depth module via kinova_vision
+# (ros2 launch kinova_vision kinova_vision.launch.py device:=192.168.1.10).
+# The driver publishes camera_link -> camera_depth_frame; the scanner
+# broadcasts the missing end_effector_link -> camera_link mount itself.
+depth_topic: /camera/depth/image_raw
+info_topic: /camera/depth/camera_info
+tf_frame: camera_depth_frame
+broadcast_kinova_mount: true
+min_range: 0.18
+max_range: 1.3

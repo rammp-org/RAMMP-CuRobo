@@ -1,0 +1,21 @@
+# Physical Intel RealSense D405 mounted on the wrist (bracelet).
+# Driver: sudo apt ros-humble-realsense2-camera (installed). Launch:
+#   ros2 launch realsense2_camera rs_launch.py camera_namespace:=d405 camera_name:=d405
+# and check the actual depth topic with `ros2 topic list | grep depth` —
+# adjust below if your driver version names it differently.
+#
+# ============================================================
+# TODO BEFORE FIRST HARDWARE USE: mount_xyz / mount_quat_xyzw are
+# PLACEHOLDERS copied from the sim's bracket. Measure the real bracket:
+# offset from the bracelet_link origin to the D405's depth optical
+# center, quat = optical frame (z along view, y image-down). Then verify
+# with: sweep_scan --dry-capture --debug  (center pixel must land where
+# the camera is actually looking; the tabletop must fit z ~= -0.015).
+# ============================================================
+depth_topic: /d405/d405/depth/image_rect_raw
+info_topic: /d405/d405/depth/camera_info
+parent_frame: bracelet_link
+mount_xyz: [0.0, -0.058, -0.078]
+mount_quat_xyzw: [0.0, 1.0, 0.0, 0.0]
+min_range: 0.07          # D405 is short-range: optimal 7-50 cm
+max_range: 0.9           # accuracy degrades fast beyond ~1 m

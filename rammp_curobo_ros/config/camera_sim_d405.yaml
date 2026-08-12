@@ -1,0 +1,11 @@
+# MuJoCo sim's rendered eye-in-hand D405 (mujoco_sim build_scene.py:
+# bracelet camera at [0, -0.058, -0.078], gaze along the tool axis).
+# mount_quat is the OPTICAL frame (z = view direction, y = image down):
+# MJCF camera convention (-z view) on the bracelet -> Ry(180) here.
+depth_topic: /d405/depth
+info_topic: /d405/camera_info
+parent_frame: bracelet_link
+mount_xyz: [0.0, -0.058, -0.078]
+mount_quat_xyzw: [0.0, 1.0, 0.0, 0.0]
+min_range: 0.15
+max_range: 1.25

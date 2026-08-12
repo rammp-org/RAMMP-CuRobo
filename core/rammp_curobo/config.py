@@ -34,7 +34,7 @@ PLANNER_DEFAULTS = {
         "finetune_attempts": 5,
         "enable_finetune": True,
         "enable_graph": False,
-        "collision_cache_obb": 40,
+        "collision_cache_obb": 60,
         "collision_cache_mesh": 10,
         "collision_activation_distance": 0.03,
         "world_padding": 0.02,

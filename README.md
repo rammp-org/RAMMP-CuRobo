@@ -128,6 +128,46 @@ stacks can claim this arm; only one may run), measuring
 dry-run gate, the first small joint move at 15% speed, and the required
 abort drill. Human on the e-stop throughout.
 
+
+## Automatic obstacle scanning (digital twin)
+
+`sweep_scan` builds the collision world from a wrist depth camera — no tape
+measure: the arm moves to a high "periscope" posture (camera ~0.78 m up,
+pitched 42 deg down), rotates its base 90 deg left to 90 deg right in
+stop-and-capture stations (two pitch rows: near field + far field), fuses
+every station into one cloud, clusters it into tight boxes (fill-ratio
+splitting, nearest-first when capped), and writes the world YAML over the
+conservative table plane. Sim-verified against ground truth: 26/26
+stations, 100% recall, zero phantoms, and every plan made in the scanned
+world was collision-free in the true world (5/5 goals).
+
+```zsh
+# terminal 1: arm bringup (sim or real)     terminal 2: planner, armed
+ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml execute:=true
+
+# terminal 3: the sweep (~3 min; on the REAL arm: hand on the e-stop)
+ros2 run rammp_curobo_ros sweep_scan --camera camera_d405_wrist.yaml --apply
+
+# then plan/execute as usual — or restart the planner later against the file:
+ros2 launch rammp_curobo_ros planner.launch.py \
+    world:=/home/abra/.ros/rammp_curobo/scanned_world.yaml execute:=true
+```
+
+Cameras are YAML-swappable (`rammp_curobo_ros/config/`): `camera_sim_d405`
+(MuJoCo), `camera_d405_wrist` (real RealSense D405), `camera_kinova_wrist`
+(the Gen3 built-in module; also used by the one-shot `scan_world`).
+
+**First-time D405 checklist:** (1) mount the D405 on the wrist and measure
+its offset from bracelet_link into `camera_d405_wrist.yaml` (placeholder
+values ship); (2) `ros2 launch realsense2_camera rs_launch.py
+camera_namespace:=d405 camera_name:=d405` and fix the topic names in the
+YAML if they differ; (3) verify the mount before any sweep:
+`ros2 run rammp_curobo_ros sweep_scan --camera camera_d405_wrist.yaml
+--dry-capture --debug` — the printed camera position/view axis must match
+where it physically points, and a scan of the bare table must produce no
+boxes. Only then run the sweep. Re-scan whenever the scene changes; space
+the camera never saw is UNKNOWN, not certified free.
+
 ## Safety model (execution gates)
 
 Every `ExecuteTrajectory` goal must pass, in order: node `execute`
