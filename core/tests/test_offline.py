@@ -175,3 +175,20 @@ def test_real_arm_config_loads():
     assert cfg["planner"]["enable_graph"] is False
     assert cfg["execution"]["speed_scale"] == 0.25
     assert resolve_config(cfg["world"], relative_to=cfg_dir).is_file()
+
+
+def test_wrap_aware_start_match():
+    # joint_3 at home sits exactly on the +/-pi boundary: the driver can
+    # report -3.142 for a commanded +3.142 (observed on the real Gen3 —
+    # a perfect first move read as "settled 6.283 rad away").
+    from rammp_curobo.geometry import ang_diff
+
+    assert abs(ang_diff(3.142, -3.141)) < 0.01
+    assert abs(ang_diff(0.15, 0.0)) == pytest.approx(0.15)
+    traj = _traj()
+    traj.positions = traj.positions.copy()
+    traj.positions[0, 2] = 3.1416
+    current = traj.positions[0].copy()
+    current[2] = -3.1416  # same physical angle, wrapped report
+    ok, err = start_state_matches(traj, current, tol_rad=0.05)
+    assert ok and err < 0.01

@@ -41,6 +41,10 @@ planner:
                                      # fk_pose alone reaches the POSE but redundancy
                                      # may pick another joint family — check
                                      # goal_mismatch_rad before executing.
+  limit_clamp_rad: 0.05              # start/goal joints this far outside the model's
+                                     # position limits are clamped inward (the real
+                                     # Gen3 PARKS with joint_4 ~0.8 deg past cuRobo's
+                                     # URDF bound); larger violations are refused
   warmup: true                       # first-run kernel compile at init, not mid-task
 
 tool:

@@ -74,8 +74,13 @@ def validate_trajectory(
 def start_state_matches(traj, current_positions, tol_rad=0.05):
     """Is the arm (current_positions, controller order) close enough to the
     trajectory's first point to execute it? The catch-up sweep to a stale
-    plan is UNPLANNED motion — free to pass through obstacles."""
+    plan is UNPLANNED motion — free to pass through obstacles.
+
+    Wrap-aware: reported angles of continuous joints flip by 2*pi at the
+    +/-pi boundary (geometry.ang_diff)."""
+    from rammp_curobo.geometry import ang_diff
+
     q = np.asarray(current_positions, dtype=float)
     first = np.asarray(traj.positions[0], dtype=float)
-    err = float(np.abs(first - q).max())
+    err = float(max(abs(ang_diff(f, c)) for f, c in zip(first, q)))
     return err <= float(tol_rad), err

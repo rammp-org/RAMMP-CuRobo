@@ -8,6 +8,17 @@ silent failure: cuRobo is [w, x, y, z]; ROS and the scene YAML are
 import math
 
 
+def ang_diff(a, b):
+    """Smallest-magnitude angular difference a - b, in [-pi, pi).
+
+    Joint drivers report continuous joints wrapped to (-pi, pi]: at the
+    Gen3's home, joint_3 sits EXACTLY on the +/-180 deg boundary and its
+    reading can flip by 2*pi between messages. Every tolerance comparison
+    against a reported joint angle must go through this, or a perfectly
+    tracked motion reads as a 6.283 rad "failure" (hit live on the arm)."""
+    return (float(a) - float(b) + math.pi) % (2 * math.pi) - math.pi
+
+
 def euler_deg_to_quat_xyzw(rpy_deg):
     """roll/pitch/yaw (degrees) -> (x, y, z, w) quaternion, ROS/xyzw order."""
     r, p, y = (math.radians(float(a)) for a in rpy_deg)

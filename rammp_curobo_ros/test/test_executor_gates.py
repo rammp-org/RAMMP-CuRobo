@@ -112,3 +112,14 @@ def test_scaling_dilates_msg_exactly():
         )
         == []
     )
+
+
+def test_wrapped_joint_report_is_not_stale():
+    # commanded +pi vs reported -pi on a continuous joint = same angle
+    msg = _msg()
+    for p in msg.points:
+        p.positions = list(p.positions)
+        p.positions[2] = 3.1416
+    q_now = list(msg.points[0].positions)
+    q_now[2] = -3.1416
+    assert validate_goal_msg(msg, JOINTS, q_now, POS_LIMITS, VEL_LIMITS, 0.05) == []

@@ -23,6 +23,7 @@ import numpy as np
 from control_msgs.action import FollowJointTrajectory
 from rclpy.action import ActionClient
 
+from rammp_curobo.geometry import ang_diff
 from rammp_curobo_ros.conversions import msg_arrays, scaled_msg
 
 CONTINUITY_SLACK = 3.0
@@ -86,7 +87,7 @@ def validate_goal_msg(
     if current_q is None:
         problems.append("no current joint state — is the arm bringup running?")
     else:
-        err = float(np.abs(pos[0] - np.asarray(current_q)).max())
+        err = float(max(abs(ang_diff(a, b)) for a, b in zip(pos[0], current_q)))
         if err > start_tolerance_rad:
             problems.append(
                 "arm is %.3f rad from the trajectory start (tolerance %.3f) "
@@ -187,12 +188,15 @@ class TrajectoryExecutor:
             )
 
         # Arrival check: a "successful" goal that settled far from the
-        # commanded endpoint means physical contact or saturation.
+        # commanded endpoint means physical contact or saturation. Wrap-
+        # aware: at home, joint_3 sits exactly on the +/-pi boundary and
+        # its REPORTED angle can flip by 2*pi mid-move — a perfectly
+        # tracked first hardware run read as "settled 6.283 rad away".
         if get_current_q is not None:
             q = get_current_q()
             if q is not None:
-                target = np.asarray(scaled.points[-1].positions)
-                err = float(np.abs(target - np.asarray(q)).max())
+                target = scaled.points[-1].positions
+                err = float(max(abs(ang_diff(a, b)) for a, b in zip(target, q)))
                 if err > tracking_tolerance_rad:
                     return "failed", (
                         "TRACKING FAILURE: settled %.3f rad from the "

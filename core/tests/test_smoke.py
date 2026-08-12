@@ -136,3 +136,37 @@ def test_update_world_guards_and_round_trip(planner):
     pos, quat = planner.fk(planner.home_pose)
     res = planner.plan_to_pose(pos, quat)
     assert res.success, res.error
+
+
+def test_park_pose_outside_model_limits_is_clamped(planner):
+    # The real Gen3 parks with joint_4 ~0.8 deg past cuRobo's URDF bound
+    # (found on first hardware contact) — tiny violations clamp inward,
+    # large ones are refused with the joint named.
+    park = list(planner.home_pose)
+    park[3] = -2.674  # model limit is ±2.66
+    clamped, err = planner._clamp_to_limits(park, "start")
+    assert err is None
+    assert clamped[3] == pytest.approx(-2.66, abs=1e-6)
+
+    park[3] = -3.0  # far outside
+    clamped, err = planner._clamp_to_limits(park, "start")
+    assert clamped is None and "joint_4" in err
+
+    res = planner.plan_to_joints(planner.home_pose, start=park)
+    assert not res.success
+    assert res.status == "START_OUTSIDE_LIMITS"
+    assert "joint_4" in res.error
+
+
+def test_joint_goal_normalized_to_start_branch(planner):
+    # arm reports joint_3 = -pi (wrapped), goal authored at +pi: the plan
+    # must NOT wind a full revolution — the goal shifts to the -pi branch
+    start = list(planner.home_pose)
+    start[2] = -3.1416
+    goal = list(planner.home_pose)  # joint_3 = +3.142
+    goal[0] = 0.15
+    res = planner.plan_to_joints(goal, start=start)
+    assert res.success, res.error
+    j3 = res.joint_traj.positions[:, 2]
+    assert abs(j3[-1] - (-3.1416)) < 0.05  # stayed on the start's branch
+    assert np.abs(np.diff(j3)).sum() < 0.2  # no winding

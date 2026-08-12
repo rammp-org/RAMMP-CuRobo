@@ -62,6 +62,7 @@ class CuRoboPlanner:
         self.world_padding = float(p["world_padding"])
         self.no_pad_names = frozenset(p["no_pad_names"] or [])
         self.joint_space_method = str(p["joint_space_method"])
+        self.limit_clamp_rad = float(p.get("limit_clamp_rad", 0.05))
         self.tool_spin_deg = float(config["tool"]["spin_deg"])
         self.tool_tip_offset = float(config["tool"]["tip_offset_m"])
         self.execution = dict(config["execution"])
@@ -179,6 +180,9 @@ class CuRoboPlanner:
 
         from curobo.types.math import Pose
 
+        start, err = self._clamp_to_limits(start, "start")
+        if err is not None:
+            return PlanResult.failure("START_OUTSIDE_LIMITS", err)
         start_state = self._start_state(start)
         goal = Pose(position=self._tensor([xyz]), quaternion=self._tensor([wxyz]))
         try:
@@ -212,6 +216,14 @@ class CuRoboPlanner:
                 "q_goal has %d values for %d joints"
                 % (len(q_goal), len(self.joint_names))
             )
+        ref = self.home_pose if start is None else [float(v) for v in start]
+        q_goal = self._nearest_branch(q_goal, ref)
+        q_goal, err = self._clamp_to_limits(q_goal, "goal")
+        if err is not None:
+            return PlanResult.failure("GOAL_OUTSIDE_LIMITS", err)
+        start, err = self._clamp_to_limits(start, "start")
+        if err is not None:
+            return PlanResult.failure("START_OUTSIDE_LIMITS", err)
         method = method or self.joint_space_method
 
         if method == "auto":
@@ -336,6 +348,81 @@ class CuRoboPlanner:
         return self._torch.tensor(
             data, device=self._tensor_args.device, dtype=self._tensor_args.dtype
         )
+
+    def _nearest_branch(self, q_goal, q_ref):
+        """Shift continuous joints' goals by 2*pi onto the branch nearest
+        the start.
+
+        The kortex driver reports continuous joints wrapped to (-pi, pi];
+        at home, joint_3 sits exactly on that boundary, so the same
+        physical angle can read +pi or -pi between boots (observed live).
+        A goal authored as +pi with the arm reading -pi would otherwise
+        plan a full winding revolution. Only joints whose model range
+        spans more than 2*pi are shifted, and never outside the limits.
+        """
+        import math
+
+        lim = self.joint_limits()["position"]
+        out = []
+        for j, (g, r) in enumerate(zip(q_goal, q_ref)):
+            lo, hi = float(lim[0][j]), float(lim[1][j])
+            if hi - lo > 2 * math.pi + 1e-6:
+                cand = g + 2 * math.pi * round((r - g) / (2 * math.pi))
+                if lo <= cand <= hi and abs(cand - g) > 1e-9:
+                    log.info(
+                        "goal %s shifted %+.3f rad to the 2*pi branch "
+                        "nearest the start",
+                        self.joint_names[j],
+                        cand - g,
+                    )
+                    g = cand
+            out.append(float(g))
+        return out
+
+    def _clamp_to_limits(self, q, what):
+        """Clamp a controller-order joint vector into the model's position
+        limits, or explain why that's not okay.
+
+        Real arms park slightly OUTSIDE conservative model limits — the
+        Gen3's factory park pose puts joint_4 ~0.8 deg past cuRobo's URDF
+        bound, and cuRobo hard-refuses such a start. Violations up to
+        `limit_clamp_rad` are clamped inward (the executor's start-state
+        tolerance absorbs the difference); anything larger is a genuine
+        configuration problem and is refused with the joint named.
+
+        Returns (clamped_q or None, error or None). q may be None (= home).
+        """
+        if q is None:
+            return None, None
+        lim = self.joint_limits()["position"]
+        arr = np.asarray([float(v) for v in q], dtype=float)
+        clamped = np.clip(arr, lim[0], lim[1])
+        deltas = np.abs(clamped - arr)
+        j = int(np.argmax(deltas))
+        worst = float(deltas[j])
+        if worst > self.limit_clamp_rad:
+            return None, (
+                "%s: %s is %.3f rad outside the model position limits "
+                "[%.3f, %.3f] (max clamp %.3f) — jog the arm inside its "
+                "planning limits or fix the request"
+                % (
+                    what,
+                    self.joint_names[j],
+                    worst,
+                    lim[0][j],
+                    lim[1][j],
+                    self.limit_clamp_rad,
+                )
+            )
+        if worst > 1e-9:
+            log.info(
+                "%s: %s clamped %.4f rad inward to the model position limit",
+                what,
+                self.joint_names[j],
+                worst,
+            )
+            return clamped.tolist(), None
+        return arr.tolist(), None
 
     def _start_state(self, q=None):
         from curobo.types.robot import JointState as CuJointState

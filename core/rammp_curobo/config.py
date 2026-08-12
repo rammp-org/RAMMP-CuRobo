@@ -40,6 +40,7 @@ PLANNER_DEFAULTS = {
         "world_padding": 0.02,
         "no_pad_names": ["pedestal"],
         "joint_space_method": "auto",
+        "limit_clamp_rad": 0.05,
         "warmup": True,
     },
     "tool": {
