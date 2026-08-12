@@ -24,6 +24,7 @@ setup(
     entry_points={
         "console_scripts": [
             "planner_node = rammp_curobo_ros.planner_node:main",
+            "scan_world = rammp_curobo_ros.obstacle_scanner:main",
         ],
     },
 )
