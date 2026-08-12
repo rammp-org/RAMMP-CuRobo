@@ -43,8 +43,8 @@ on hardware (the node warns if you try).
 ```bash
 ping -c 2 192.168.1.10        # arm reachable?
 
-source /opt/ros/humble/setup.bash
-source ~/RAMMP-Kinova/ros2_ws/install/setup.bash     # ros2_kortex lives here
+source /opt/ros/humble/setup.zsh
+source ~/RAMMP-Kinova/ros2_ws/install/setup.zsh     # ros2_kortex lives here
 ros2 launch kortex_bringup gen3.launch.py \
     robot_ip:=192.168.1.10 dof:=7 gripper:=robotiq_2f_85 launch_rviz:=false
 ```
@@ -68,7 +68,7 @@ ros2 topic hz /joint_states     # streaming
 ## 3. Planner node — dry-run first
 
 ```bash
-source ~/RAMMP-CuRobo/install/setup.bash    # on top of the two above
+source ~/RAMMP-CuRobo/install/setup.zsh    # on top of the two above
 ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml
 ```
 

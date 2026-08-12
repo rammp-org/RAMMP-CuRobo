@@ -61,7 +61,7 @@ python3 -m pip install "warp-lang==1.5.1"  # v0.7.8 needs warp 1.5.x
 ```bash
 git clone <this-repo> ~/RAMMP-CuRobo && cd ~/RAMMP-CuRobo
 python3 -m pip install --user --no-build-isolation -e ./core
-source /opt/ros/humble/setup.bash
+source /opt/ros/humble/setup.zsh
 colcon build --symlink-install \
     --packages-select rammp_curobo_interfaces rammp_curobo_ros
 ```
@@ -90,18 +90,24 @@ a minute or two; ~20 s warm). Or plan one motion directly:
 python3 examples/plan_only.py --joints 0.3 0.262 3.142 -2.269 0.0 0.960 1.571
 ```
 
+
+> Shell note: the Jetson's default shell is **zsh** — source the `.zsh`
+> setup files as shown. From bash, use the `.bash` variants instead
+> (sourcing `setup.bash` from zsh fails with "no such file or directory:
+> .../setup.sh").
+
 ## Run against the simulation
 
 ```bash
 # terminal 1 — RAMMP-Kinova's sim (physics + ros2_control + controllers)
 export ROS_LOCALHOST_ONLY=1
-source /opt/ros/humble/setup.bash && source ~/RAMMP-Kinova/ros2_ws/install/setup.bash
+source /opt/ros/humble/setup.zsh && source ~/RAMMP-Kinova/ros2_ws/install/setup.zsh
 ros2 launch mujoco_sim mujoco_bringup.launch.py
 
 # terminal 2 — planner node (execute enabled: it's a sim)
 export ROS_LOCALHOST_ONLY=1
-source /opt/ros/humble/setup.bash && source ~/RAMMP-Kinova/ros2_ws/install/setup.bash
-source ~/RAMMP-CuRobo/install/setup.bash
+source /opt/ros/humble/setup.zsh && source ~/RAMMP-Kinova/ros2_ws/install/setup.zsh
+source ~/RAMMP-CuRobo/install/setup.zsh
 ros2 launch rammp_curobo_ros planner.launch.py execute:=true use_sim_time:=true
 
 # terminal 3 — plan, preview, confirm, execute at 25% speed
