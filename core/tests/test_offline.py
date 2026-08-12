@@ -165,3 +165,13 @@ def test_quaternion_round_trip_and_tool_math():
     # spinning about tool z never moves the tool axis
     spun = spin_about_tool(wxyz, 90.0)
     assert tool_axis(spun) == pytest.approx([0, 0, -1], abs=1e-9)
+
+
+def test_real_arm_config_loads():
+    cfg, cfg_dir = load_planner_config("gen3_real.yaml")
+    assert cfg["world"] == "world_real_bench.yaml"
+    assert cfg["robot"] == "robot_gen3_2f85.yaml"
+    # inherits the same planner defaults gen3.yaml declares explicitly
+    assert cfg["planner"]["enable_graph"] is False
+    assert cfg["execution"]["speed_scale"] == 0.25
+    assert resolve_config(cfg["world"], relative_to=cfg_dir).is_file()

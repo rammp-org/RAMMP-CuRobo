@@ -1,0 +1,13 @@
+# Arm-only planner config: same planner/robot as gen3.yaml, but the
+# collision world is the MEASURED real bench — nothing sim-related loads.
+# Use this on hardware:
+#
+#   ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml execute:=true
+#
+# Every unlisted knob inherits the same defaults gen3.yaml spells out
+# (config.PLANNER_DEFAULTS); see gen3.yaml for the commentary on each.
+# Reminder: edit world_real_bench.yaml to match the real bench BEFORE the
+# first hardware run (docs/HARDWARE_BRINGUP.md step 1).
+
+robot: robot_gen3_2f85.yaml
+world: world_real_bench.yaml

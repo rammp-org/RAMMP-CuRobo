@@ -10,7 +10,7 @@ this node (identical either way, only the world/use_sim_time change):
   real Gen3 (ros2_kortex; human on the physical e-stop):
     ros2 launch kortex_bringup gen3.launch.py robot_ip:=192.168.1.10 \
         dof:=7 gripper:=robotiq_2f_85 launch_rviz:=false
-    ros2 launch rammp_curobo_ros planner.launch.py world:=world_real_bench.yaml
+    ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml
 
 Execution stays disabled until execute:=true is passed — the node plans
 (dry-run) but refuses ExecuteTrajectory goals.

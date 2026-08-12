@@ -69,7 +69,7 @@ ros2 topic hz /joint_states     # streaming
 
 ```bash
 source ~/RAMMP-CuRobo/install/setup.bash    # on top of the two above
-ros2 launch rammp_curobo_ros planner.launch.py world:=world_real_bench.yaml
+ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml
 ```
 
 No `execute:=true` yet: this node plans but refuses motion. Sanity-check a
@@ -88,7 +88,7 @@ you asked for, nothing else). If the plan fails or looks wrong, stop here.
 Restart the node with execution armed, at a crawl:
 
 ```bash
-ros2 launch rammp_curobo_ros planner.launch.py world:=world_real_bench.yaml execute:=true
+ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml execute:=true
 python3 examples/plan_and_execute.py --joints-relative 0.15 0 0 0 0 0 0 \
     --execute --speed-scale 0.15
 ```
