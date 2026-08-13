@@ -7,7 +7,7 @@ http://192.168.1.11:8405 through every phase:
     ros2 run rammp_curobo_ros palm_demo --execute
 
 Flow, shown live on the overlay:
-  SCANNING   present an open palm 0.35-0.8 m in front of the camera;
+  SCANNING   present an open palm inside the reach window;
              MediaPipe finds it, depth+TF give its 3D point, the
              workspace gate vets it
   LOCKED     the palm held still ~1 s: target frozen, plan computed —
@@ -300,7 +300,7 @@ def main():
         return palms, seen
 
     print(
-        "PALM DEMO — person: open palm facing the arm, 0.4-0.7 m out, HOLD\n"
+        "PALM DEMO — person: open palm facing the arm, 0.4-0.85 m out, HOLD\n"
         "STILL once 'go' is typed (moving away = your abort). Operator: hand\n"
         "on the e-stop; type go<enter> when LOCKED; q<enter> quits."
         + ("" if args.execute else "\n(DRY-RUN: no --execute, nothing moves)")
@@ -313,19 +313,25 @@ def main():
                 "position only"
             )
 
-    print(">> SCANNING — present an open palm 0.4-0.7 m in front of the camera")
+    print(">> SCANNING — present an open palm within ~0.85 m of the arm base")
     last_status = [""]
 
+    status_t = [0.0]
+
     def scan_status(text):
-        """Narrate what the scanner sees, once per change (not per frame)."""
-        if text != last_status[0]:
+        """Narrate what the scanner sees — on change, at most ~1/s."""
+        if text != last_status[0] and time.monotonic() - status_t[0] > 0.7:
             print("   %s" % text)
             last_status[0] = text
+            status_t[0] = time.monotonic()
 
+    pending = {"cmd": None}
     while rclpy.ok():
         rclpy.spin_once(node, timeout_sec=0.05)
-        key = read_key_line()
-        if key == "q":
+        typed = read_key_line()
+        if typed:
+            pending["cmd"] = typed  # survives frame-skips until consumed
+        if pending["cmd"] == "q":
             break
 
         # keep the arm at the home vantage while scanning
@@ -364,6 +370,7 @@ def main():
                     scan_status("hand seen — %s" % (seen["why"] or "refused"))
                 state["msg"] = "present an open palm"
                 lock.update(target=None, since=None, history=[])
+                pending["cmd"] = None
                 continue
             scan_status("palm OK — hold still...")
             p = good[0]
@@ -407,6 +414,7 @@ def main():
             if plan_a is None or not plan_a.success:
                 set_state("SCANNING", "unreachable — move the palm")
                 lock.update(target=None, since=None, history=[])
+                pending["cmd"] = None
                 continue
             lock.update(quat=quat, touch=touch, standoff=standoff, plan_a=plan_a)
             set_state("LOCKED", "[%.2f %.2f %.2f] — type go<enter>" % tuple(target))
@@ -418,12 +426,15 @@ def main():
             if good and np.linalg.norm(np.asarray(good[0]) - lock["target"]) > 0.06:
                 set_state("SCANNING", "palm moved — relocking")
                 lock.update(target=None, since=None, history=[])
+                pending["cmd"] = None
                 continue
-            if key != "go":
+            if pending["cmd"] != "go":
                 continue
+            pending["cmd"] = None
             if not args.execute:
                 set_state("SCANNING", "dry-run: plan OK (add --execute)")
                 lock.update(target=None, since=None, history=[])
+                pending["cmd"] = None
                 continue
             set_state("TRANSIT", "fast to standoff")
             if (
@@ -434,6 +445,7 @@ def main():
             ):
                 set_state("SCANNING", "transit failed — rescan")
                 lock.update(target=None, since=None, history=[])
+                pending["cmd"] = None
                 continue
             set_state("TOUCH", "slow approach...")
             plan_b = node.plan_to(lock["touch"], lock["quat"])
@@ -468,6 +480,7 @@ def main():
             set_state("SCANNING", "next!")
             last_status[0] = ""
             lock.update(target=None, since=None, history=[])
+            pending["cmd"] = None
 
     print("demo ended")
 

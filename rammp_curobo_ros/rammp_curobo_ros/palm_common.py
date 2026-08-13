@@ -19,7 +19,7 @@ MODEL_PATH = os.path.expanduser("~/.ros/rammp_curobo/hand_landmarker.task")
 PALM_LANDMARKS = (0, 5, 9, 13, 17)  # wrist + finger MCP knuckles
 
 
-def palm_target_ok(p, table_z=0.10, r_min=0.35, r_max=0.80, z_max=0.85):
+def palm_target_ok(p, table_z=0.10, r_min=0.35, r_max=0.88, z_max=0.90):
     """Workspace gate for a palm point [x, y, z] in the base frame.
 
     Above the table by a margin, inside the comfortable reach annulus,
