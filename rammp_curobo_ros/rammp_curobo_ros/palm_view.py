@@ -10,9 +10,10 @@ Opens a window showing the D405 color stream with:
     agree, the demo will touch where you think it will,
   * the workspace-gate verdict for the would-be target.
 
-    ros2 run rammp_curobo_ros palm_view      # then open http://<jetson>:8405
-                                             # (native window if an X desktop
-                                             #  session is available)
+    ros2 run rammp_curobo_ros palm_view      # feed appears RIGHT HERE:
+                                             #  - kitty terminal: inline video
+                                             #  - X desktop: native window
+                                             #  - otherwise: http://<jetson>:8405
     ros2 run rammp_curobo_ros palm_view --headless   # JPEG previews only
 
 The live view is always served at http://192.168.1.11:8405 — open it in
@@ -35,6 +36,42 @@ from rammp_curobo_ros.scan_common import DepthCameraGrabber, load_camera_config
 
 MODEL_PATH = os.path.expanduser("~/.ros/rammp_curobo/hand_landmarker.task")
 STREAM_PORT = 8405
+
+
+class _KittyDisplay:
+    """Render frames INSIDE the terminal via the kitty graphics protocol.
+
+    Works over SSH (kitty's ssh kitten forwards the protocol), no X, no
+    browser: the live feed appears in the terminal the command ran in.
+    Only activated when the terminal really is kitty (TERM check + tty).
+    """
+
+    @staticmethod
+    def available():
+        return sys.stdout.isatty() and "kitty" in os.environ.get("TERM", "")
+
+    def __init__(self):
+        self._out = sys.stdout
+        self._out.write("\x1b[2J\x1b[H\x1b[?25l")  # clear, home, hide cursor
+        self._out.flush()
+
+    def show(self, jpg_bytes):
+        import base64
+
+        b64 = base64.b64encode(jpg_bytes).decode()
+        out = ["\x1b[H\x1b_Ga=d,q=2\x1b\\"]  # home + delete old image
+        first = True
+        while b64:
+            chunk, b64 = b64[:4096], b64[4096:]
+            ctrl = "a=T,f=100,q=2," if first else ""
+            out.append("\x1b_G%sm=%d;%s\x1b\\" % (ctrl, 1 if b64 else 0, chunk))
+            first = False
+        self._out.write("".join(out))
+        self._out.flush()
+
+    def close(self):
+        self._out.write("\x1b_Ga=d,q=2\x1b\\\x1b[?25h\n")  # cleanup, cursor back
+        self._out.flush()
 
 
 class _MjpegServer:
@@ -167,8 +204,11 @@ def main():
                 cv2.waitKey(1)
             except Exception:
                 window = False
-    if not window:
-        print("(no usable X display — use the browser view)")
+    kitty = None
+    if not window and _KittyDisplay.available():
+        kitty = _KittyDisplay()
+    if not window and kitty is None:
+        print("(no X display and not a kitty terminal — use the browser view)")
 
     stream = None
     try:
@@ -328,20 +368,27 @@ def main():
             1,
         )
 
-        if stream is not None:
-            ok_enc, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            if ok_enc:
-                stream.push(jpg.tobytes())
+        jpg_bytes = None
+        ok_enc, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        if ok_enc:
+            jpg_bytes = jpg.tobytes()
+            if stream is not None:
+                stream.push(jpg_bytes)
+            if kitty is not None and time.monotonic() - last_save > 0.10:
+                kitty.show(jpg_bytes)
+                last_save = time.monotonic()
         if window:
             cv2.imshow("palm_view", frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
-        elif time.monotonic() - last_save > 0.5:
+        elif kitty is None and time.monotonic() - last_save > 0.5:
             cv2.imwrite(PREVIEW, frame)
             last_save = time.monotonic()
 
     if window:
         cv2.destroyAllWindows()
+    if kitty is not None:
+        kitty.close()
 
 
 if __name__ == "__main__":
