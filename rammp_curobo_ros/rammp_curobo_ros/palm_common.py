@@ -134,6 +134,9 @@ class ColorDepthGrabber(DepthCameraGrabber):
 
 def make_hands():
     """MediaPipe Hands detector (legacy pipeline: models ship in the wheel)."""
+    # quiet the harmless TFLite/glog startup chatter that reads like errors
+    os.environ.setdefault("GLOG_minloglevel", "2")
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
     import mediapipe as mp
 
     return mp.solutions.hands.Hands(

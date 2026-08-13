@@ -230,6 +230,13 @@ def main():
     state = {"name": "SCANNING", "msg": ""}
     lock = {"target": None, "since": None, "history": []}
 
+    def set_state(name, msg=""):
+        """Update the banner AND announce transitions in the terminal, so
+        the demo is followable without the browser view."""
+        if name != state["name"]:
+            print(">> %s%s" % (name, ("  " + msg) if msg else ""))
+        state.update(name=name, msg=msg)
+
     def annotate_and_show():
         """Grab the newest frame, draw hands + state banner, display."""
         if node.color is None or not node.frames or node.info is None:
@@ -311,14 +318,20 @@ def main():
             state["name"] == "SCANNING"
             and max(abs(a - b) for a, b in zip(q_now, HOME)) > 0.1
         ):
-            state.update(name="RETREAT", msg="returning to home vantage")
+            if not lock.get("home_ok"):
+                input(
+                    "arm is away from home — press ENTER to home it "
+                    "(hand on e-stop), Ctrl+C to quit: "
+                )
+                lock["home_ok"] = True
+            set_state("RETREAT", "returning to home vantage")
             annotate_and_show()
             plan = node.plan_home()
             if plan is None or not plan.success:
                 sys.exit("cannot plan home")
             if args.execute:
                 node.run_traj(plan.trajectory, transit, on_tick=annotate_and_show)
-            state.update(name="SCANNING", msg="")
+            set_state("SCANNING")
             continue
 
         palms = annotate_and_show()
@@ -366,44 +379,41 @@ def main():
                 target[1] - (args.standoff + args.touch_back) * uy,
                 target[2],
             ]
-            state.update(name="PLANNING", msg="")
+            set_state("PLANNING")
             annotate_and_show()
             plan_a = node.plan_to(standoff, quat)
             if plan_a is None or not plan_a.success:
-                state.update(name="SCANNING", msg="unreachable — move the palm")
+                set_state("SCANNING", "unreachable — move the palm")
                 lock.update(target=None, since=None, history=[])
                 continue
             lock.update(quat=quat, touch=touch, standoff=standoff, plan_a=plan_a)
-            state.update(
-                name="LOCKED",
-                msg="[%.2f %.2f %.2f] — type go<enter>" % tuple(target),
-            )
+            set_state("LOCKED", "[%.2f %.2f %.2f] — type go<enter>" % tuple(target))
             continue
 
         if state["name"] == "LOCKED":
             # unlock if the palm wandered off before the cue
             good = [p for p in palms if palm_target_ok(p)[0]]
             if good and np.linalg.norm(np.asarray(good[0]) - lock["target"]) > 0.06:
-                state.update(name="SCANNING", msg="palm moved — relocking")
+                set_state("SCANNING", "palm moved — relocking")
                 lock.update(target=None, since=None, history=[])
                 continue
             if key != "go":
                 continue
             if not args.execute:
-                state.update(name="SCANNING", msg="dry-run: plan OK (add --execute)")
+                set_state("SCANNING", "dry-run: plan OK (add --execute)")
                 lock.update(target=None, since=None, history=[])
                 continue
-            state.update(name="TRANSIT", msg="fast to standoff")
+            set_state("TRANSIT", "fast to standoff")
             if (
                 node.run_traj(
                     lock["plan_a"].trajectory, transit, on_tick=annotate_and_show
                 )
                 == "failed"
             ):
-                state.update(name="SCANNING", msg="transit failed — rescan")
+                set_state("SCANNING", "transit failed — rescan")
                 lock.update(target=None, since=None, history=[])
                 continue
-            state.update(name="TOUCH", msg="slow approach...")
+            set_state("TOUCH", "slow approach...")
             plan_b = node.plan_to(lock["touch"], lock["quat"])
             verdict = "failed"
             if plan_b is not None and plan_b.success:
@@ -413,19 +423,18 @@ def main():
                     touch_nm=args.touch_nm,
                     on_tick=annotate_and_show,
                 )
-            state.update(
-                name="TOUCH",
-                msg={
-                    "touch": "CONTACT!",
-                    "arrived": "at palm plane",
-                    "failed": "approach failed",
-                }[verdict],
-            )
+            verdict_msg = {
+                "touch": "CONTACT!",
+                "arrived": "at palm plane",
+                "failed": "approach failed",
+            }[verdict]
+            print(">> TOUCH  %s" % verdict_msg)
+            state.update(msg=verdict_msg)
             end = time.monotonic() + 0.8
             while time.monotonic() < end:
                 rclpy.spin_once(node, timeout_sec=0.05)
                 annotate_and_show()
-            state.update(name="RETREAT", msg="")
+            set_state("RETREAT")
             plan_r = node.plan_home()
             if plan_r is None or not plan_r.success:
                 sys.exit("cannot plan retreat — arm holds")
@@ -434,7 +443,7 @@ def main():
                 == "failed"
             ):
                 sys.exit("retreat failed — arm holds; see planner log")
-            state.update(name="SCANNING", msg="next!")
+            set_state("SCANNING", "next!")
             lock.update(target=None, since=None, history=[])
 
     print("demo ended")
