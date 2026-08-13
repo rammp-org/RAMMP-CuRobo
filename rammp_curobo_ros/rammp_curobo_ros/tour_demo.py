@@ -28,7 +28,7 @@ import rclpy
 from rclpy.action import ActionClient
 from sensor_msgs.msg import JointState
 
-from rammp_curobo.geometry import euler_deg_to_quat_xyzw
+from rammp_curobo.geometry import ang_diff, euler_deg_to_quat_xyzw
 from rammp_curobo_interfaces.action import ExecuteTrajectory, PlanToJoints, PlanToPose
 from rammp_curobo_ros.scan_common import NODE_NAMESPACE, spin_until_done
 
@@ -163,12 +163,19 @@ def main():
     demo = TourDemo(node)
 
     q_now = demo.joints()
-    if max(abs(a - b) for a, b in zip(q_now, HOME)) > 0.1:
-        sys.exit(
-            "arm is not at home — home it first:\n"
-            "  python3 examples/plan_and_execute.py --joints 0 0.262 3.142 "
-            "-2.269 0 0.96 1.571 --execute --speed-scale 0.25"
+    if max(abs(ang_diff(a, b)) for a, b in zip(q_now, HOME)) > 0.1:
+        if not args.execute:
+            sys.exit("arm is not at home — rerun with --execute to home it")
+        input(
+            "arm is away from home — press ENTER to home it at 25% "
+            "(hand on e-stop), Ctrl+C to quit: "
         )
+        plan = demo.plan_home_from(None)
+        if plan is None or not plan.success:
+            sys.exit("cannot plan home")
+        if not demo.run(plan.trajectory, 0.25):
+            sys.exit("homing failed — see planner log")
+        print("homed.")
 
     # sample + chain-plan the whole tour before anything moves
     print("sampling %d targets and pre-planning the tour..." % args.points)

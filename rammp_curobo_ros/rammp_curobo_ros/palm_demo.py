@@ -36,7 +36,7 @@ import rclpy
 from rclpy.action import ActionClient
 from sensor_msgs.msg import JointState
 
-from rammp_curobo.geometry import euler_deg_to_quat_xyzw
+from rammp_curobo.geometry import ang_diff, euler_deg_to_quat_xyzw
 from rammp_curobo_interfaces.action import ExecuteTrajectory, PlanToJoints, PlanToPose
 from rammp_curobo_ros.palm_common import (
     STREAM_PORT,
@@ -338,7 +338,7 @@ def main():
         q_now = node.joints()
         if (
             state["name"] == "SCANNING"
-            and max(abs(a - b) for a, b in zip(q_now, HOME)) > 0.1
+            and max(abs(ang_diff(a, b)) for a, b in zip(q_now, HOME)) > 0.1
         ):
             if not lock.get("home_ok"):
                 input(
