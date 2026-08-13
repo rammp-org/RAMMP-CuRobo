@@ -10,15 +10,20 @@ Opens a window showing the D405 color stream with:
     agree, the demo will touch where you think it will,
   * the workspace-gate verdict for the would-be target.
 
-    ros2 run rammp_curobo_ros palm_view                    # window (needs DISPLAY)
-    ros2 run rammp_curobo_ros palm_view --headless         # save JPEG previews
+    ros2 run rammp_curobo_ros palm_view      # then open http://<jetson>:8405
+                                             # (native window if an X desktop
+                                             #  session is available)
+    ros2 run rammp_curobo_ros palm_view --headless   # JPEG previews only
 
-Needs the RealSense driver running; the arm bringup is optional (without
-TF the 3D readout stays in the camera frame). 'q' in the window quits.
+The live view is always served at http://192.168.1.11:8405 — open it in
+any browser (laptop next to VSCode works). Needs the RealSense driver
+running; the arm bringup is optional (without TF the 3D readout stays in
+the camera frame). Ctrl+C quits ('q' in the native window, if any).
 """
 
 import argparse
 import os
+import sys
 import time
 
 import numpy as np
@@ -29,6 +34,59 @@ from rammp_curobo_ros.palm_demo import detect_palm, palm_target_ok
 from rammp_curobo_ros.scan_common import DepthCameraGrabber, load_camera_config
 
 MODEL_PATH = os.path.expanduser("~/.ros/rammp_curobo/hand_landmarker.task")
+STREAM_PORT = 8405
+
+
+class _MjpegServer:
+    """Minimal multipart-JPEG streamer: open http://<host>:<port> live."""
+
+    def __init__(self, port):
+        import http.server
+        import socketserver
+        import threading
+
+        self._lock = threading.Lock()
+        self._jpg = None
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_a):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header(
+                    "Content-Type",
+                    "multipart/x-mixed-replace; boundary=frame",
+                )
+                self.end_headers()
+                try:
+                    while True:
+                        with outer._lock:
+                            jpg = outer._jpg
+                        if jpg is not None:
+                            self.wfile.write(b"--frame\r\n")
+                            self.send_header("Content-Type", "image/jpeg")
+                            self.send_header("Content-Length", str(len(jpg)))
+                            self.end_headers()
+                            self.wfile.write(jpg)
+                            self.wfile.write(b"\r\n")
+                        time.sleep(0.06)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+        class Server(socketserver.ThreadingTCPServer):
+            allow_reuse_address = True
+            daemon_threads = True
+
+        self._srv = Server(("0.0.0.0", port), Handler)
+        threading.Thread(target=self._srv.serve_forever, daemon=True).start()
+
+    def push(self, jpg_bytes):
+        with self._lock:
+            self._jpg = jpg_bytes
+
+
 PALM_LANDMARKS = (0, 5, 9, 13, 17)  # wrist + finger MCP knuckles
 PREVIEW = os.path.expanduser("~/.ros/rammp_curobo/palm_view.jpg")
 
@@ -88,13 +146,47 @@ def main():
 
     window = not args.headless
     if window and not os.environ.get("DISPLAY"):
-        print(
-            "No DISPLAY — run from the desktop session (or DISPLAY=:0 ...) "
-            "or use --headless. Falling back to --headless."
-        )
-        window = False
+        # open on the robot's local desktop even when run from SSH
+        os.environ["DISPLAY"] = ":0"
+        xauth = os.path.expanduser("~/.Xauthority")
+        if "XAUTHORITY" not in os.environ and os.path.exists(xauth):
+            os.environ["XAUTHORITY"] = xauth
     if window:
-        cv2.namedWindow("palm_view", cv2.WINDOW_NORMAL)
+        # Verify the X connection FIRST: Qt aborts the whole process on a
+        # failed connect (it does not raise), which would kill the stream.
+        import subprocess
+
+        probe = subprocess.run(
+            ["xset", "q"], capture_output=True, env=os.environ.copy()
+        )
+        if probe.returncode != 0:
+            window = False
+        else:
+            try:
+                cv2.namedWindow("palm_view", cv2.WINDOW_NORMAL)
+                cv2.waitKey(1)
+            except Exception:
+                window = False
+    if not window:
+        print("(no usable X display — use the browser view)")
+
+    stream = None
+    try:
+        stream = _MjpegServer(STREAM_PORT)
+        print("live view: http://192.168.1.11:%d  (any browser)" % STREAM_PORT)
+    except OSError as exc:
+        print("stream port %d unavailable (%s) — browser view off" % (STREAM_PORT, exc))
+
+    # fail fast if the camera driver isn't up
+    t0 = time.monotonic()
+    while node.info is None or not node.frames or node.color is None:
+        rclpy.spin_once(node, timeout_sec=0.2)
+        if time.monotonic() - t0 > 8.0:
+            sys.exit(
+                "No camera frames after 8 s — start the RealSense driver:\n"
+                "  ros2 launch realsense2_camera rs_launch.py "
+                "camera_namespace:=d405 camera_name:=d405"
+            )
 
     have_tf = True
     fps_t, fps_n, fps = time.monotonic(), 0, 0.0
@@ -236,6 +328,10 @@ def main():
             1,
         )
 
+        if stream is not None:
+            ok_enc, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            if ok_enc:
+                stream.push(jpg.tobytes())
         if window:
             cv2.imshow("palm_view", frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
