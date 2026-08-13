@@ -412,11 +412,11 @@ class DepthCameraGrabber(Node):
                 rclpy.spin_once(self, timeout_sec=0.2)
         sys.exit("No TF base_link <- %s — is the arm bringup running?" % frame)
 
-    def camera_pose(self):
+    def camera_pose(self, timeout_s=10.0):
         """(R, t): base_T_optical for the configured camera."""
         if self.cfg.get("tf_frame"):
-            return self.base_from(self.cfg["tf_frame"])
-        R_p, t_p = self.base_from(self.cfg["parent_frame"])
+            return self.base_from(self.cfg["tf_frame"], timeout_s=timeout_s)
+        R_p, t_p = self.base_from(self.cfg["parent_frame"], timeout_s=timeout_s)
         mx = np.asarray(self.cfg["mount_xyz"], dtype=float)
         qx, qy, qz, qw = self.cfg["mount_quat_xyzw"]
         return R_p @ quat_to_mat(qx, qy, qz, qw), R_p @ mx + t_p

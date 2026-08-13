@@ -12,6 +12,7 @@ Opens a window showing the D405 color stream with:
 
     ros2 run rammp_curobo_ros palm_view      # feed appears RIGHT HERE:
                                              #  - kitty terminal: inline video
+                                             #  - any other terminal: ANSI video
                                              #  - X desktop: native window
                                              #  - otherwise: http://<jetson>:8405
     ros2 run rammp_curobo_ros palm_view --headless   # JPEG previews only
@@ -36,6 +37,51 @@ from rammp_curobo_ros.scan_common import DepthCameraGrabber, load_camera_config
 
 MODEL_PATH = os.path.expanduser("~/.ros/rammp_curobo/hand_landmarker.task")
 STREAM_PORT = 8405
+
+
+class _AnsiDisplay:
+    """Live video as truecolor half-block characters — works in ANY modern
+    terminal (VSCode, plain ssh, tmux with truecolor) with zero setup.
+    Each character cell shows two vertical pixels (▀ fg=top, bg=bottom)."""
+
+    @staticmethod
+    def available():
+        return sys.stdout.isatty()
+
+    def __init__(self):
+        self._out = sys.stdout
+        self._out.write("\x1b[2J\x1b[?25l")
+        self._out.flush()
+
+    def show(self, frame_bgr):
+        import shutil
+
+        cols, rows = shutil.get_terminal_size((100, 30))
+        cols = max(40, cols - 1)
+        px_rows = max(20, (rows - 2) * 2)
+        h, w = frame_bgr.shape[:2]
+        scale = min(cols / w, px_rows / h)
+        import cv2
+
+        small = cv2.resize(
+            frame_bgr, (max(2, int(w * scale)), max(2, int(h * scale) // 2 * 2))
+        )
+        rgb = small[:, :, ::-1]
+        top, bot = rgb[0::2], rgb[1::2]
+        lines = ["\x1b[H"]
+        for tr, br in zip(top, bot):
+            cells = [
+                "\x1b[38;2;%d;%d;%dm\x1b[48;2;%d;%d;%dm\u2580"
+                % (t[0], t[1], t[2], b[0], b[1], b[2])
+                for t, b in zip(tr, br)
+            ]
+            lines.append("".join(cells) + "\x1b[0m\x1b[K\n")
+        self._out.write("".join(lines))
+        self._out.flush()
+
+    def close(self):
+        self._out.write("\x1b[0m\x1b[?25h\n")
+        self._out.flush()
 
 
 class _KittyDisplay:
@@ -204,11 +250,13 @@ def main():
                 cv2.waitKey(1)
             except Exception:
                 window = False
-    kitty = None
+    kitty = ansi = None
     if not window and _KittyDisplay.available():
         kitty = _KittyDisplay()
-    if not window and kitty is None:
-        print("(no X display and not a kitty terminal — use the browser view)")
+    elif not window and not args.headless and _AnsiDisplay.available():
+        ansi = _AnsiDisplay()
+    elif not window:
+        print("(no tty — use the browser view)")
 
     stream = None
     try:
@@ -252,10 +300,11 @@ def main():
         R = t = None
         if have_tf:
             try:
-                R, t = node.camera_pose()
+                R, t = node.camera_pose(timeout_s=1.5)
             except SystemExit:
                 have_tf = False
-                print("(no TF — bringup not running; showing camera-frame only)")
+                if kitty is None and ansi is None:
+                    print("(no TF — bringup not running; camera-frame only)")
 
         k = np.array(node.info.k).reshape(3, 3)
         fx, fy, cx, cy = k[0, 0], k[1, 1], k[0, 2], k[1, 2]
@@ -377,11 +426,14 @@ def main():
             if kitty is not None and time.monotonic() - last_save > 0.10:
                 kitty.show(jpg_bytes)
                 last_save = time.monotonic()
+        if ansi is not None and time.monotonic() - last_save > 0.15:
+            ansi.show(frame)
+            last_save = time.monotonic()
         if window:
             cv2.imshow("palm_view", frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
-        elif kitty is None and time.monotonic() - last_save > 0.5:
+        elif kitty is None and ansi is None and time.monotonic() - last_save > 0.5:
             cv2.imwrite(PREVIEW, frame)
             last_save = time.monotonic()
 
@@ -389,6 +441,8 @@ def main():
         cv2.destroyAllWindows()
     if kitty is not None:
         kitty.close()
+    if ansi is not None:
+        ansi.close()
 
 
 if __name__ == "__main__":
