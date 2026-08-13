@@ -435,7 +435,11 @@ class RammpCuroboNode(Node):
             if res is None or not res.ok:
                 self.get_logger().error("JTC %s failed — restart the bringup" % field)
                 return
-            time.sleep(0.5)
+            time.sleep(1.0)
+        # The arm needs settling time after a fault clear + servoing-mode
+        # re-entry: an immediate retry died again in the field (2026-08-13)
+        # while the same sequence with generous pauses recovered fine.
+        time.sleep(2.5)
         self.get_logger().info(
             "servoing recovery complete — the next execution attempt " "should move"
         )

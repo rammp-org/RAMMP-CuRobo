@@ -253,7 +253,7 @@ def main():
                 "  %s: no-motion fault, recovered — retrying (%d/2)"
                 % (label, attempt + 1)
             )
-            time.sleep(1.2)  # let the node's servoing recovery settle
+            time.sleep(3.0)  # recovery + post-fault arm settling need real time
         if not ok:
             sys.exit("segment %s failed" % label)
         print("  %s reached in %.2f s" % (label, time.monotonic() - seg_t))
