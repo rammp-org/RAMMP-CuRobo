@@ -1,26 +1,17 @@
 #!/usr/bin/env python3
 """Live camera view with palm detection overlay — see what the demo sees.
 
-Opens a window showing the D405 color stream with:
-  * a green box + landmarks around each detected hand (MediaPipe Hands),
-    the palm center dotted, its 3D position (camera depth + TF -> base
-    frame) and distance printed on the box,
-  * a blue crosshair where the DEPTH-BLOB detector (what palm_demo
-    actually targets) currently lands — if green dot and blue crosshair
-    agree, the demo will touch where you think it will,
-  * the workspace-gate verdict for the would-be target.
-
     ros2 run rammp_curobo_ros palm_view      # feed appears RIGHT HERE:
                                              #  - kitty terminal: inline video
                                              #  - any other terminal: ANSI video
                                              #  - X desktop: native window
-                                             #  - otherwise: http://<jetson>:8405
+                                             #  - plus http://<jetson>:8405 always
     ros2 run rammp_curobo_ros palm_view --headless   # JPEG previews only
 
-The live view is always served at http://192.168.1.11:8405 — open it in
-any browser (laptop next to VSCode works). Needs the RealSense driver
-running; the arm bringup is optional (without TF the 3D readout stays in
-the camera frame). Ctrl+C quits ('q' in the native window, if any).
+Green box + landmarks = MediaPipe hand, dot = palm center (3D position
+and workspace-gate verdict when the arm bringup provides TF). Blue
+crosshair = the depth-blob detector (palm_demo's fallback targeting).
+Ctrl+C quits ('q' in the native window, if any).
 """
 
 import argparse
@@ -30,176 +21,23 @@ import time
 
 import numpy as np
 import rclpy
-from sensor_msgs.msg import Image
 
-from rammp_curobo_ros.palm_demo import detect_palm, palm_target_ok
-from rammp_curobo_ros.scan_common import DepthCameraGrabber, load_camera_config
+from rammp_curobo_ros.palm_common import (
+    STREAM_PORT,
+    ColorDepthGrabber,
+    _MjpegServer,
+    close_display,
+    depth_at,
+    detect_palm,
+    landmark_palms,
+    make_hands,
+    palm_target_ok,
+    pick_display,
+    show_frame,
+)
+from rammp_curobo_ros.scan_common import load_camera_config
 
-MODEL_PATH = os.path.expanduser("~/.ros/rammp_curobo/hand_landmarker.task")
-STREAM_PORT = 8405
-
-
-class _AnsiDisplay:
-    """Live video as truecolor half-block characters — works in ANY modern
-    terminal (VSCode, plain ssh, tmux with truecolor) with zero setup.
-    Each character cell shows two vertical pixels (▀ fg=top, bg=bottom)."""
-
-    @staticmethod
-    def available():
-        return sys.stdout.isatty()
-
-    def __init__(self):
-        self._out = sys.stdout
-        self._out.write("\x1b[2J\x1b[?25l")
-        self._out.flush()
-
-    def show(self, frame_bgr):
-        import shutil
-
-        cols, rows = shutil.get_terminal_size((100, 30))
-        cols = max(40, cols - 1)
-        px_rows = max(20, (rows - 2) * 2)
-        h, w = frame_bgr.shape[:2]
-        scale = min(cols / w, px_rows / h)
-        import cv2
-
-        small = cv2.resize(
-            frame_bgr, (max(2, int(w * scale)), max(2, int(h * scale) // 2 * 2))
-        )
-        rgb = small[:, :, ::-1]
-        top, bot = rgb[0::2], rgb[1::2]
-        lines = ["\x1b[H"]
-        for tr, br in zip(top, bot):
-            cells = [
-                "\x1b[38;2;%d;%d;%dm\x1b[48;2;%d;%d;%dm\u2580"
-                % (t[0], t[1], t[2], b[0], b[1], b[2])
-                for t, b in zip(tr, br)
-            ]
-            lines.append("".join(cells) + "\x1b[0m\x1b[K\n")
-        self._out.write("".join(lines))
-        self._out.flush()
-
-    def close(self):
-        self._out.write("\x1b[0m\x1b[?25h\n")
-        self._out.flush()
-
-
-class _KittyDisplay:
-    """Render frames INSIDE the terminal via the kitty graphics protocol.
-
-    Works over SSH (kitty's ssh kitten forwards the protocol), no X, no
-    browser: the live feed appears in the terminal the command ran in.
-    Only activated when the terminal really is kitty (TERM check + tty).
-    """
-
-    @staticmethod
-    def available():
-        return sys.stdout.isatty() and "kitty" in os.environ.get("TERM", "")
-
-    def __init__(self):
-        self._out = sys.stdout
-        self._out.write("\x1b[2J\x1b[H\x1b[?25l")  # clear, home, hide cursor
-        self._out.flush()
-
-    def show(self, jpg_bytes):
-        import base64
-
-        b64 = base64.b64encode(jpg_bytes).decode()
-        out = ["\x1b[H\x1b_Ga=d,q=2\x1b\\"]  # home + delete old image
-        first = True
-        while b64:
-            chunk, b64 = b64[:4096], b64[4096:]
-            ctrl = "a=T,f=100,q=2," if first else ""
-            out.append("\x1b_G%sm=%d;%s\x1b\\" % (ctrl, 1 if b64 else 0, chunk))
-            first = False
-        self._out.write("".join(out))
-        self._out.flush()
-
-    def close(self):
-        self._out.write("\x1b_Ga=d,q=2\x1b\\\x1b[?25h\n")  # cleanup, cursor back
-        self._out.flush()
-
-
-class _MjpegServer:
-    """Minimal multipart-JPEG streamer: open http://<host>:<port> live."""
-
-    def __init__(self, port):
-        import http.server
-        import socketserver
-        import threading
-
-        self._lock = threading.Lock()
-        self._jpg = None
-        outer = self
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def log_message(self, *_a):
-                pass
-
-            def do_GET(self):
-                self.send_response(200)
-                self.send_header(
-                    "Content-Type",
-                    "multipart/x-mixed-replace; boundary=frame",
-                )
-                self.end_headers()
-                try:
-                    while True:
-                        with outer._lock:
-                            jpg = outer._jpg
-                        if jpg is not None:
-                            self.wfile.write(b"--frame\r\n")
-                            self.send_header("Content-Type", "image/jpeg")
-                            self.send_header("Content-Length", str(len(jpg)))
-                            self.end_headers()
-                            self.wfile.write(jpg)
-                            self.wfile.write(b"\r\n")
-                        time.sleep(0.06)
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
-
-        class Server(socketserver.ThreadingTCPServer):
-            allow_reuse_address = True
-            daemon_threads = True
-
-        self._srv = Server(("0.0.0.0", port), Handler)
-        threading.Thread(target=self._srv.serve_forever, daemon=True).start()
-
-    def push(self, jpg_bytes):
-        with self._lock:
-            self._jpg = jpg_bytes
-
-
-PALM_LANDMARKS = (0, 5, 9, 13, 17)  # wrist + finger MCP knuckles
 PREVIEW = os.path.expanduser("~/.ros/rammp_curobo/palm_view.jpg")
-
-
-class PalmViewer(DepthCameraGrabber):
-    """Grabber (depth + TF) extended with the color stream."""
-
-    def __init__(self, camera_cfg, color_topic):
-        super().__init__(camera_cfg, node_name="rammp_curobo_palm_view")
-        self.color = None
-        self.create_subscription(Image, color_topic, self._color_cb, 5)
-
-    def _color_cb(self, msg):
-        if msg.encoding not in ("rgb8", "bgr8"):
-            self.get_logger().error("unsupported color encoding %s" % msg.encoding)
-            return
-        img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
-        self.color = (img, msg.encoding)
-
-
-def make_hands():
-    """MediaPipe Hands detector (legacy pipeline: models ship in the wheel)."""
-    import mediapipe as mp
-
-    return mp.solutions.hands.Hands(
-        static_image_mode=False,
-        max_num_hands=2,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
-    )
 
 
 def main():
@@ -209,63 +47,36 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--camera", default="camera_d405_wrist.yaml")
-    ap.add_argument(
-        "--color-topic",
-        default="/d405/d405/color/image_rect_raw",
-        help="RealSense color stream (the D405's color IS its left depth "
-        "imager, so color and depth pixels are natively aligned)",
-    )
-    ap.add_argument(
-        "--headless",
-        action="store_true",
-        help="no window: write %s about twice a second" % PREVIEW,
-    )
+    ap.add_argument("--color-topic", default="/d405/d405/color/image_rect_raw")
+    ap.add_argument("--headless", action="store_true")
     args = ap.parse_args()
 
     rclpy.init()
-    cfg = load_camera_config(args.camera)
-    node = PalmViewer(cfg, args.color_topic)
+    node = ColorDepthGrabber(load_camera_config(args.camera), args.color_topic)
     hands = make_hands()
 
-    window = not args.headless
-    if window and not os.environ.get("DISPLAY"):
-        # open on the robot's local desktop even when run from SSH
-        os.environ["DISPLAY"] = ":0"
-        xauth = os.path.expanduser("~/.Xauthority")
-        if "XAUTHORITY" not in os.environ and os.path.exists(xauth):
-            os.environ["XAUTHORITY"] = xauth
-    if window:
-        # Verify the X connection FIRST: Qt aborts the whole process on a
-        # failed connect (it does not raise), which would kill the stream.
+    # display tiers: X window if a desktop exists, else kitty/ANSI inline
+    window = False
+    if not args.headless and os.environ.get("DISPLAY"):
         import subprocess
 
-        probe = subprocess.run(
-            ["xset", "q"], capture_output=True, env=os.environ.copy()
-        )
-        if probe.returncode != 0:
-            window = False
-        else:
+        if subprocess.run(["xset", "q"], capture_output=True).returncode == 0:
             try:
                 cv2.namedWindow("palm_view", cv2.WINDOW_NORMAL)
                 cv2.waitKey(1)
+                window = True
             except Exception:
                 window = False
-    kitty = ansi = None
-    if not window and _KittyDisplay.available():
-        kitty = _KittyDisplay()
-    elif not window and not args.headless and _AnsiDisplay.available():
-        ansi = _AnsiDisplay()
-    elif not window:
-        print("(no tty — use the browser view)")
+    kitty, ansi = pick_display(headless=args.headless or window)
 
     stream = None
     try:
         stream = _MjpegServer(STREAM_PORT)
-        print("live view: http://192.168.1.11:%d  (any browser)" % STREAM_PORT)
+        if window or (kitty is None and ansi is None):
+            print("live view: http://192.168.1.11:%d" % STREAM_PORT)
     except OSError as exc:
-        print("stream port %d unavailable (%s) — browser view off" % (STREAM_PORT, exc))
+        print("stream port %d unavailable (%s)" % (STREAM_PORT, exc))
 
-    # fail fast if the camera driver isn't up
     t0 = time.monotonic()
     while node.info is None or not node.frames or node.color is None:
         rclpy.spin_once(node, timeout_sec=0.2)
@@ -277,13 +88,9 @@ def main():
             )
 
     have_tf = True
+    throttle = [0.0]
     fps_t, fps_n, fps = time.monotonic(), 0, 0.0
     last_save = 0.0
-    print(
-        "palm_view running — 'q' quits"
-        if window
-        else "palm_view headless — Ctrl+C quits"
-    )
 
     while rclpy.ok():
         rclpy.spin_once(node, timeout_sec=0.05)
@@ -294,74 +101,50 @@ def main():
         depth = node.frames[-1]
         del node.frames[:-1]
         rgb = img if enc == "rgb8" else img[:, :, ::-1]
-        frame = np.ascontiguousarray(rgb[:, :, ::-1])  # BGR for OpenCV drawing
+        frame = np.ascontiguousarray(rgb[:, :, ::-1])
 
-        # base_T_camera (needs the bringup for TF; degrade gracefully)
         R = t = None
         if have_tf:
             try:
                 R, t = node.camera_pose(timeout_s=1.5)
             except SystemExit:
                 have_tf = False
-                if kitty is None and ansi is None:
-                    print("(no TF — bringup not running; camera-frame only)")
 
         k = np.array(node.info.k).reshape(3, 3)
         fx, fy, cx, cy = k[0, 0], k[1, 1], k[0, 2], k[1, 2]
         h_img, w_img = rgb.shape[:2]
         sx, sy = depth.shape[1] / w_img, depth.shape[0] / h_img
 
-        def pixel_to_3d(u, v):
-            """(u, v) color pixel -> camera / base point via median depth."""
-            du, dv = int(u * sx), int(v * sy)
-            patch = depth[max(0, dv - 3) : dv + 4, max(0, du - 3) : du + 4]
-            patch = patch[(patch > 0.05) & np.isfinite(patch)]
-            if len(patch) < 5:
-                return None, None
-            z = float(np.median(patch))
-            cam = np.array([(u - cx) / fx * z, (v - cy) / fy * z, z])
-            base = (R @ cam + t) if R is not None else None
-            return cam, base
-
         # --- MediaPipe hands (green)
-        res = hands.process(rgb)
-        if res.multi_hand_landmarks:
-            for hand in res.multi_hand_landmarks:
-                us = [lm.x * w_img for lm in hand.landmark]
-                vs = [lm.y * h_img for lm in hand.landmark]
-                x0, y0 = int(max(min(us) - 10, 0)), int(max(min(vs) - 10, 0))
-                x1, y1 = (
-                    int(min(max(us) + 10, w_img - 1)),
-                    int(min(max(vs) + 10, h_img - 1)),
-                )
-                pu = np.mean([us[i] for i in PALM_LANDMARKS])
-                pv = np.mean([vs[i] for i in PALM_LANDMARKS])
-                cam, base = pixel_to_3d(pu, pv)
-                cv2.rectangle(frame, (x0, y0), (x1, y1), (0, 200, 0), 2)
-                cv2.circle(frame, (int(pu), int(pv)), 6, (0, 200, 0), -1)
-                for u, v in zip(us, vs):
-                    cv2.circle(frame, (int(u), int(v)), 2, (0, 150, 0), -1)
-                if cam is not None:
-                    label = "palm %.2f m" % cam[2]
-                    if base is not None:
-                        ok, why = palm_target_ok(base)
-                        label += "  base[%.2f %.2f %.2f] %s" % (
-                            base[0],
-                            base[1],
-                            base[2],
-                            "OK" if ok else "REFUSED: " + why,
-                        )
-                    cv2.putText(
-                        frame,
-                        label,
-                        (x0, max(y0 - 8, 14)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
-                        (0, 220, 0),
-                        1,
+        for (pu, pv), (x0, y0, x1, y1), lms in landmark_palms(hands, rgb):
+            z = depth_at(depth, pu, pv, sx, sy)
+            cv2.rectangle(frame, (x0, y0), (x1, y1), (0, 200, 0), 2)
+            cv2.circle(frame, (int(pu), int(pv)), 6, (0, 200, 0), -1)
+            for u, v in lms:
+                cv2.circle(frame, (int(u), int(v)), 2, (0, 150, 0), -1)
+            if z is not None:
+                cam = np.array([(pu - cx) / fx * z, (pv - cy) / fy * z, z])
+                label = "palm %.2f m" % z
+                if R is not None:
+                    base = R @ cam + t
+                    ok, why = palm_target_ok(base)
+                    label += "  base[%.2f %.2f %.2f] %s" % (
+                        base[0],
+                        base[1],
+                        base[2],
+                        "OK" if ok else "REFUSED: " + why,
                     )
+                cv2.putText(
+                    frame,
+                    label,
+                    (x0, max(y0 - 8, 14)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 220, 0),
+                    1,
+                )
 
-        # --- depth-blob target (blue): what palm_demo would aim at
+        # --- depth-blob target (blue): palm_demo's fallback detector
         if R is not None:
             vv, uu = np.mgrid[0 : depth.shape[0] : 2, 0 : depth.shape[1] : 2]
             z = depth[::2, ::2]
@@ -391,16 +174,6 @@ def main():
                             26,
                             3,
                         )
-                        ok, why = palm_target_ok(blob)
-                        cv2.putText(
-                            frame,
-                            "demo target %s" % ("OK" if ok else "refused"),
-                            (ub + 14, vb - 8),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            (255, 140, 0),
-                            1,
-                        )
 
         fps_n += 1
         if time.monotonic() - fps_t >= 1.0:
@@ -408,8 +181,8 @@ def main():
             fps_t, fps_n = time.monotonic(), 0
         cv2.putText(
             frame,
-            "%.0f fps | green=MediaPipe hand  blue+=demo depth target%s"
-            % (fps, "" if R is not None else " | NO TF (camera frame only)"),
+            "%.0f fps | green=hand  blue+=depth target%s"
+            % (fps, "" if R is not None else " | NO TF"),
             (8, h_img - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
@@ -417,18 +190,7 @@ def main():
             1,
         )
 
-        jpg_bytes = None
-        ok_enc, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-        if ok_enc:
-            jpg_bytes = jpg.tobytes()
-            if stream is not None:
-                stream.push(jpg_bytes)
-            if kitty is not None and time.monotonic() - last_save > 0.10:
-                kitty.show(jpg_bytes)
-                last_save = time.monotonic()
-        if ansi is not None and time.monotonic() - last_save > 0.15:
-            ansi.show(frame)
-            last_save = time.monotonic()
+        show_frame(frame, kitty, ansi, stream, throttle)
         if window:
             cv2.imshow("palm_view", frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
@@ -439,10 +201,7 @@ def main():
 
     if window:
         cv2.destroyAllWindows()
-    if kitty is not None:
-        kitty.close()
-    if ansi is not None:
-        ansi.close()
+    close_display(kitty, ansi)
 
 
 if __name__ == "__main__":

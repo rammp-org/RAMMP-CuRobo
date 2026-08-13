@@ -126,7 +126,7 @@ def test_wrapped_joint_report_is_not_stale():
 
 
 def test_palm_target_gate():
-    from rammp_curobo_ros.palm_demo import palm_target_ok
+    from rammp_curobo_ros.palm_common import palm_target_ok
 
     ok, _ = palm_target_ok([0.55, 0.1, 0.45])
     assert ok
@@ -140,7 +140,7 @@ def test_palm_target_gate():
 def test_palm_detect_prefers_nearest_blob():
     import numpy as np
 
-    from rammp_curobo_ros.palm_demo import detect_palm
+    from rammp_curobo_ros.palm_common import detect_palm
 
     rng = np.random.default_rng(1)
     hand = rng.normal([0.55, 0.05, 0.45], 0.02, size=(400, 3))

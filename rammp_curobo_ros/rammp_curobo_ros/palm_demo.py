@@ -1,31 +1,32 @@
 #!/usr/bin/env python3
-"""Palm-touch demo: detect a presented palm, plan to it, touch it on cue.
+"""Palm-touch demo with live video — detect, lock, cue, touch, retreat.
 
-Flow (loops until 'q'):
-  home -> D405 depth finds the nearest hand-sized blob in the approach
-  corridor -> palm point gated against the workspace -> cuRobo plans
-  home->standoff and standoff->touch -> operator types 'go' -> FAST
-  transit to the standoff, then SLOW monitored final approach that stops
-  on wrist-torque contact (or on arrival) -> hold -> retreat home.
+One command, everything on screen the whole time (video renders in your
+terminal / browser exactly like palm_view):
 
-    ros2 run rammp_curobo_ros palm_demo                    # detect+plan only
-    ros2 run rammp_curobo_ros palm_demo --execute          # full demo
+    ros2 run rammp_curobo_ros palm_demo --execute
 
-Safety (do not weaken):
-  * The final (contact-capable) segment is hard-capped at slow speed and
-    torque-monitored — only the transit to the standoff is fast, and
-    transit speed is clamped to 0.6.
-  * The palm target must sit inside a sane workspace window (above the
-    table, inside reach, away from the base) or the round is refused.
-  * The person is told to HOLD STILL after 'go' — the plan targets where
-    the palm WAS. Moving the hand away is the human abort, on top of the
-    operator's Ctrl+C (cancel -> arm holds) and the physical e-stop.
-  * Requires the planner node with execute:=true and a real-bench world
-    (never the sim kitchen).
+Flow, shown live on the overlay:
+  SCANNING   present an open palm 0.35-0.8 m in front of the camera;
+             MediaPipe finds it, depth+TF give its 3D point, the
+             workspace gate vets it
+  LOCKED     the palm held still ~1 s: target frozen, plan computed —
+             type  go<enter>  to run (anything else rescans)
+  TRANSIT    fast move to a standoff short of the palm (clamped 0.6)
+  TOUCH      slow monitored final approach (hard-capped 0.15) that stops
+             the instant wrist torque feels contact
+  RETREAT    back to home, then scanning again — next person
+
+Safety (do not weaken): explicit 'go' per round; person HOLDS STILL after
+'go' (the plan targets where the palm WAS; if it moved >6 cm by then the
+round aborts) — moving the hand away is the human abort; Ctrl+C cancels
+the active goal (arm stops and holds); a human holds the physical e-stop.
+Requires the planner node with execute:=true and a real-bench world.
 """
 
 import argparse
 import math
+import select
 import sys
 import threading
 import time
@@ -37,9 +38,20 @@ from sensor_msgs.msg import JointState
 
 from rammp_curobo.geometry import euler_deg_to_quat_xyzw
 from rammp_curobo_interfaces.action import ExecuteTrajectory, PlanToJoints, PlanToPose
+from rammp_curobo_ros.palm_common import (
+    STREAM_PORT,
+    ColorDepthGrabber,
+    _MjpegServer,
+    close_display,
+    depth_at,
+    landmark_palms,
+    make_hands,
+    palm_target_ok,
+    pick_display,
+    show_frame,
+)
 from rammp_curobo_ros.scan_common import (
     NODE_NAMESPACE,
-    DepthCameraGrabber,
     load_camera_config,
     spin_until_done,
 )
@@ -47,57 +59,13 @@ from rammp_curobo_ros.scan_common import (
 HOME = [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]
 JOINTS = ["joint_%d" % i for i in range(1, 8)]
 
-# Contact-capable segment limits — clamped in code, not just defaults.
 FINAL_SCALE_CAP = 0.15
 TRANSIT_SCALE_CAP = 0.6
 
 
-def palm_target_ok(p, table_z=0.10, r_min=0.35, r_max=0.80, z_max=0.85):
-    """Workspace gate for a palm point [x, y, z] in the base frame.
-
-    Above the table by a margin, inside the comfortable reach annulus,
-    not behind the arm (the demo corridor is the front half-plane).
-    Returns (ok, reason).
-    """
-    x, y, z = (float(v) for v in p)
-    r = math.hypot(x, y)
-    if z < table_z:
-        return False, "palm too low (z=%.2f < %.2f — near the table)" % (z, table_z)
-    if z > z_max:
-        return False, "palm too high (z=%.2f)" % z
-    if r < r_min:
-        return False, "palm too close to the base (r=%.2f)" % r
-    if r > r_max:
-        return False, "palm out of reach (r=%.2f)" % r
-    if x < 0.15:
-        return False, "palm outside the frontal demo corridor (x=%.2f)" % x
-    return True, ""
-
-
-def detect_palm(points, min_pts=150, cluster_r=0.06):
-    """Nearest coherent blob's center from base-frame points (N, 3).
-
-    The person presents an open palm facing the arm inside the corridor;
-    the nearest cluster of sufficient size is the hand, its centroid the
-    palm. Returns (center [3] or None, n_points, reason).
-    """
-    if len(points) < min_pts:
-        return None, len(points), "not enough points in the corridor"
-    r = np.hypot(points[:, 0], points[:, 1])
-    order = np.argsort(r)
-    seed = points[order[: max(min_pts // 3, 30)]].mean(axis=0)
-    for _ in range(4):  # few mean-shift steps around the nearest surface
-        d = np.linalg.norm(points - seed, axis=1)
-        members = points[d < cluster_r * 2]
-        if len(members) < min_pts:
-            return None, len(members), "nearest blob too small (%d pts)" % len(members)
-        seed = members.mean(axis=0)
-    return seed, len(members), ""
-
-
-class PalmDemo(DepthCameraGrabber):
-    def __init__(self, camera_cfg):
-        super().__init__(camera_cfg, node_name="rammp_curobo_palm_demo")
+class PalmDemo(ColorDepthGrabber):
+    def __init__(self, camera_cfg, color_topic):
+        super().__init__(camera_cfg, color_topic)
         self._js_lock = threading.Lock()
         self._effort = None
         self._q = None
@@ -141,15 +109,14 @@ class PalmDemo(DepthCameraGrabber):
         with self._js_lock:
             return None if self._effort is None else list(self._effort[3:])
 
-    # ------------------------------------------------------------ planner I/O
     def _result(self, client, goal, timeout_s):
         if not client.wait_for_server(timeout_sec=5.0):
             sys.exit("planner node not running (execute:=true needed)")
         send = spin_until_done(self, client.send_goal_async(goal), 10.0)
         if send is None or not send.accepted:
-            return None, None
+            return None
         wrapped = spin_until_done(self, send.get_result_async(), timeout_s)
-        return (None, None) if wrapped is None else (wrapped.result, send)
+        return None if wrapped is None else wrapped.result
 
     def plan_to(self, pos, quat_xyzw):
         g = PlanToPose.Goal()
@@ -160,18 +127,18 @@ class PalmDemo(DepthCameraGrabber):
             g.target.orientation.z,
             g.target.orientation.w,
         ) = quat_xyzw
-        res, _ = self._result(self.plan_pose, g, 120.0)
-        return res
+        return self._result(self.plan_pose, g, 120.0)
 
     def plan_home(self):
-        res, _ = self._result(
+        return self._result(
             self.plan_joints, PlanToJoints.Goal(target_joints=HOME), 120.0
         )
-        return res
 
-    def run_traj(self, traj, scale, touch_nm=None):
-        """Execute; if touch_nm is set, cancel on wrist-torque contact.
+    def run_traj(self, traj, scale, touch_nm=None, on_tick=None):
+        """Execute; cancel on wrist-torque contact when touch_nm is set.
 
+        on_tick(): called every loop so the video keeps streaming during
+        motion. Ctrl+C cancels the controller goal (arm stops and holds).
         Returns 'arrived' | 'touch' | 'failed'.
         """
         goal = ExecuteTrajectory.Goal(trajectory=traj, speed_scale=float(scale))
@@ -184,190 +151,294 @@ class PalmDemo(DepthCameraGrabber):
 
         baseline, contact = None, False
         t0 = time.monotonic()
-        while not result_future.done():
-            rclpy.spin_once(self, timeout_sec=0.05)
-            if touch_nm is not None:
-                eff = self.wrist_effort()
-                if eff is not None:
-                    if baseline is None and time.monotonic() - t0 > 0.4:
-                        baseline = eff
-                    elif baseline is not None:
-                        dev = max(abs(a - b) for a, b in zip(eff, baseline))
-                        if dev > touch_nm:
-                            contact = True
-                            print(
-                                "  contact felt (wrist torque +%.1f Nm) — stopping"
-                                % dev
-                            )
-                            spin_until_done(self, send.cancel_goal_async(), 3.0)
-                            spin_until_done(self, result_future, 10.0)
-                            return "touch"
-            if time.monotonic() - t0 > 240:
-                spin_until_done(self, send.cancel_goal_async(), 3.0)
-                return "failed"
+        try:
+            while not result_future.done():
+                rclpy.spin_once(self, timeout_sec=0.05)
+                if on_tick is not None:
+                    on_tick()
+                if touch_nm is not None:
+                    eff = self.wrist_effort()
+                    if eff is not None:
+                        if baseline is None and time.monotonic() - t0 > 0.4:
+                            baseline = eff
+                        elif baseline is not None:
+                            dev = max(abs(a - b) for a, b in zip(eff, baseline))
+                            if dev > touch_nm:
+                                contact = True
+                                spin_until_done(self, send.cancel_goal_async(), 3.0)
+                                spin_until_done(self, result_future, 10.0)
+                                return "touch"
+                if time.monotonic() - t0 > 240:
+                    spin_until_done(self, send.cancel_goal_async(), 3.0)
+                    return "failed"
+        except KeyboardInterrupt:
+            spin_until_done(self, send.cancel_goal_async(), 3.0)
+            print("\nCtrl+C — goal cancelled, arm holds")
+            raise
         wrapped = result_future.result()
         if wrapped is not None and wrapped.result.success:
             return "arrived"
         return "touch" if contact else "failed"
 
 
+def read_key_line():
+    """Non-blocking: a full line from stdin if one is waiting, else None."""
+    if select.select([sys.stdin], [], [], 0)[0]:
+        return sys.stdin.readline().strip()
+    return None
+
+
 def main():
+    import cv2
+
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--camera", default="camera_d405_wrist.yaml")
-    ap.add_argument(
-        "--execute",
-        action="store_true",
-        help="actually move (default: detect + plan + print only)",
-    )
+    ap.add_argument("--color-topic", default="/d405/d405/color/image_rect_raw")
+    ap.add_argument("--execute", action="store_true", help="allow motion")
+    ap.add_argument("--headless", action="store_true", help="no terminal video")
     ap.add_argument(
         "--transit-scale",
         type=float,
         default=0.5,
-        help="speed for home<->standoff transit (clamped to %.1f)" % TRANSIT_SCALE_CAP,
+        help="home<->standoff speed (clamped to %.1f)" % TRANSIT_SCALE_CAP,
     )
+    ap.add_argument("--touch-nm", type=float, default=3.0)
+    ap.add_argument("--standoff", type=float, default=0.12)
+    ap.add_argument("--touch-back", type=float, default=0.015)
     ap.add_argument(
-        "--touch-nm",
+        "--stability",
         type=float,
-        default=3.0,
-        help="wrist-torque deviation that counts as palm contact",
-    )
-    ap.add_argument(
-        "--standoff",
-        type=float,
-        default=0.12,
-        help="fast/slow handover distance short of the palm (m)",
-    )
-    ap.add_argument(
-        "--touch-back",
-        type=float,
-        default=0.015,
-        help="stop the fingertip midpoint this short of the palm surface (m)",
+        default=1.0,
+        help="seconds the palm must hold still to lock",
     )
     args = ap.parse_args()
     transit = min(max(args.transit_scale, 0.1), TRANSIT_SCALE_CAP)
 
     rclpy.init()
-    node = PalmDemo(load_camera_config(args.camera))
+    node = PalmDemo(load_camera_config(args.camera), args.color_topic)
+    hands = make_hands()
+    kitty, ansi = pick_display(headless=args.headless)
+    stream = None
+    try:
+        stream = _MjpegServer(STREAM_PORT)
+    except OSError:
+        pass
+    throttle = [0.0]
+
+    state = {"name": "SCANNING", "msg": ""}
+    lock = {"target": None, "since": None, "history": []}
+
+    def annotate_and_show():
+        """Grab the newest frame, draw hands + state banner, display."""
+        if node.color is None or not node.frames or node.info is None:
+            return None
+        img, enc = node.color
+        node.color = None
+        depth = node.frames[-1]
+        del node.frames[:-1]
+        rgb = img if enc == "rgb8" else img[:, :, ::-1]
+        frame = np.ascontiguousarray(rgb[:, :, ::-1])
+        k = np.array(node.info.k).reshape(3, 3)
+        fx, fy, cx, cy = k[0, 0], k[1, 1], k[0, 2], k[1, 2]
+        h_img, w_img = rgb.shape[:2]
+        sx, sy = depth.shape[1] / w_img, depth.shape[0] / h_img
+
+        palms = []
+        try:
+            R, t = node.camera_pose(timeout_s=1.5)
+        except SystemExit:
+            R = t = None
+        for (pu, pv), (x0, y0, x1, y1), _lms in landmark_palms(hands, rgb):
+            z = depth_at(depth, pu, pv, sx, sy)
+            base = None
+            if z is not None and R is not None:
+                cam = np.array([(pu - cx) / fx * z, (pv - cy) / fy * z, z])
+                base = R @ cam + t
+                palms.append(base)
+            cv2.rectangle(frame, (x0, y0), (x1, y1), (0, 200, 0), 2)
+            cv2.circle(frame, (int(pu), int(pv)), 6, (0, 200, 0), -1)
+            if base is not None:
+                ok, why = palm_target_ok(base)
+                cv2.putText(
+                    frame,
+                    "[%.2f %.2f %.2f] %s"
+                    % (base[0], base[1], base[2], "OK" if ok else why),
+                    (x0, max(y0 - 8, 14)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 220, 0),
+                    1,
+                )
+        banner = state["name"] + ("  " + state["msg"] if state["msg"] else "")
+        cv2.rectangle(frame, (0, 0), (w_img, 26), (40, 40, 40), -1)
+        cv2.putText(
+            frame,
+            banner,
+            (8, 19),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 255),
+            2,
+        )
+        show_frame(frame, kitty, ansi, stream, throttle)
+        return palms
 
     print(
-        "PALM DEMO — person: stand at the table edge, present an OPEN PALM\n"
-        "facing the arm, 0.4-0.7 m from the camera, and HOLD STILL once the\n"
-        "operator types 'go'. Moving your hand away is your abort.\n"
-        "Operator: hand on the physical e-stop; Ctrl+C stops and holds."
+        "PALM DEMO — person: open palm facing the arm, 0.4-0.7 m out, HOLD\n"
+        "STILL once 'go' is typed (moving away = your abort). Operator: hand\n"
+        "on the e-stop; type go<enter> when LOCKED; q<enter> quits."
+        + ("" if args.execute else "\n(DRY-RUN: no --execute, nothing moves)")
     )
-
-    node.joints()  # wait for the bringup
     if node.wrist_effort() is None:
-        print(
-            "WARNING: /joint_states carries no effort values — torque touch "
-            "detection is UNAVAILABLE; the final approach will stop at the "
-            "palm plane by position only."
-        )
+        node.joints()
+        if node.wrist_effort() is None:
+            print(
+                "WARNING: no effort in /joint_states — touch detection by "
+                "position only"
+            )
 
-    while True:
-        # 1. be at home (the detection vantage)
-        q = node.joints()
-        if max(abs(a - b) for a, b in zip(q, HOME)) > 0.1:
-            print("returning to home vantage...")
+    while rclpy.ok():
+        rclpy.spin_once(node, timeout_sec=0.05)
+        key = read_key_line()
+        if key == "q":
+            break
+
+        # keep the arm at the home vantage while scanning
+        q_now = node.joints()
+        if (
+            state["name"] == "SCANNING"
+            and max(abs(a - b) for a, b in zip(q_now, HOME)) > 0.1
+        ):
+            state.update(name="RETREAT", msg="returning to home vantage")
+            annotate_and_show()
             plan = node.plan_home()
             if plan is None or not plan.success:
-                sys.exit(
-                    "cannot plan home: %s" % (plan.message if plan else "no answer")
+                sys.exit("cannot plan home")
+            if args.execute:
+                node.run_traj(plan.trajectory, transit, on_tick=annotate_and_show)
+            state.update(name="SCANNING", msg="")
+            continue
+
+        palms = annotate_and_show()
+        if palms is None:
+            continue
+
+        if state["name"] == "SCANNING":
+            good = [p for p in palms if palm_target_ok(p)[0]]
+            if not good:
+                state["msg"] = "present an open palm"
+                lock.update(target=None, since=None, history=[])
+                continue
+            p = good[0]
+            hist = lock["history"]
+            hist.append((time.monotonic(), p))
+            del hist[: max(0, len(hist) - 30)]
+            if lock["since"] is None:
+                lock.update(since=time.monotonic())
+            recent = [h for h in hist if h[0] > time.monotonic() - args.stability]
+            drift = (
+                max(np.linalg.norm(np.asarray(a[1]) - np.asarray(p)) for a in recent)
+                if recent
+                else 1.0
+            )
+            if drift > 0.03:
+                lock.update(since=time.monotonic())
+                state["msg"] = "hold still..."
+                continue
+            if time.monotonic() - lock["since"] < args.stability:
+                state["msg"] = "hold still..."
+                continue
+            # locked: freeze target, plan the transit
+            target = np.mean([h[1] for h in recent], axis=0)
+            lock["target"] = target
+            yaw = math.degrees(math.atan2(target[1], target[0]))
+            quat = list(euler_deg_to_quat_xyzw([0.0, 90.0, yaw]))
+            ux, uy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+            touch = [
+                target[0] - args.touch_back * ux,
+                target[1] - args.touch_back * uy,
+                target[2],
+            ]
+            standoff = [
+                target[0] - (args.standoff + args.touch_back) * ux,
+                target[1] - (args.standoff + args.touch_back) * uy,
+                target[2],
+            ]
+            state.update(name="PLANNING", msg="")
+            annotate_and_show()
+            plan_a = node.plan_to(standoff, quat)
+            if plan_a is None or not plan_a.success:
+                state.update(name="SCANNING", msg="unreachable — move the palm")
+                lock.update(target=None, since=None, history=[])
+                continue
+            lock.update(quat=quat, touch=touch, standoff=standoff, plan_a=plan_a)
+            state.update(
+                name="LOCKED",
+                msg="[%.2f %.2f %.2f] — type go<enter>" % tuple(target),
+            )
+            continue
+
+        if state["name"] == "LOCKED":
+            # unlock if the palm wandered off before the cue
+            good = [p for p in palms if palm_target_ok(p)[0]]
+            if good and np.linalg.norm(np.asarray(good[0]) - lock["target"]) > 0.06:
+                state.update(name="SCANNING", msg="palm moved — relocking")
+                lock.update(target=None, since=None, history=[])
+                continue
+            if key != "go":
+                continue
+            if not args.execute:
+                state.update(name="SCANNING", msg="dry-run: plan OK (add --execute)")
+                lock.update(target=None, since=None, history=[])
+                continue
+            state.update(name="TRANSIT", msg="fast to standoff")
+            if (
+                node.run_traj(
+                    lock["plan_a"].trajectory, transit, on_tick=annotate_and_show
                 )
-            if args.execute and node.run_traj(plan.trajectory, transit) == "failed":
-                sys.exit("home move failed — see planner log")
-
-        input("\n[enter] to scan for a palm ('ctrl+c' quits)... ")
-
-        # 2. detect the palm in the frontal corridor
-        pts = node.capture_points(
-            n_frames=3, min_z=0.05, xy_extent=1.0, max_z=1.1, self_radius=0.13
-        )
-        # corridor: in front of the arm, inside detection range
-        if len(pts):
-            m = (pts[:, 0] > 0.15) & (np.hypot(pts[:, 0], pts[:, 1]) < 0.95)
-            pts = pts[m]
-        palm, n, why = detect_palm(pts) if len(pts) else (None, 0, "no points")
-        if palm is None:
-            print("no palm found (%s) — try again" % why)
-            continue
-        ok, reason = palm_target_ok(palm)
-        print(
-            "palm at [%.2f, %.2f, %.2f] (%d pts)%s"
-            % (palm[0], palm[1], palm[2], n, "" if ok else " — REFUSED: " + reason)
-        )
-        if not ok:
-            continue
-
-        # 3. approach geometry: horizontal reach toward the palm
-        yaw = math.degrees(math.atan2(palm[1], palm[0]))
-        quat = list(euler_deg_to_quat_xyzw([0.0, 90.0, yaw]))
-        ux, uy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
-        touch = [
-            palm[0] - args.touch_back * ux,
-            palm[1] - args.touch_back * uy,
-            palm[2],
-        ]
-        standoff = [
-            palm[0] - (args.standoff + args.touch_back) * ux,
-            palm[1] - (args.standoff + args.touch_back) * uy,
-            palm[2],
-        ]
-
-        plan_a = node.plan_to(standoff, quat)
-        if plan_a is None or not plan_a.success:
-            print(
-                "standoff unreachable (%s) — present the palm elsewhere"
-                % (plan_a.message if plan_a else "no answer")
+                == "failed"
+            ):
+                state.update(name="SCANNING", msg="transit failed — rescan")
+                lock.update(target=None, since=None, history=[])
+                continue
+            state.update(name="TOUCH", msg="slow approach...")
+            plan_b = node.plan_to(lock["touch"], lock["quat"])
+            verdict = "failed"
+            if plan_b is not None and plan_b.success:
+                verdict = node.run_traj(
+                    plan_b.trajectory,
+                    FINAL_SCALE_CAP,
+                    touch_nm=args.touch_nm,
+                    on_tick=annotate_and_show,
+                )
+            state.update(
+                name="TOUCH",
+                msg={
+                    "touch": "CONTACT!",
+                    "arrived": "at palm plane",
+                    "failed": "approach failed",
+                }[verdict],
             )
-            continue
-        print(
-            "planned: transit %s + final approach %.0f cm"
-            % (plan_a.message, (args.standoff) * 100)
-        )
+            end = time.monotonic() + 0.8
+            while time.monotonic() < end:
+                rclpy.spin_once(node, timeout_sec=0.05)
+                annotate_and_show()
+            state.update(name="RETREAT", msg="")
+            plan_r = node.plan_home()
+            if plan_r is None or not plan_r.success:
+                sys.exit("cannot plan retreat — arm holds")
+            if (
+                node.run_traj(plan_r.trajectory, transit, on_tick=annotate_and_show)
+                == "failed"
+            ):
+                sys.exit("retreat failed — arm holds; see planner log")
+            state.update(name="SCANNING", msg="next!")
+            lock.update(target=None, since=None, history=[])
 
-        if not args.execute:
-            print("(dry-run: add --execute to move)")
-            continue
-
-        # 4. the cue
-        if input("type 'go' to touch: ").strip() != "go":
-            print("aborted — nothing moved")
-            continue
-
-        # 5. fast transit, slow monitored touch
-        if node.run_traj(plan_a.trajectory, transit) == "failed":
-            print("transit failed — see planner log (auto-recovery may have run)")
-            continue
-        plan_b = node.plan_to(touch, quat)
-        if plan_b is None or not plan_b.success:
-            print(
-                "final approach unplannable (%s) — retreating"
-                % (plan_b.message if plan_b else "no answer")
-            )
-        else:
-            verdict = node.run_traj(
-                plan_b.trajectory, FINAL_SCALE_CAP, touch_nm=args.touch_nm
-            )
-            print(
-                {
-                    "touch": "TOUCH — hold...",
-                    "arrived": "arrived at the palm plane (no contact felt)",
-                    "failed": "final approach failed",
-                }[verdict]
-            )
-            time.sleep(0.6)
-
-        # 6. retreat home (from wherever contact stopped us)
-        print("retreating home...")
-        plan_r = node.plan_home()
-        if plan_r is None or not plan_r.success:
-            sys.exit("cannot plan retreat: %s" % (plan_r.message if plan_r else "?"))
-        if node.run_traj(plan_r.trajectory, transit) == "failed":
-            sys.exit("retreat failed — arm holds; see planner log")
-        print("round complete — reset.")
+    close_display(kitty, ansi)
+    print("demo ended")
 
 
 if __name__ == "__main__":
