@@ -29,6 +29,7 @@ setup(
             "sweep_scan = rammp_curobo_ros.sweep_scan:main",
             "palm_demo = rammp_curobo_ros.palm_demo:main",
             "palm_view = rammp_curobo_ros.palm_view:main",
+            "tour_demo = rammp_curobo_ros.tour_demo:main",
         ],
     },
 )

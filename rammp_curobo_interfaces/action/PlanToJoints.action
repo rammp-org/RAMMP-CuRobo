@@ -5,6 +5,8 @@
 # it before executing anything that assumes exact joints on the fallback.
 # Planning only — nothing moves.
 float64[] target_joints
+# optional: plan from these joints instead of the live state (empty = live)
+float64[] start_joints
 ---
 bool success
 string message

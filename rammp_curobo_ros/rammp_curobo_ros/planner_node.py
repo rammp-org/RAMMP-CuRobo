@@ -249,7 +249,10 @@ class RammpCuroboNode(Node):
             req.orientation.z,
             req.orientation.w,
         ]
-        res = self._plan(lambda q: self.planner.plan_to_pose(pos, quat, start=q))
+        res = self._plan(
+            lambda q: self.planner.plan_to_pose(pos, quat, start=q),
+            start_override=list(goal_handle.request.start_joints) or None,
+        )
         return self._finish_plan(goal_handle, result, res)
 
     def _plan_to_joints_cb(self, goal_handle):
@@ -263,7 +266,10 @@ class RammpCuroboNode(Node):
             )
             goal_handle.abort()
             return result
-        res = self._plan(lambda q: self.planner.plan_to_joints(target, start=q))
+        res = self._plan(
+            lambda q: self.planner.plan_to_joints(target, start=q),
+            start_override=list(goal_handle.request.start_joints) or None,
+        )
         out = self._finish_plan(goal_handle, result, res)
         # _plan returns None (busy) or False (no joint state) as sentinels —
         # only a real PlanResult carries goal_mismatch_rad.
@@ -272,14 +278,23 @@ class RammpCuroboNode(Node):
             out.goal_mismatch_rad = float(mismatch)
         return out
 
-    def _plan(self, plan_fn):
-        """Run one library planning call from the CURRENT arm state."""
+    def _plan(self, plan_fn, start_override=None):
+        """One library planning call — from the live state, or from an
+        explicit start (chained pre-planning of multi-segment tours).
+        The EXECUTION gate still checks every trajectory against the live
+        arm, so a pre-planned segment can only run once the arm is there.
+        """
         if not self._plan_lock.acquire(blocking=False):
             return None
         try:
-            q = self.current_q()
-            if q is None:
-                return False
+            if start_override is not None:
+                if len(start_override) != len(self.planner.joint_names):
+                    return False
+                q = [float(v) for v in start_override]
+            else:
+                q = self.current_q()
+                if q is None:
+                    return False
             self.get_logger().info("Planning...")
             return plan_fn(q)
         finally:

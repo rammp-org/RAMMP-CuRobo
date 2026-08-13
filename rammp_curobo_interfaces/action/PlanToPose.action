@@ -1,6 +1,9 @@
 # Plan a collision-free trajectory to a tool_frame pose in the base frame.
 # Planning only — nothing moves. Execute the result via ExecuteTrajectory.
 geometry_msgs/Pose target
+# optional: plan from these joints instead of the live state (rad,
+# joint_1..7; empty = live). Enables pre-planning chained segments.
+float64[] start_joints
 ---
 bool success
 string message                              # failure explanation when !success
