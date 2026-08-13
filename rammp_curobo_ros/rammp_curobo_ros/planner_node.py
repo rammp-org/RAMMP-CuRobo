@@ -76,6 +76,23 @@ class RammpCuroboNode(Node):
             self.declare_parameter("gripper_closed", 0.8).value
         )
 
+        # Refuse to double-serve. Two planner nodes on the same action names
+        # answer every goal twice and race each other's controller goals —
+        # on hardware this produced phantom TRACKING FAILUREs and an aborted
+        # scan (2026-08-13). Fail loudly instead.
+        time.sleep(1.0)  # let discovery see an already-running peer
+        peers = [
+            name
+            for name, _ns in self.get_node_names_and_namespaces()
+            if name == self.get_name()
+        ]
+        if len(peers) > 1:
+            raise SystemExit(
+                "another '%s' node is already running — two planner nodes "
+                "race each other's goals. Stop the other one first "
+                "(ros2 node list)." % self.get_name()
+            )
+
         self._state_lock = threading.Lock()
         self._plan_lock = threading.Lock()
         self._exec_lock = threading.Lock()
