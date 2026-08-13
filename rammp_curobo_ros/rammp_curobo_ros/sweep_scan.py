@@ -40,6 +40,7 @@ from rclpy.action import ActionClient
 from sensor_msgs.msg import JointState
 
 from rammp_curobo.config import PLANNER_DEFAULTS
+from rammp_curobo.geometry import ang_diff
 from rammp_curobo_interfaces.action import ExecuteTrajectory, PlanToJoints
 from rammp_curobo_ros.scan_common import (
     NODE_NAMESPACE,
@@ -99,37 +100,57 @@ class SweepDriver(DepthCameraGrabber):
         wrapped = spin_until_done(self, send.get_result_async(), timeout_s)
         return None if wrapped is None else wrapped.result
 
-    def move_to(self, q_target, speed_scale):
+    def move_to(self, q_target, speed_scale, retries=2):
         """Plan + execute one station move via the gated planner node.
 
         Returns True on arrival, False to skip this station (plan failed —
         the pose is not collision-free reachable in the CURRENT world).
-        Aborts the whole scan on execution failure: that means gates or
-        tracking failed, and the scan must not keep commanding motion.
+
+        Execution failures are discriminated by where the arm actually is:
+        the real Gen3's controller occasionally reports success without
+        moving AT ALL (JTC "Goal reached" with zero motion, goal tolerances
+        disabled in the stock kortex config; observed twice on 2026-08-13,
+        roughly 1 move in 12). If the arm is still exactly at the move's
+        start, that is the no-motion hiccup — safe to replan and retry.
+        If it stopped PARTWAY, that may be physical contact — abort the
+        whole scan immediately; the arm holds.
         """
         if not self.plan_client.wait_for_server(timeout_sec=5.0):
             sys.exit("planner node not running (need execute:=true)")
-        plan = self._action(
-            self.plan_client,
-            PlanToJoints.Goal(target_joints=[float(v) for v in q_target]),
-            timeout_s=120.0,
-        )
-        if plan is None or not plan.success:
-            self.get_logger().warning(
-                "station unreachable (%s) — skipping"
-                % ("no answer" if plan is None else plan.message)
+        for attempt in range(retries + 1):
+            q_before = self.joints()
+            plan = self._action(
+                self.plan_client,
+                PlanToJoints.Goal(target_joints=[float(v) for v in q_target]),
+                timeout_s=120.0,
             )
-            return False
-        goal = ExecuteTrajectory.Goal(
-            trajectory=plan.trajectory, speed_scale=float(speed_scale)
-        )
-        res = self._action(self.exec_client, goal, timeout_s=180.0)
-        if res is None or not res.success:
+            if plan is None or not plan.success:
+                self.get_logger().warning(
+                    "station unreachable (%s) — skipping"
+                    % ("no answer" if plan is None else plan.message)
+                )
+                return False
+            goal = ExecuteTrajectory.Goal(
+                trajectory=plan.trajectory, speed_scale=float(speed_scale)
+            )
+            res = self._action(self.exec_client, goal, timeout_s=180.0)
+            if res is not None and res.success:
+                return True
+            moved = max(abs(ang_diff(a, b)) for a, b in zip(self.joints(), q_before))
+            if res is not None and moved < 0.05 and attempt < retries:
+                self.get_logger().warning(
+                    "controller reported '%s' but the arm never moved "
+                    "(%.3f rad from where it started) — the known kortex "
+                    "no-motion hiccup; retrying (%d/%d)"
+                    % (res.message, moved, attempt + 1, retries)
+                )
+                time.sleep(0.5)
+                continue
             sys.exit(
-                "station move FAILED (%s) — aborting the scan; arm holds"
-                % ("no answer" if res is None else res.message)
+                "station move FAILED (%s; arm moved %.3f rad from the move "
+                "start) — aborting the scan; arm holds"
+                % ("no answer" if res is None else res.message, moved)
             )
-        return True
 
 
 def main():

@@ -196,11 +196,24 @@ class TrajectoryExecutor:
             q = get_current_q()
             if q is not None:
                 target = scaled.points[-1].positions
-                err = float(max(abs(ang_diff(a, b)) for a, b in zip(target, q)))
+                errs = [abs(ang_diff(a, b)) for a, b in zip(target, q)]
+                j = int(np.argmax(errs))
+                err = float(errs[j])
                 if err > tracking_tolerance_rad:
+                    start = scaled.points[0].positions
+                    from_start = float(
+                        max(abs(ang_diff(a, b)) for a, b in zip(start, q))
+                    )
+                    hint = (
+                        "the arm never left the start — controller "
+                        "reported success without moving (known kortex "
+                        "hiccup; safe to replan and retry)"
+                        if from_start < 0.05
+                        else "stopped partway — possible physical contact "
+                        "or controller saturation"
+                    )
                     return "failed", (
-                        "TRACKING FAILURE: settled %.3f rad from the "
-                        "endpoint — physical contact or controller "
-                        "saturation" % err
+                        "TRACKING FAILURE: %s settled %.3f rad from the "
+                        "endpoint; %s" % (scaled.joint_names[j], err, hint)
                     )
         return "succeeded", "trajectory executed"
