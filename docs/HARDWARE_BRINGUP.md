@@ -49,9 +49,19 @@ ping -c 2 192.168.1.10        # arm reachable?
 
 source /opt/ros/humble/setup.zsh
 source ~/RAMMP-Kinova/ros2_ws/install/setup.zsh     # ros2_kortex lives here
-ros2 launch kortex_bringup gen3.launch.py \
-    robot_ip:=192.168.1.10 dof:=7 gripper:=robotiq_2f_85 launch_rviz:=false
+source ~/RAMMP-CuRobo/install/setup.zsh
+
+# ONE terminal: arm driver + controllers + planner together (dry-run):
+ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml launch_arm:=true
+
+# (equivalent split form — driver alone, planner in another terminal:
+#  ros2 launch kortex_bringup gen3.launch.py robot_ip:=192.168.1.10 \
+#      dof:=7 gripper:=robotiq_2f_85 launch_rviz:=false )
 ```
+
+`launch_arm:=true` must be the ONLY bringup: never combine it with the
+MuJoCo sim or a separately-started kortex bringup (one
+/controller_manager per arm).
 
 Gotchas (from the ros2_kortex source, all defaults):
 - `robot_ip` is REQUIRED (no default) — the launch fails without it.

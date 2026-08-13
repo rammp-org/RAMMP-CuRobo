@@ -121,6 +121,8 @@ verifies the refusal gates and mid-motion cancel against the live sim.
 
 ## Run on the real arm
 
+One-terminal form: `ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml execute:=true launch_arm:=true` (starts the kortex driver + controllers + planner together; requires the RAMMP-Kinova workspace sourced, and must be the only bringup).
+
 Follow **docs/HARDWARE_BRINGUP.md** step by step — coordination (three
 stacks can claim this arm; only one may run), measuring
 `world_real_bench.yaml`, the kortex bringup command with its gotchas, the
