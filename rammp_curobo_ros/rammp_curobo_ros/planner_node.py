@@ -372,26 +372,40 @@ class RammpCuroboNode(Node):
         return refuse(message, canceled=(status == "canceled"))
 
     def _try_servoing_recovery(self):
-        if not self._reset_fault.wait_for_service(timeout_sec=2.0):
-            self.get_logger().warning(
-                "fault_controller reset service unavailable — cannot "
-                "auto-recover servoing"
+        """Clear faults, then bounce the JTC to resync + restore servoing.
+
+        Safe by construction: only called when the arm never left its
+        start; deactivation stops all writes before anything re-enables
+        streaming, and activation re-reads the true joint positions as
+        the controller's hold state.
+        """
+        self.get_logger().warning(
+            "no-motion failure: recovering servoing (fault reset + "
+            "trajectory-controller restart; the arm does not move)"
+        )
+        if self._reset_fault.wait_for_service(timeout_sec=2.0):
+            await_future(
+                self._reset_fault.call_async(self._reset_fault_type.Request()), 5.0
+            )
+        if not self._switch_ctrl.wait_for_service(timeout_sec=2.0):
+            self.get_logger().error(
+                "controller_manager switch service unavailable — cannot "
+                "bounce the trajectory controller; restart the bringup"
             )
             return
-        self.get_logger().warning(
-            "no-motion failure: resetting arm servoing via "
-            "/fault_controller/reset_fault (arm does not move)"
+        jtc = "joint_trajectory_controller"
+        for field in ("deactivate_controllers", "activate_controllers"):
+            req = self._switch_type.Request()
+            getattr(req, field).append(jtc)
+            req.strictness = self._switch_type.Request.STRICT
+            res = await_future(self._switch_ctrl.call_async(req), 5.0)
+            if res is None or not res.ok:
+                self.get_logger().error("JTC %s failed — restart the bringup" % field)
+                return
+            time.sleep(0.5)
+        self.get_logger().info(
+            "servoing recovery complete — the next execution attempt " "should move"
         )
-        res = await_future(
-            self._reset_fault.call_async(self._reset_fault_type.Request()), 5.0
-        )
-        if res is None or not res.success:
-            self.get_logger().error("servoing reset did not answer/succeed")
-        else:
-            self.get_logger().info(
-                "servoing reset OK — the next execution attempt should move"
-            )
-        time.sleep(1.0)
 
     # ---------------------------------------------------------------- services
     def _set_world_cb(self, request, response):

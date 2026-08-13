@@ -140,9 +140,15 @@ for before the e-stop; prove it works while the motion is trivial.
   "combination of Control Mode and Active State are not supported" — the
   arm dropped out of low-level servoing (states still stream, writes go
   nowhere; the stock JTC config's disabled goal tolerances mask it).
-  Fix, verified live:
-  `ros2 service call /fault_controller/reset_fault example_interfaces/srv/Trigger`
-  then confirm the log spam stopped before commanding motion again. A
+  Fix, verified live (reset_fault ALONE is not enough — on this driver
+  build it restores single-level mode, and the JTC's stale hold position
+  is a jump hazard):
+  1. `ros2 service call /fault_controller/reset_fault example_interfaces/srv/Trigger`
+  2. `ros2 control switch_controllers --deactivate joint_trajectory_controller`
+  3. `ros2 control switch_controllers --activate joint_trajectory_controller`
+  (the planner node also runs this sequence automatically on the
+  no-motion signature). Verify low-level servoing (mode 3) is back via a
+  parallel Kortex query before commanding motion. A
   single isolated no-motion "success" is the milder intermittent form —
   sweep_scan retries it automatically.
 - **Reset succeeded, no fault spam, arm STILL ignores everything** (also
