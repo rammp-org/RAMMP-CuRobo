@@ -129,6 +129,36 @@ class TourDemo:
         return wrapped is not None and wrapped.result.success
 
 
+def merge_trajectories(plans):
+    """Chained per-segment plans -> ONE continuous JointTrajectory.
+
+    Every segment starts (at rest) exactly where the previous one ended
+    (chained pre-planning), so concatenation is dynamically valid. One
+    goal means ZERO controller goal transitions mid-tour — the transition
+    hand-off is where the arm's transient no-motion fault was born (every
+    observed fault followed a completed goal; isolated goals never
+    faulted) — and perfectly fluid single-spline execution.
+    """
+    from trajectory_msgs.msg import JointTrajectory
+
+    merged = JointTrajectory()
+    merged.joint_names = list(plans[0].trajectory.joint_names)
+    offset = 0.0
+    for plan in plans:
+        for pt in plan.trajectory.points:
+            t = pt.time_from_start.sec + pt.time_from_start.nanosec * 1e-9 + offset
+            q = type(pt)()
+            q.positions = list(pt.positions)
+            q.velocities = list(pt.velocities)
+            q.accelerations = list(pt.accelerations)
+            q.time_from_start.sec = int(t)
+            q.time_from_start.nanosec = int(round((t - int(t)) * 1e9))
+            merged.points.append(q)
+        last = plan.trajectory.points[-1].time_from_start
+        offset += last.sec + last.nanosec * 1e-9
+    return merged
+
+
 def traj_end(plan):
     return list(plan.trajectory.points[-1].positions)
 
@@ -228,40 +258,34 @@ def main():
         print("aborted — nothing moved")
         return
 
+    merged = merge_trajectories(plans)
+    print(
+        "executing as ONE continuous trajectory (%d points, no goal "
+        "transitions)" % len(merged.points)
+    )
     t0 = time.monotonic()
-    for i, plan in enumerate(plans):
-        label = "P%d" % (i + 1) if i < len(points) else "home"
-        seg_t = time.monotonic()
-        ok = False
-        for attempt in range(3):
-            if demo.run(plan.trajectory, scale):
-                ok = True
-                break
-            # The known transient: the arm faults at motion onset without
-            # moving; the planner node auto-recovers servoing. If we are
-            # still exactly at this segment's start, the SAME pre-planned
-            # trajectory is still valid — re-send it. Any real motion
-            # means something else went wrong: abort.
-            start_q = list(plan.trajectory.points[0].positions)
-            moved = max(abs(ang_diff(a, b)) for a, b in zip(demo.joints(), start_q))
-            if moved > 0.05 or attempt == 2:
-                sys.exit(
-                    "segment %s failed (arm %.3f rad from segment start) — "
-                    "arm holds; see the planner log" % (label, moved)
-                )
-            print(
-                "  %s: no-motion fault, recovered — retrying (%d/2)"
-                % (label, attempt + 1)
+    ok = False
+    for attempt in range(3):
+        if demo.run(merged, scale):
+            ok = True
+            break
+        moved = max(
+            abs(ang_diff(a, b))
+            for a, b in zip(demo.joints(), merged.points[0].positions)
+        )
+        if moved > 0.05 or attempt == 2:
+            sys.exit(
+                "tour failed (arm %.3f rad from start) — arm holds; see "
+                "the planner log" % moved
             )
-            time.sleep(3.0)  # recovery + post-fault arm settling need real time
-        if not ok:
-            sys.exit("segment %s failed" % label)
-        print("  %s reached in %.2f s" % (label, time.monotonic() - seg_t))
+        print("  no-motion fault at start, recovered — retrying (%d/2)" % (attempt + 1))
+        time.sleep(3.0)
+    if not ok:
+        sys.exit("tour failed")
     lap = time.monotonic() - t0
     print(
-        "\nTOUR COMPLETE: %d points + home in %.2f s wall (%.2f s motion, "
-        "%.0f ms/segment overhead)"
-        % (len(points), lap, total, (lap - total) * 1000 / len(plans))
+        "\nTOUR COMPLETE: %d points + home in %.2f s wall "
+        "(%.2f s motion, one continuous trajectory)" % (len(points), lap, total)
     )
 
 
