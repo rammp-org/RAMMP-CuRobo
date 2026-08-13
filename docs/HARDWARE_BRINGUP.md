@@ -145,6 +145,16 @@ for before the e-stop; prove it works while the motion is trivial.
   then confirm the log spam stopped before commanding motion again. A
   single isolated no-motion "success" is the milder intermittent form —
   sweep_scan retries it automatically.
+- **Reset succeeded, no fault spam, arm STILL ignores everything** (also
+  2026-08-13): the arm itself reports SERVOING_READY (verifiable with a
+  parallel Kortex session) but nothing moves — the DRIVER is wedged, not
+  the arm. kortex_driver sets a `block_write` flag when preparing a
+  controller-mode switch and clears it only when the switch completes; a
+  fault mid-switch strands it set, and every write is silently discarded
+  forever after. Fix: restart the kortex bringup (the arm holds its pose
+  through the restart). Symptom triad that identifies this case: goals
+  "succeed" with zero motion + no fault log spam + internal_fault false /
+  arm state READY.
 - After any e-stop or fault, RE-RUN the dry-run step before arming again
   (the arm may have been moved by hand; stale plans are refused, but check
   the world still matches reality too).
