@@ -253,17 +253,24 @@ def main():
         sx, sy = depth.shape[1] / w_img, depth.shape[0] / h_img
 
         palms = []
+        seen = {"hands": 0, "why": ""}
         try:
             R, t = node.camera_pose(timeout_s=1.5)
         except SystemExit:
             R = t = None
         for (pu, pv), (x0, y0, x1, y1), _lms in landmark_palms(hands, rgb):
+            seen["hands"] += 1
             z = depth_at(depth, pu, pv, sx, sy)
             base = None
             if z is not None and R is not None:
                 cam = np.array([(pu - cx) / fx * z, (pv - cy) / fy * z, z])
                 base = R @ cam + t
                 palms.append(base)
+                seen["why"] = palm_target_ok(base)[1]
+            elif R is None:
+                seen["why"] = "no TF (arm stack down?)"
+            else:
+                seen["why"] = "no depth on the palm"
             cv2.rectangle(frame, (x0, y0), (x1, y1), (0, 200, 0), 2)
             cv2.circle(frame, (int(pu), int(pv)), 6, (0, 200, 0), -1)
             if base is not None:
@@ -290,7 +297,7 @@ def main():
             2,
         )
         push_stream(frame, stream)
-        return palms
+        return palms, seen
 
     print(
         "PALM DEMO — person: open palm facing the arm, 0.4-0.7 m out, HOLD\n"
@@ -305,6 +312,15 @@ def main():
                 "WARNING: no effort in /joint_states — touch detection by "
                 "position only"
             )
+
+    print(">> SCANNING — present an open palm 0.4-0.7 m in front of the camera")
+    last_status = [""]
+
+    def scan_status(text):
+        """Narrate what the scanner sees, once per change (not per frame)."""
+        if text != last_status[0]:
+            print("   %s" % text)
+            last_status[0] = text
 
     while rclpy.ok():
         rclpy.spin_once(node, timeout_sec=0.05)
@@ -334,16 +350,22 @@ def main():
             set_state("SCANNING")
             continue
 
-        palms = annotate_and_show()
-        if palms is None:
+        result = annotate_and_show()
+        if result is None:
             continue
+        palms, seen = result
 
         if state["name"] == "SCANNING":
             good = [p for p in palms if palm_target_ok(p)[0]]
             if not good:
+                if seen["hands"] == 0:
+                    scan_status("no hand in view")
+                else:
+                    scan_status("hand seen — %s" % (seen["why"] or "refused"))
                 state["msg"] = "present an open palm"
                 lock.update(target=None, since=None, history=[])
                 continue
+            scan_status("palm OK — hold still...")
             p = good[0]
             hist = lock["history"]
             hist.append((time.monotonic(), p))
@@ -444,6 +466,7 @@ def main():
             ):
                 sys.exit("retreat failed — arm holds; see planner log")
             set_state("SCANNING", "next!")
+            last_status[0] = ""
             lock.update(target=None, since=None, history=[])
 
     print("demo ended")
