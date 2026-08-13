@@ -232,11 +232,30 @@ def main():
     for i, plan in enumerate(plans):
         label = "P%d" % (i + 1) if i < len(points) else "home"
         seg_t = time.monotonic()
-        if not demo.run(plan.trajectory, scale):
-            sys.exit(
-                "segment %s failed — arm holds; see the planner log "
-                "(auto-recovery may have engaged; rerun when ready)" % label
+        ok = False
+        for attempt in range(3):
+            if demo.run(plan.trajectory, scale):
+                ok = True
+                break
+            # The known transient: the arm faults at motion onset without
+            # moving; the planner node auto-recovers servoing. If we are
+            # still exactly at this segment's start, the SAME pre-planned
+            # trajectory is still valid — re-send it. Any real motion
+            # means something else went wrong: abort.
+            start_q = list(plan.trajectory.points[0].positions)
+            moved = max(abs(ang_diff(a, b)) for a, b in zip(demo.joints(), start_q))
+            if moved > 0.05 or attempt == 2:
+                sys.exit(
+                    "segment %s failed (arm %.3f rad from segment start) — "
+                    "arm holds; see the planner log" % (label, moved)
+                )
+            print(
+                "  %s: no-motion fault, recovered — retrying (%d/2)"
+                % (label, attempt + 1)
             )
+            time.sleep(1.2)  # let the node's servoing recovery settle
+        if not ok:
+            sys.exit("segment %s failed" % label)
         print("  %s reached in %.2f s" % (label, time.monotonic() - seg_t))
     lap = time.monotonic() - t0
     print(
