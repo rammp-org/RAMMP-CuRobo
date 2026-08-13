@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 """Live camera view with palm detection overlay — see what the demo sees.
 
-    ros2 run rammp_curobo_ros palm_view      # feed appears RIGHT HERE:
-                                             #  - kitty terminal: inline video
-                                             #  - any other terminal: ANSI video
-                                             #  - X desktop: native window
-                                             #  - plus http://<jetson>:8405 always
-    ros2 run rammp_curobo_ros palm_view --headless   # JPEG previews only
+    ros2 run rammp_curobo_ros palm_view      # open http://192.168.1.11:8405
 
 Green box + landmarks = MediaPipe hand, dot = palm center (3D position
 and workspace-gate verdict when the arm bringup provides TF). Blue
@@ -26,14 +21,12 @@ from rammp_curobo_ros.palm_common import (
     STREAM_PORT,
     ColorDepthGrabber,
     _MjpegServer,
-    close_display,
     depth_at,
     detect_palm,
     landmark_palms,
     make_hands,
     palm_target_ok,
-    pick_display,
-    show_frame,
+    push_stream,
 )
 from rammp_curobo_ros.scan_common import load_camera_config
 
@@ -48,34 +41,18 @@ def main():
     )
     ap.add_argument("--camera", default="camera_d405_wrist.yaml")
     ap.add_argument("--color-topic", default="/d405/d405/color/image_rect_raw")
-    ap.add_argument("--headless", action="store_true")
     args = ap.parse_args()
 
     rclpy.init()
     node = ColorDepthGrabber(load_camera_config(args.camera), args.color_topic)
     hands = make_hands()
 
-    # display tiers: X window if a desktop exists, else kitty/ANSI inline
-    window = False
-    if not args.headless and os.environ.get("DISPLAY"):
-        import subprocess
-
-        if subprocess.run(["xset", "q"], capture_output=True).returncode == 0:
-            try:
-                cv2.namedWindow("palm_view", cv2.WINDOW_NORMAL)
-                cv2.waitKey(1)
-                window = True
-            except Exception:
-                window = False
-    kitty, ansi = pick_display(headless=args.headless or window)
-
     stream = None
     try:
         stream = _MjpegServer(STREAM_PORT)
-        if window or (kitty is None and ansi is None):
-            print("live view: http://192.168.1.11:%d" % STREAM_PORT)
+        print("LIVE VIEW: http://192.168.1.11:%d  (open in any browser)" % STREAM_PORT)
     except OSError as exc:
-        print("stream port %d unavailable (%s)" % (STREAM_PORT, exc))
+        sys.exit("stream port %d unavailable (%s)" % (STREAM_PORT, exc))
 
     t0 = time.monotonic()
     while node.info is None or not node.frames or node.color is None:
@@ -88,9 +65,7 @@ def main():
             )
 
     have_tf = True
-    throttle = [0.0]
     fps_t, fps_n, fps = time.monotonic(), 0, 0.0
-    last_save = 0.0
 
     while rclpy.ok():
         rclpy.spin_once(node, timeout_sec=0.05)
@@ -190,18 +165,7 @@ def main():
             1,
         )
 
-        show_frame(frame, kitty, ansi, stream, throttle)
-        if window:
-            cv2.imshow("palm_view", frame)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
-        elif kitty is None and ansi is None and time.monotonic() - last_save > 0.5:
-            cv2.imwrite(PREVIEW, frame)
-            last_save = time.monotonic()
-
-    if window:
-        cv2.destroyAllWindows()
-    close_display(kitty, ansi)
+        push_stream(frame, stream)
 
 
 if __name__ == "__main__":

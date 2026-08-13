@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Palm-touch demo with live video — detect, lock, cue, touch, retreat.
 
-One command, everything on screen the whole time (video renders in your
-terminal / browser exactly like palm_view):
+One command; watch the annotated live view in a browser at
+http://192.168.1.11:8405 through every phase:
 
     ros2 run rammp_curobo_ros palm_demo --execute
 
@@ -42,13 +42,11 @@ from rammp_curobo_ros.palm_common import (
     STREAM_PORT,
     ColorDepthGrabber,
     _MjpegServer,
-    close_display,
     depth_at,
     landmark_palms,
     make_hands,
     palm_target_ok,
-    pick_display,
-    show_frame,
+    push_stream,
 )
 from rammp_curobo_ros.scan_common import (
     NODE_NAMESPACE,
@@ -103,7 +101,11 @@ class PalmDemo(ColorDepthGrabber):
                     return list(self._q)
             rclpy.spin_once(self, timeout_sec=0.2)
             if time.monotonic() - t0 > 10:
-                sys.exit("no /joint_states — is the bringup running?")
+                sys.exit(
+                    "no /joint_states — start the arm stack first:\n"
+                    "  ros2 launch rammp_curobo_ros planner.launch.py "
+                    "config:=gen3_real.yaml execute:=true launch_arm:=true"
+                )
 
     def wrist_effort(self):
         with self._js_lock:
@@ -197,7 +199,6 @@ def main():
     ap.add_argument("--camera", default="camera_d405_wrist.yaml")
     ap.add_argument("--color-topic", default="/d405/d405/color/image_rect_raw")
     ap.add_argument("--execute", action="store_true", help="allow motion")
-    ap.add_argument("--headless", action="store_true", help="no terminal video")
     ap.add_argument(
         "--transit-scale",
         type=float,
@@ -219,13 +220,12 @@ def main():
     rclpy.init()
     node = PalmDemo(load_camera_config(args.camera), args.color_topic)
     hands = make_hands()
-    kitty, ansi = pick_display(headless=args.headless)
     stream = None
     try:
         stream = _MjpegServer(STREAM_PORT)
-    except OSError:
-        pass
-    throttle = [0.0]
+        print("LIVE VIEW: http://192.168.1.11:%d  (open in any browser)" % STREAM_PORT)
+    except OSError as exc:
+        print("stream port %d unavailable (%s) — no live view" % (STREAM_PORT, exc))
 
     state = {"name": "SCANNING", "msg": ""}
     lock = {"target": None, "since": None, "history": []}
@@ -282,7 +282,7 @@ def main():
             (0, 255, 255),
             2,
         )
-        show_frame(frame, kitty, ansi, stream, throttle)
+        push_stream(frame, stream)
         return palms
 
     print(
@@ -437,7 +437,6 @@ def main():
             state.update(name="SCANNING", msg="next!")
             lock.update(target=None, since=None, history=[])
 
-    close_display(kitty, ansi)
     print("demo ended")
 
 

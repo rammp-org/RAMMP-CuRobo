@@ -2,13 +2,11 @@
 
 Used by palm_view (the standalone viewer) and palm_demo (the touch demo):
 MediaPipe hand detection, the depth-blob fallback detector, the workspace
-gate, and the display tiers (kitty inline graphics; universal ANSI
-half-block terminal video; MJPEG browser stream; X handled by callers).
+gate, and the MJPEG browser stream (open http://<jetson>:8405).
 """
 
 import math
 import os
-import sys
 import time
 
 import numpy as np
@@ -62,87 +60,6 @@ def detect_palm(points, min_pts=150, cluster_r=0.06):
             return None, len(members), "nearest blob too small (%d pts)" % len(members)
         seed = members.mean(axis=0)
     return seed, len(members), ""
-
-
-class _AnsiDisplay:
-    """Live video as truecolor half-block characters — works in ANY modern
-    terminal (VSCode, plain ssh, tmux with truecolor) with zero setup.
-    Each character cell shows two vertical pixels (▀ fg=top, bg=bottom)."""
-
-    @staticmethod
-    def available():
-        return sys.stdout.isatty()
-
-    def __init__(self):
-        self._out = sys.stdout
-        self._out.write("\x1b[2J\x1b[?25l")
-        self._out.flush()
-
-    def show(self, frame_bgr):
-        import shutil
-
-        cols, rows = shutil.get_terminal_size((100, 30))
-        cols = max(40, cols - 1)
-        px_rows = max(20, (rows - 2) * 2)
-        h, w = frame_bgr.shape[:2]
-        scale = min(cols / w, px_rows / h)
-        import cv2
-
-        small = cv2.resize(
-            frame_bgr, (max(2, int(w * scale)), max(2, int(h * scale) // 2 * 2))
-        )
-        rgb = small[:, :, ::-1]
-        top, bot = rgb[0::2], rgb[1::2]
-        lines = ["\x1b[H"]
-        for tr, br in zip(top, bot):
-            cells = [
-                "\x1b[38;2;%d;%d;%dm\x1b[48;2;%d;%d;%dm\u2580"
-                % (t[0], t[1], t[2], b[0], b[1], b[2])
-                for t, b in zip(tr, br)
-            ]
-            lines.append("".join(cells) + "\x1b[0m\x1b[K\n")
-        self._out.write("".join(lines))
-        self._out.flush()
-
-    def close(self):
-        self._out.write("\x1b[0m\x1b[?25h\n")
-        self._out.flush()
-
-
-class _KittyDisplay:
-    """Render frames INSIDE the terminal via the kitty graphics protocol.
-
-    Works over SSH (kitty's ssh kitten forwards the protocol), no X, no
-    browser: the live feed appears in the terminal the command ran in.
-    Only activated when the terminal really is kitty (TERM check + tty).
-    """
-
-    @staticmethod
-    def available():
-        return sys.stdout.isatty() and "kitty" in os.environ.get("TERM", "")
-
-    def __init__(self):
-        self._out = sys.stdout
-        self._out.write("\x1b[2J\x1b[H\x1b[?25l")  # clear, home, hide cursor
-        self._out.flush()
-
-    def show(self, jpg_bytes):
-        import base64
-
-        b64 = base64.b64encode(jpg_bytes).decode()
-        out = ["\x1b[H\x1b_Ga=d,q=2\x1b\\"]  # home + delete old image
-        first = True
-        while b64:
-            chunk, b64 = b64[:4096], b64[4096:]
-            ctrl = "a=T,f=100,q=2," if first else ""
-            out.append("\x1b_G%sm=%d;%s\x1b\\" % (ctrl, 1 if b64 else 0, chunk))
-            first = False
-        self._out.write("".join(out))
-        self._out.flush()
-
-    def close(self):
-        self._out.write("\x1b_Ga=d,q=2\x1b\\\x1b[?25h\n")  # cleanup, cursor back
-        self._out.flush()
 
 
 class _MjpegServer:
@@ -227,44 +144,15 @@ def make_hands():
     )
 
 
-def pick_display(headless=False):
-    """(kitty, ansi) display objects per the terminal's abilities."""
-    if headless:
-        return None, None
-    if _KittyDisplay.available():
-        return _KittyDisplay(), None
-    if _AnsiDisplay.available():
-        return None, _AnsiDisplay()
-    return None, None
-
-
-def close_display(kitty, ansi):
-    if kitty is not None:
-        kitty.close()
-    if ansi is not None:
-        ansi.close()
-
-
-def show_frame(frame_bgr, kitty, ansi, stream, throttle, quality=80):
-    """Push one annotated BGR frame to every active display tier.
-
-    `throttle` is a 1-element list holding the last display time (the
-    caller keeps it across frames)."""
+def push_stream(frame_bgr, stream, quality=80):
+    """Encode and push one annotated BGR frame to the MJPEG stream."""
     import cv2
 
-    if stream is not None:
-        ok, jpg = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
-        if ok:
-            stream.push(jpg.tobytes())
-    now = time.time()
-    if kitty is not None and now - throttle[0] > 0.10:
-        ok, jpg = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
-        if ok:
-            kitty.show(jpg.tobytes())
-        throttle[0] = now
-    elif ansi is not None and now - throttle[0] > 0.15:
-        ansi.show(frame_bgr)
-        throttle[0] = now
+    if stream is None:
+        return
+    ok, jpg = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    if ok:
+        stream.push(jpg.tobytes())
 
 
 def landmark_palms(hands, rgb):
