@@ -67,9 +67,9 @@ session.
 python3 -m pip install --user --no-build-isolation -e ./core   # pip quirks: see README
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install --packages-select rammp_curobo_interfaces rammp_curobo_ros
-python3 -m pytest core/tests -q          # 10 offline + 7 GPU smoke
+python3 -m pytest core/tests -q          # offline + GPU smoke
 python3 -m pytest rammp_curobo_ros/test -q -p no:anyio
-scripts/sim_execution_checks.py          # live gates+abort, needs sim running
+python3 scripts/sim_execution_checks.py  # live gates+abort, needs sim running
 ```
 
 pytest needs the repo-root `pytest.ini` (`-p no:anyio` — user-site anyio

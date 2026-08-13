@@ -82,14 +82,13 @@ Performance: `sudo nvpmodel -m 0 && sudo jetson_clocks` before demos.
 python3 -m pytest core/tests -q
 ```
 
-10 offline tests run anywhere; the 7 GPU tests plan real collision-free
+The offline tests run anywhere; the GPU tests plan real collision-free
 trajectories in the sim-kitchen world (first run compiles kernels — takes
 a minute or two; ~20 s warm). Or plan one motion directly:
 
 ```bash
 python3 examples/plan_only.py --joints 0.3 0.262 3.142 -2.269 0.0 0.960 1.571
 ```
-
 
 > Shell note: the Jetson's default shell is **zsh** — source the `.zsh`
 > setup files as shown. From bash, use the `.bash` variants instead
@@ -128,10 +127,10 @@ stacks can claim this arm; only one may run), measuring
 dry-run gate, the first small joint move at 15% speed, and the required
 abort drill. Human on the e-stop throughout.
 
+## Automatic obstacle scanning
 
-## Automatic obstacle scanning (digital twin)
-
-`sweep_scan` builds the collision world from a wrist depth camera — no tape
+`sweep_scan` builds the collision world (a "digital twin" of the
+workspace) from a wrist depth camera — no tape
 measure: the arm moves to a high "periscope" posture (camera ~0.78 m up,
 pitched 42 deg down), rotates its base 90 deg left to 90 deg right in
 stop-and-capture stations (two pitch rows: near field + far field), fuses
@@ -150,7 +149,7 @@ ros2 run rammp_curobo_ros sweep_scan --camera camera_d405_wrist.yaml --apply
 
 # then plan/execute as usual — or restart the planner later against the file:
 ros2 launch rammp_curobo_ros planner.launch.py \
-    world:=/home/abra/.ros/rammp_curobo/scanned_world.yaml execute:=true
+    world:=$HOME/.ros/rammp_curobo/scanned_world.yaml execute:=true
 ```
 
 Cameras are YAML-swappable (`rammp_curobo_ros/config/`): `camera_sim_d405`

@@ -11,13 +11,15 @@ import threading
 import time
 
 import rclpy
+from action_msgs.msg import GoalStatus
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
 from rammp_curobo_interfaces.action import ExecuteTrajectory, PlanToJoints
+from rammp_curobo_ros.scan_common import NODE_NAMESPACE
 
-PREFIX = "/rammp_curobo"
+PREFIX = NODE_NAMESPACE
 
 
 def wait(future, executor, timeout_s=60.0):
@@ -33,7 +35,7 @@ def wait(future, executor, timeout_s=60.0):
 
 def main():
     rclpy.init()
-    node = Node("abort_test")
+    node = Node("sim_execution_checks")
     executor = rclpy.executors.SingleThreadedExecutor()
     executor.add_node(node)
     latest = {}
@@ -62,8 +64,6 @@ def main():
     bad = ExecuteTrajectory.Goal(trajectory=plan.trajectory, speed_scale=2.0)
     send = wait(exec_client.send_goal_async(bad), executor, 10)
     res = wait(send.get_result_async(), executor, 30)
-    from action_msgs.msg import GoalStatus
-
     assert (
         res.status == GoalStatus.STATUS_ABORTED and "speed_scale" in res.result.message
     ), (res.status, res.result.message)

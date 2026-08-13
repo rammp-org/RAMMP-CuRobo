@@ -20,7 +20,14 @@ from rammp_curobo.scene import load_scene
 
 
 def expected_bodies(scene, max_reach=1.05, min_top_z=0.06, bearing_deg=100.0):
-    """Ground-truth bodies the +/-90 deg sweep should have seen."""
+    """Ground-truth bodies the sweep should have seen.
+
+    The gates mirror sweep_scan's geometry, loosened by its error budget:
+    max_reach ~ camera max_range + workspace crop; bearing_deg = the 90-deg
+    yaw span + camera half-FOV margin; min_top_z = the scan's z > 0.03 crop
+    plus one 0.04 voxel (bodies lower than that live inside the static
+    table plane and are deliberately not detected).
+    """
     out = []
     for o in list(scene.obstacles) + list(scene.objects):
         dims = o.bounding_dims() if hasattr(o, "bounding_dims") else o.dims
@@ -30,7 +37,7 @@ def expected_bodies(scene, max_reach=1.05, min_top_z=0.06, bearing_deg=100.0):
         if np.linalg.norm(closest_xy) > max_reach:
             continue
         if c[2] + half[2] < min_top_z:
-            continue  # below the table band the scan deliberately drops
+            continue  # inside the z-crop + one-voxel band (see docstring)
         if abs(math.degrees(math.atan2(c[1], c[0]))) > bearing_deg:
             continue  # behind the sweep arc
         if o.name == "pedestal":
@@ -56,7 +63,10 @@ def main():
     for name, c, half in expected:
         best, best_d = None, 1e9
         for dname, dc, dhalf in dets:
-            # detection claims the body if the boxes overlap generously
+            # a detection claims a body if their boxes overlap within the
+            # scan error budget: voxel 0.04 + inflate + fusion error ~ 0.12 m.
+            # (Truth boxes are treated axis-aligned; the couple of yaw-rotated
+            # props in the sim world are near-square, so the slack covers it.)
             gap = np.abs(dc - c) - (dhalf + half + 0.12)
             if (gap < 0).all():
                 d = float(np.linalg.norm(dc - c))

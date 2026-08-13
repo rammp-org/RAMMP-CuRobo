@@ -38,6 +38,12 @@ from rammp_curobo.geometry import euler_deg_to_quat_xyzw
 
 DEFAULT_OUT = os.path.expanduser("~/.ros/rammp_curobo/scanned_world.yaml")
 
+# The planner node's action/service namespace — derived from the node name
+# declared in planner_node.py (Node("rammp_curobo")). Defined once here for
+# every in-repo client; the standalone examples carry their own copy on
+# purpose (they demonstrate integration without importing this package).
+NODE_NAMESPACE = "/rammp_curobo"
+
 # end_effector_link -> camera_link for the Gen3's built-in vision module
 # (kortex_description gen3_macro.xacro, real-hardware branch); broadcast so
 # kinova_vision's camera_depth_frame chains to the robot even though the
@@ -235,6 +241,95 @@ def write_world_yaml(path, boxes, inflate, header_note):
             default_flow_style=None,
         )
     return obstacles
+
+
+def add_cluster_args(parser, frames, min_points_per_voxel, min_voxels, max_boxes):
+    """The flags shared by every scan tool (per-tool tuned defaults passed
+    explicitly so intentional differences stay visible at the call site)."""
+    parser.add_argument(
+        "--frames",
+        type=int,
+        default=frames,
+        help="depth frames median-combined per capture",
+    )
+    parser.add_argument("--out", default=DEFAULT_OUT)
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="hot-swap the planner's world via %s/set_world when done" % NODE_NAMESPACE,
+    )
+    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--voxel", type=float, default=0.04)
+    parser.add_argument(
+        "--min-points-per-voxel", type=int, default=min_points_per_voxel
+    )
+    parser.add_argument("--min-voxels", type=int, default=min_voxels)
+    parser.add_argument("--max-boxes", type=int, default=max_boxes)
+    parser.add_argument(
+        "--inflate",
+        type=float,
+        default=0.01,
+        help="extra metres per side on detected boxes (voxel quantization "
+        "already inflates; a single viewpoint only sees front faces)",
+    )
+
+
+def report_boxes(boxes, n_found, out_path):
+    """The human-readable scan summary both tools print."""
+    if n_found > len(boxes):
+        print(
+            "NOTE: %d clusters, keeping the %d NEAREST (see cluster_boxes: "
+            "a close bottle outranks a far wall)" % (n_found, len(boxes))
+        )
+    print("%-8s %-24s %s" % ("box", "center [m]", "dims [m]"))
+    for i, b in enumerate(boxes):
+        print(
+            "det_%-4d %-24s %s"
+            % (
+                i,
+                np.round(b["center"], 3).tolist(),
+                np.round(b["dims"], 3).tolist(),
+            )
+        )
+    print("world written: %s (%d boxes + table plane)" % (out_path, len(boxes)))
+
+
+def apply_world(node, world_path):
+    """Hot-swap the planner node's collision world to `world_path`.
+
+    Exits the process on failure — a scan that claims --apply worked must
+    never leave the planner on the stale world.
+    """
+    from rammp_curobo_interfaces.srv import SetWorld
+
+    client = node.create_client(SetWorld, NODE_NAMESPACE + "/set_world")
+    if not client.wait_for_service(timeout_sec=3.0):
+        sys.exit("planner node not running — world written but NOT applied")
+    fut = client.call_async(SetWorld.Request(world=world_path))
+    t0 = time.monotonic()
+    while not fut.done():
+        rclpy.spin_once(node, timeout_sec=0.2)
+        if time.monotonic() - t0 > 20:
+            sys.exit("set_world did not answer")
+    resp = fut.result()
+    print("set_world: %s (%s)" % ("OK" if resp.success else "FAILED", resp.message))
+    if not resp.success:
+        sys.exit(1)
+
+
+def spin_until_done(node, future, timeout_s):
+    """Spin `node` until `future` resolves; None on timeout.
+
+    For single-threaded clients (scan tools, scripts). The planner node
+    itself uses executor.await_future — an event wait suited to its
+    multithreaded executor.
+    """
+    t0 = time.monotonic()
+    while not future.done():
+        rclpy.spin_once(node, timeout_sec=0.1)
+        if time.monotonic() - t0 > timeout_s:
+            return None
+    return future.result()
 
 
 class DepthCameraGrabber(Node):

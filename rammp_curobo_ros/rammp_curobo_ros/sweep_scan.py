@@ -4,13 +4,14 @@
 The arm holds its wrist pose and rotates its base joint from 90 deg left to
 90 deg right in discrete stations (stop-and-capture: TF and depth are
 exactly synchronized when stationary, which is where fused-scan error
-comes from). It runs the row twice — level and pitched down — so both far
-obstacles and the near tabletop are covered, fuses every station's depth
+comes from). It runs the row twice — a steep near-field view and a raised
+far-field view — so both the tabletop and distant obstacles are covered,
+then fuses every station's depth
 into one point cloud, clusters it into boxes, and writes the world YAML.
 The planner then starts against it in another terminal:
 
     ros2 launch rammp_curobo_ros planner.launch.py \
-        world:=/home/abra/.ros/rammp_curobo/scanned_world.yaml execute:=true
+        world:=$HOME/.ros/rammp_curobo/scanned_world.yaml execute:=true
 
 Usage (planner node with execute:=true and the camera driver both running;
 on the REAL arm a human holds the e-stop for the whole sweep):
@@ -31,7 +32,6 @@ behind the arm as certified free.
 
 import argparse
 import sys
-import threading
 import time
 
 import numpy as np
@@ -39,17 +39,22 @@ import rclpy
 from rclpy.action import ActionClient
 from sensor_msgs.msg import JointState
 
+from rammp_curobo.config import PLANNER_DEFAULTS
 from rammp_curobo_interfaces.action import ExecuteTrajectory, PlanToJoints
 from rammp_curobo_ros.scan_common import (
-    DEFAULT_OUT,
+    NODE_NAMESPACE,
+    DepthCameraGrabber,
+    add_cluster_args,
+    apply_world,
     cluster_boxes,
     load_camera_config,
+    report_boxes,
+    spin_until_done,
     write_world_yaml,
-    DepthCameraGrabber,
 )
 
-JOINTS = ["joint_%d" % i for i in range(1, 8)]
-PREFIX = "/rammp_curobo"
+JOINTS = list(PLANNER_DEFAULTS["joint_names"])
+PREFIX = NODE_NAMESPACE
 
 # The "periscope" scan posture (found by validated FK search): wrist high
 # (camera ~0.78 m) and pulled toward the axis (r ~0.12), view pitched ~42
@@ -87,21 +92,11 @@ class SweepDriver(DepthCameraGrabber):
                 sys.exit("no /joint_states — is the arm bringup running?")
         return list(self._q)
 
-    def _wait(self, future, timeout_s):
-        done = threading.Event()
-        future.add_done_callback(lambda _f: done.set())
-        t0 = time.monotonic()
-        while not done.is_set():
-            rclpy.spin_once(self, timeout_sec=0.1)
-            if time.monotonic() - t0 > timeout_s:
-                return None
-        return future.result()
-
     def _action(self, client, goal, timeout_s):
-        send = self._wait(client.send_goal_async(goal), 10.0)
+        send = spin_until_done(self, client.send_goal_async(goal), 10.0)
         if send is None or not send.accepted:
             return None
-        wrapped = self._wait(send.get_result_async(), timeout_s)
+        wrapped = spin_until_done(self, send.get_result_async(), timeout_s)
         return None if wrapped is None else wrapped.result
 
     def move_to(self, q_target, speed_scale):
@@ -173,30 +168,18 @@ def main():
         "afterwards)",
     )
     ap.add_argument("--speed-scale", type=float, default=0.25)
-    ap.add_argument(
-        "--frames", type=int, default=4, help="depth frames median-combined per station"
-    )
+    add_cluster_args(ap, frames=4, min_points_per_voxel=3, min_voxels=5, max_boxes=45)
     ap.add_argument(
         "--settle",
         type=float,
         default=0.4,
         help="seconds to settle at a station before capturing",
     )
-    ap.add_argument("--out", default=DEFAULT_OUT)
-    ap.add_argument(
-        "--apply", action="store_true", help="hot-swap the planner's world when done"
-    )
     ap.add_argument(
         "--dry-capture",
         action="store_true",
         help="NO MOTION: single capture from the current pose",
     )
-    ap.add_argument("--debug", action="store_true")
-    ap.add_argument("--voxel", type=float, default=0.04)
-    ap.add_argument("--min-points-per-voxel", type=int, default=3)
-    ap.add_argument("--min-voxels", type=int, default=5)
-    ap.add_argument("--max-boxes", type=int, default=45)
-    ap.add_argument("--inflate", type=float, default=0.01)
     args = ap.parse_args()
 
     rclpy.init()
@@ -265,39 +248,16 @@ def main():
     boxes, n_found = cluster_boxes(
         pts, args.voxel, args.min_points_per_voxel, args.min_voxels, args.max_boxes
     )
-    if n_found > len(boxes):
-        print("NOTE: %d clusters, keeping the %d largest" % (n_found, len(boxes)))
-
     np.save(args.out.replace(".yaml", "_cloud.npy"), pts)
     write_world_yaml(args.out, boxes, args.inflate, "by sweep_scan")
-    print("%-8s %-24s %s" % ("box", "center [m]", "dims [m]"))
-    for i, b in enumerate(boxes):
-        print(
-            "det_%-4d %-24s %s"
-            % (i, np.round(b["center"], 3).tolist(), np.round(b["dims"], 3).tolist())
-        )
-    print("world written: %s (%d boxes + table plane)" % (args.out, len(boxes)))
+    report_boxes(boxes, n_found, args.out)
     print(
         "start the planner against it with:\n  ros2 launch rammp_curobo_ros "
         "planner.launch.py world:=%s execute:=true" % args.out
     )
 
     if args.apply:
-        from rammp_curobo_interfaces.srv import SetWorld
-
-        client = node.create_client(SetWorld, PREFIX + "/set_world")
-        if not client.wait_for_service(timeout_sec=3.0):
-            sys.exit("planner node not running — world written, not applied")
-        fut = client.call_async(SetWorld.Request(world=args.out))
-        t0 = time.monotonic()
-        while not fut.done():
-            rclpy.spin_once(node, timeout_sec=0.2)
-            if time.monotonic() - t0 > 20:
-                sys.exit("set_world did not answer")
-        resp = fut.result()
-        print("set_world: %s (%s)" % ("OK" if resp.success else "FAILED", resp.message))
-        if not resp.success:
-            sys.exit(1)
+        apply_world(node, args.out)
 
 
 if __name__ == "__main__":

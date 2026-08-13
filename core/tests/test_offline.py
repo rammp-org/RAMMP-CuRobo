@@ -45,6 +45,20 @@ def test_planner_config_loads_and_merges():
     assert resolve_config(cfg["world"], relative_to=cfg_dir).is_file()
 
 
+def test_gen3_yaml_matches_planner_defaults():
+    # gen3.yaml deliberately restates every default so the file is the
+    # single human-readable reference (its own header says so). This test
+    # keeps the two copies honest: any drift between config.PLANNER_DEFAULTS
+    # and the YAML is a bug in whichever was edited alone.
+    from rammp_curobo.config import PLANNER_DEFAULTS
+
+    cfg, _ = load_planner_config("gen3.yaml")
+    for section in ("planner", "tool", "execution"):
+        assert cfg[section] == PLANNER_DEFAULTS[section], section
+    assert cfg["joint_names"] == PLANNER_DEFAULTS["joint_names"]
+    assert cfg["home_pose_rad"] == pytest.approx(PLANNER_DEFAULTS["home_pose_rad"])
+
+
 def test_baked_robot_config_carries_the_patches():
     path = resolve_config("robot_gen3_2f85.yaml")
     kin = yaml.safe_load(path.read_text())["robot_cfg"]["kinematics"]
@@ -81,7 +95,8 @@ def test_world_cuboids_padding_and_ignore():
     assert boxes["pedestal"]["dims"] == pytest.approx([0.14, 0.14, 0.04])
     table = next(o for o in scene.obstacles if o.name == "table")
     assert boxes["table"]["dims"] == pytest.approx([d + 0.04 for d in table.dims])
-    # count fits the default collision cache with add-more headroom
+    # the sim kitchen must leave headroom under the 60-box cache for
+    # update_world additions (40 keeps a wide margin)
     assert len(boxes) <= 40
 
 

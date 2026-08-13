@@ -10,9 +10,20 @@ step-to-step continuity consistent with the trajectory's own timing.
 
 import numpy as np
 
+from rammp_curobo.geometry import ang_diff
+
+# Allowed step between consecutive points: slack * v_limit * dt. Shared
+# with the ROS executor's message-level gate (executor.py imports it) —
+# one constant, one tripwire.
+CONTINUITY_SLACK = 3.0
+
 
 def validate_trajectory(
-    traj, position_limits, velocity_limits, position_margin=1e-3, continuity_slack=3.0
+    traj,
+    position_limits,
+    velocity_limits,
+    position_margin=1e-3,
+    continuity_slack=CONTINUITY_SLACK,
 ):
     """Return a list of violation strings — empty means the trajectory passed.
 
@@ -78,8 +89,6 @@ def start_state_matches(traj, current_positions, tol_rad=0.05):
 
     Wrap-aware: reported angles of continuous joints flip by 2*pi at the
     +/-pi boundary (geometry.ang_diff)."""
-    from rammp_curobo.geometry import ang_diff
-
     q = np.asarray(current_positions, dtype=float)
     first = np.asarray(traj.positions[0], dtype=float)
     err = float(max(abs(ang_diff(f, c)) for f, c in zip(first, q)))

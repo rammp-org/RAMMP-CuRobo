@@ -258,4 +258,3 @@ targets:
     rpy_deg: [0, 90, 0]              # tool level, facing forward: ready pose
     keywords: [rest, middle, center, neutral, ready]
     description: a neutral ready position out in front
-

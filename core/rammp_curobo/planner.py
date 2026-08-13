@@ -15,8 +15,10 @@ Jetson-specific decisions inherited from RAMMP-Kinova's field notes (do not
   * torch linalg is routed to MAGMA and the graph (PRM) planner stays OFF —
     the Jetson torch wheel's cuSOLVER path lacks cusolverDnXsyevBatched and
     dies inside torch.svd (DT_EXCEPTION).
-  * plan_to_joints defaults to the FK-pose fallback for the same reason:
-    plan_single_js's internal graph fallback engages even on single attempts.
+  * plan_to_joints tries native plan_single_js first (verified working on
+    the torch 2.10 jp6/cu126 wheel) and falls back to FK-pose planning on
+    failure; the graph fallback that killed js planning on older wheels
+    stays hard-disabled either way.
   * cuRobo velocity_scale is never passed (plan at 1.0); slow execution is
     time dilation at the execution layer (retime.py).
   * Only the TRIMMED interpolated plan leaves this class — cuRobo result
@@ -24,6 +26,7 @@ Jetson-specific decisions inherited from RAMMP-Kinova's field notes (do not
 """
 
 import logging
+import math
 import time
 
 import numpy as np
@@ -48,6 +51,7 @@ class CuRoboPlanner:
 
     def __init__(self, config, config_dir=None):
         self._cfg = config
+        self._config_dir = config_dir
         p = config["planner"]
         self.joint_names = list(config["joint_names"])
         self.home_pose = [float(v) for v in config["home_pose_rad"]]
@@ -62,7 +66,7 @@ class CuRoboPlanner:
         self.world_padding = float(p["world_padding"])
         self.no_pad_names = frozenset(p["no_pad_names"] or [])
         self.joint_space_method = str(p["joint_space_method"])
-        self.limit_clamp_rad = float(p.get("limit_clamp_rad", 0.05))
+        self.limit_clamp_rad = float(p["limit_clamp_rad"])
         self.tool_spin_deg = float(config["tool"]["spin_deg"])
         self.tool_tip_offset = float(config["tool"]["tip_offset_m"])
         self.execution = dict(config["execution"])
@@ -207,7 +211,9 @@ class CuRoboPlanner:
         fall back to 'fk_pose'. method 'fk_pose': plan in POSE space to the
         FK of q_goal; reaches the same tool pose but redundancy may land a
         DIFFERENT joint vector — goal_mismatch_rad records the gap, check
-        it before executing anything that assumes specific joints.
+        it before executing anything that assumes specific joints. method
+        'js': force native plan_single_js with no fallback (what 'auto'
+        tries first).
         """
         t0 = time.monotonic()
         q_goal = [float(v) for v in q_goal]
@@ -238,13 +244,7 @@ class CuRoboPlanner:
             res.timing = time.monotonic() - t0
             return res
         if method == "js":
-            from curobo.types.robot import JointState as CuJointState
-
-            by_name = dict(zip(self.joint_names, q_goal))
-            goal = CuJointState.from_position(
-                self._tensor([[by_name[n] for n in self._curobo_joint_names]]),
-                joint_names=list(self._curobo_joint_names),
-            )
+            goal = self._curobo_state(q_goal)
             try:
                 result = self._motion_gen.plan_single_js(
                     self._start_state(start), goal, self._plan_config()
@@ -285,7 +285,7 @@ class CuRoboPlanner:
         elif isinstance(world, (list, tuple)):
             scene = scene_from_obstacles(world)
         else:
-            scene = load_scene(resolve_config(world))
+            scene = load_scene(resolve_config(world, relative_to=self._config_dir))
         wc = make_world_config(
             scene,
             padding=self.world_padding,
@@ -306,12 +306,18 @@ class CuRoboPlanner:
     def scene(self):
         return self._scene
 
+    @property
+    def world_name(self):
+        """The world reference the planner was configured with (a name or
+        path string; informational — update_world does not change it)."""
+        return str(self._cfg.get("world", ""))
+
     def fk(self, q, quat_order="xyzw"):
         """Forward kinematics of a controller-order joint vector ->
         (position [x,y,z], quaternion in `quat_order`) of the ee_link."""
-        by_name = dict(zip(self.joint_names, [float(v) for v in q]))
-        qc = [by_name[n] for n in self._curobo_joint_names]
-        state = self._motion_gen.kinematics.get_state(self._tensor([qc]))
+        state = self._motion_gen.kinematics.get_state(
+            self._tensor([self._to_curobo_order(q)])
+        )
         pos = [float(v) for v in state.ee_position[0].tolist()]
         wxyz = [float(v) for v in state.ee_quaternion[0].tolist()]
         return pos, (wxyz if quat_order == "wxyz" else geometry.wxyz_to_xyzw(wxyz))
@@ -329,13 +335,7 @@ class CuRoboPlanner:
     def check_state_valid(self, q):
         """(feasible, detail) for one controller-order joint vector against
         joint limits, self-collision, and the CURRENT collision world."""
-        from curobo.types.robot import JointState as CuJointState
-
-        by_name = dict(zip(self.joint_names, [float(v) for v in q]))
-        qc = [by_name[n] for n in self._curobo_joint_names]
-        state = CuJointState.from_position(
-            self._tensor([qc]), joint_names=list(self._curobo_joint_names)
-        )
+        state = self._curobo_state(q)
         try:
             metrics = self._motion_gen.check_constraints(state)
             ok = bool(metrics.feasible.all().item())
@@ -349,6 +349,21 @@ class CuRoboPlanner:
             data, device=self._tensor_args.device, dtype=self._tensor_args.dtype
         )
 
+    def _to_curobo_order(self, q):
+        """Controller-order joint vector -> cuRobo cspace order (by name —
+        cuRobo consumes states in ITS order and never reorders)."""
+        by_name = dict(zip(self.joint_names, [float(v) for v in q]))
+        return [by_name[n] for n in self._curobo_joint_names]
+
+    def _curobo_state(self, q):
+        """Controller-order joint vector -> single-state CuJointState."""
+        from curobo.types.robot import JointState as CuJointState
+
+        return CuJointState.from_position(
+            self._tensor([self._to_curobo_order(q)]),
+            joint_names=list(self._curobo_joint_names),
+        )
+
     def _nearest_branch(self, q_goal, q_ref):
         """Shift continuous joints' goals by 2*pi onto the branch nearest
         the start.
@@ -360,8 +375,6 @@ class CuRoboPlanner:
         plan a full winding revolution. Only joints whose model range
         spans more than 2*pi are shifted, and never outside the limits.
         """
-        import math
-
         lim = self.joint_limits()["position"]
         out = []
         for j, (g, r) in enumerate(zip(q_goal, q_ref)):
@@ -425,20 +438,14 @@ class CuRoboPlanner:
         return arr.tolist(), None
 
     def _start_state(self, q=None):
-        from curobo.types.robot import JointState as CuJointState
-
         q = self.home_pose if q is None else [float(v) for v in q]
         if len(q) != len(self.joint_names):
             raise ValueError(
                 "start has %d values for %d joints" % (len(q), len(self.joint_names))
             )
-        by_name = dict(zip(self.joint_names, q))
-        qc = [by_name[n] for n in self._curobo_joint_names]
-        return CuJointState.from_position(
-            self._tensor([qc]), joint_names=list(self._curobo_joint_names)
-        )
+        return self._curobo_state(q)
 
-    def _plan_config(self, check_start=True):
+    def _plan_config(self):
         from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
 
         kw = {}
@@ -447,8 +454,6 @@ class CuRoboPlanner:
             # attempts unless this is None — and the graph planner is the
             # exact thing the Jetson wheel cannot run. Never let it engage.
             kw["enable_graph_attempt"] = None
-        if not check_start:
-            kw["check_start_validity"] = False
         return MotionGenPlanConfig(
             max_attempts=self.max_attempts,
             enable_graph=self.enable_graph,

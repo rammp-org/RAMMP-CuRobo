@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "rammp-curobo"
 version = "0.1.0"
 description = "Pure-Python cuRobo motion-planning core for the RAMMP Kinova Gen3 (no ROS imports)"
+license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
 # torch and cuRobo (nvidia_curobo, PINNED v0.7.8) are deliberately NOT listed:
 # on the Jetson they come from the platform-specific pinned install documented

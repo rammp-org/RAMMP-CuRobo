@@ -31,6 +31,10 @@ first runs (an extra speed cap on top of ours), but know they're there.
 
 ## 1. Measure the bench, edit the world
 
+(The bench: see `Dojo_pic_1.jpg` / `Dojo_pic_2.jpg` in this directory —
+the arm is bolted nearly flush to a caster-mounted table, e-stop clamped
+at the front edge.)
+
 Edit `core/rammp_curobo/configs/world_real_bench.yaml` (or a copy):
 measure from the arm's base_link origin (+x forward, +z up) and set at
 minimum the real table top height/extents plus anything within reach.
@@ -111,6 +115,11 @@ for before the e-stop; prove it works while the motion is trivial.
 ## 5. Only after 3 & 4 are clean
 
 - Repeat with other single-joint deltas; then 25% speed (`--speed-scale 0.25`).
+- Build the collision world automatically: `ros2 run rammp_curobo_ros
+  sweep_scan --camera camera_d405_wrist.yaml --apply` (see the README's
+  "Automatic obstacle scanning" section — the camera mount YAML must be
+  measured and dry-capture-verified first). The static table plane still
+  comes from this runbook's step 1 either way.
 - Gripper: `ros2 service call /rammp_curobo/close_gripper std_srvs/srv/Trigger`
   (and open) — the arm doesn't move, but keep clear of the fingers.
 - Cartesian goals (`--pos ... --quat ...`) only AFTER the world file has

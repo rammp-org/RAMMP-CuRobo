@@ -3,7 +3,8 @@
 
 RAMMP-Kinova patched cuRobo's bundled kinova_gen3.yml IN MEMORY on every
 planner start (curobo_planner/planner_node.py:329-423). This repo bakes the
-same patches into configs/robot_gen3_2f85.yaml once, so the collision model
+same patches into core/rammp_curobo/configs/robot_gen3_2f85.yaml once (the
+packaged config gen3.yaml loads), so the collision model
 that plans is the one you can read and diff:
 
   * inner fingertip pad spheres inflated 0.01 -> 0.02 m (real pad size —
@@ -29,6 +30,11 @@ from pathlib import Path
 
 import yaml
 
+# The canonical home pose lives in rammp_curobo.config.PLANNER_DEFAULTS —
+# imported (not copied) so the baked retract_config can never de-sync from
+# the runtime home, which would break the elbow-family IK seeding.
+from rammp_curobo.config import PLANNER_DEFAULTS
+
 OUT = (
     Path(__file__).resolve().parent.parent
     / "core"
@@ -37,7 +43,8 @@ OUT = (
     / "robot_gen3_2f85.yaml"
 )
 
-HOME_POSE = [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]
+HOME_POSE = list(PLANNER_DEFAULTS["home_pose_rad"])
+JOINT_NAMES = list(PLANNER_DEFAULTS["joint_names"])
 PAD_SPHERE_RADIUS = 0.02
 
 # Audit-tuned replacement arm spheres (RAMMP-Kinova planner_node._ARM_SPHERES).
@@ -141,7 +148,7 @@ def main():
     kin["collision_spheres"] = spheres
 
     cspace = kin["cspace"]
-    assert cspace["joint_names"] == ["joint_%d" % i for i in range(1, 8)]
+    assert cspace["joint_names"] == JOINT_NAMES
     cspace["retract_config"] = [float(v) for v in HOME_POSE]
 
     buf = io.StringIO()

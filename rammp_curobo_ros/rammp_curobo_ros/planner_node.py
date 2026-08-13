@@ -160,7 +160,7 @@ class RammpCuroboNode(Node):
         # obstacles do not exist on the real bench — cuRobo would dodge
         # phantom furniture and happily route through real objects.
         use_sim_time = bool(self.get_parameter("use_sim_time").value)
-        world_name = self.world or str(self.planner._cfg.get("world", ""))
+        world_name = self.world or self.planner.world_name
         if not use_sim_time and "sim" in world_name:
             self.get_logger().warning(
                 "=== Planning against the SIM world (%s) WITHOUT sim time — "
@@ -230,8 +230,11 @@ class RammpCuroboNode(Node):
             return result
         res = self._plan(lambda q: self.planner.plan_to_joints(target, start=q))
         out = self._finish_plan(goal_handle, result, res)
-        if res is not None and res.goal_mismatch_rad is not None:
-            out.goal_mismatch_rad = float(res.goal_mismatch_rad)
+        # _plan returns None (busy) or False (no joint state) as sentinels —
+        # only a real PlanResult carries goal_mismatch_rad.
+        mismatch = getattr(res, "goal_mismatch_rad", None)
+        if mismatch is not None:
+            out.goal_mismatch_rad = float(mismatch)
         return out
 
     def _plan(self, plan_fn):

@@ -24,23 +24,28 @@ Ctrl+C during execution cancels the goal: the controller stops and holds.
 import argparse
 import sys
 import threading
+import time
 
 import numpy as np
 import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from sensor_msgs.msg import JointState
 
 from rammp_curobo_interfaces.action import ExecuteTrajectory, PlanToJoints, PlanToPose
 
+# This example is deliberately standalone — it shows what an integrating
+# module needs WITHOUT importing rammp_curobo or rammp_curobo_ros, so the
+# planner node's namespace and joint order are restated here (they come
+# from planner_node.py's Node("rammp_curobo") and config.PLANNER_DEFAULTS).
 SERVER_PREFIX = "/rammp_curobo"
+JOINT_NAMES = ["joint_%d" % i for i in range(1, 8)]
 
 
 def wait(future, executor, timeout_s=None):
     done = threading.Event()
     future.add_done_callback(lambda _f: done.set())
-    import time
-
     t0 = time.monotonic()
     while not done.is_set():
         executor.spin_once(timeout_sec=0.1)
@@ -74,6 +79,31 @@ def call_action(node, executor, action_type, name, goal, timeout_s=300.0):
     return wrapped.result
 
 
+def read_joint_state(node, executor, timeout_s=5.0):
+    """One fresh /joint_states sample, mapped to joint_1..joint_7 order."""
+
+    names = JOINT_NAMES
+    slot = {}
+    sub = node.create_subscription(
+        JointState, "/joint_states", lambda m: slot.update(msg=m), 10
+    )
+    t0 = time.monotonic()
+    while "msg" not in slot:
+        executor.spin_once(timeout_sec=0.1)
+        if time.monotonic() - t0 > timeout_s:
+            sys.exit(
+                "No /joint_states within %.0f s — is the arm/sim "
+                "bringup running?" % timeout_s
+            )
+    node.destroy_subscription(sub)
+    msg = slot["msg"]
+    idx = {n: i for i, n in enumerate(msg.name)}
+    try:
+        return [float(msg.position[idx[n]]) for n in names]
+    except KeyError as exc:
+        sys.exit("joint %s missing from /joint_states" % exc)
+
+
 def summarize(traj, scale):
     pos = np.array([p.positions for p in traj.points])
     t_end = (
@@ -97,7 +127,13 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     goal = ap.add_mutually_exclusive_group(required=True)
-    goal.add_argument("--joints", type=float, nargs=7, metavar="RAD")
+    goal.add_argument(
+        "--joints",
+        type=float,
+        nargs=7,
+        metavar="RAD",
+        help="goal joint positions, controller order (joint_1..joint_7)",
+    )
     goal.add_argument(
         "--joints-relative",
         type=float,
@@ -107,7 +143,13 @@ def main():
         "the first-hardware-move primitive (small, known "
         "displacement from wherever the arm is)",
     )
-    goal.add_argument("--pos", type=float, nargs=3, metavar=("X", "Y", "Z"))
+    goal.add_argument(
+        "--pos",
+        type=float,
+        nargs=3,
+        metavar=("X", "Y", "Z"),
+        help="goal tool_frame position (m, base frame); needs --quat",
+    )
     ap.add_argument(
         "--quat",
         type=float,
@@ -121,7 +163,13 @@ def main():
         help="after previewing, offer to execute (needs the node "
         "launched with execute:=true)",
     )
-    ap.add_argument("--speed-scale", type=float, default=0.25)
+    ap.add_argument(
+        "--speed-scale",
+        type=float,
+        default=0.25,
+        help="execution-side time dilation, 0 < s <= 1 (the node refuses "
+        "anything above its max_speed_scale)",
+    )
     ap.add_argument(
         "--allow-mismatch",
         action="store_true",
@@ -158,8 +206,10 @@ def main():
             pose.orientation.z,
             pose.orientation.w,
         ) = args.quat
+        goal = PlanToPose.Goal()
+        goal.target = pose
         result = call_action(
-            node, executor, PlanToPose, SERVER_PREFIX + "/plan_to_pose", pose_goal(pose)
+            node, executor, PlanToPose, SERVER_PREFIX + "/plan_to_pose", goal
         )
 
     if not result.success:
@@ -213,40 +263,6 @@ def main():
         print("EXECUTED: %s" % exec_result.message)
     else:
         sys.exit("EXECUTION FAILED: %s" % exec_result.message)
-
-
-def pose_goal(pose):
-    g = PlanToPose.Goal()
-    g.target = pose
-    return g
-
-
-def read_joint_state(node, executor, timeout_s=5.0):
-    """One fresh /joint_states sample, mapped to joint_1..joint_7 order."""
-    import time
-
-    from sensor_msgs.msg import JointState
-
-    names = ["joint_%d" % i for i in range(1, 8)]
-    slot = {}
-    sub = node.create_subscription(
-        JointState, "/joint_states", lambda m: slot.update(msg=m), 10
-    )
-    t0 = time.monotonic()
-    while "msg" not in slot:
-        executor.spin_once(timeout_sec=0.1)
-        if time.monotonic() - t0 > timeout_s:
-            sys.exit(
-                "No /joint_states within %.0f s — is the arm/sim "
-                "bringup running?" % timeout_s
-            )
-    node.destroy_subscription(sub)
-    msg = slot["msg"]
-    idx = {n: i for i, n in enumerate(msg.name)}
-    try:
-        return [float(msg.position[idx[n]]) for n in names]
-    except KeyError as exc:
-        sys.exit("joint %s missing from /joint_states" % exc)
 
 
 if __name__ == "__main__":

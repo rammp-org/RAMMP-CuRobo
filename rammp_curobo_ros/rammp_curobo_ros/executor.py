@@ -24,9 +24,8 @@ from control_msgs.action import FollowJointTrajectory
 from rclpy.action import ActionClient
 
 from rammp_curobo.geometry import ang_diff
+from rammp_curobo.validate import CONTINUITY_SLACK
 from rammp_curobo_ros.conversions import msg_arrays, scaled_msg
-
-CONTINUITY_SLACK = 3.0
 
 
 def await_future(future, timeout_s):
@@ -102,6 +101,7 @@ class TrajectoryExecutor:
 
     def __init__(self, node, controller_action, callback_group):
         self._node = node
+        self._action_name = controller_action
         self._client = ActionClient(
             node,
             FollowJointTrajectory,
@@ -136,7 +136,7 @@ class TrajectoryExecutor:
         )
         if not self.server_ready():
             return "failed", (
-                "controller action server %s not available" % self._client._action_name
+                "controller action server %s not available" % self._action_name
             )
 
         goal = FollowJointTrajectory.Goal()

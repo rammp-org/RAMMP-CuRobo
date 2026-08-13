@@ -3,7 +3,7 @@
 
 Nothing here can move an arm: this is the Layer-1 library alone. Examples:
 
-    # joint-space goal (FK-pose method on the Jetson), from home
+    # joint-space goal (native js planning; FK-pose fallback automatic), from home
     python3 examples/plan_only.py --joints 0.3 0.262 3.142 -2.269 0.0 0.960 1.571
 
     # tool_frame pose goal: position + roll/pitch/yaw in degrees
@@ -44,14 +44,15 @@ def main():
         metavar=("X", "Y", "Z"),
         help="goal tool_frame position (m, base frame)",
     )
-    ap.add_argument(
+    ori = ap.add_mutually_exclusive_group()
+    ori.add_argument(
         "--rpy-deg",
         type=float,
         nargs=3,
         metavar=("R", "P", "Y"),
         help="goal orientation as roll/pitch/yaw degrees",
     )
-    ap.add_argument(
+    ori.add_argument(
         "--quat",
         type=float,
         nargs=4,
@@ -72,6 +73,8 @@ def main():
         help="preview execution-side retiming (0 < s <= 1)",
     )
     args = ap.parse_args()
+    if args.joints is not None and (args.quat or args.rpy_deg):
+        ap.error("--quat/--rpy-deg only apply to --pos goals")
 
     print("Initializing planner (GPU init + warmup — first run takes a while)...")
     planner = CuRoboPlanner.from_config(args.config)

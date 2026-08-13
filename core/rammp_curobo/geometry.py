@@ -33,12 +33,6 @@ def euler_deg_to_quat_xyzw(rpy_deg):
     )
 
 
-def euler_deg_to_wxyz(rpy_deg):
-    """roll/pitch/yaw (degrees) -> [w, x, y, z] quaternion, cuRobo order."""
-    x, y, z, w = euler_deg_to_quat_xyzw(rpy_deg)
-    return [w, x, y, z]
-
-
 def xyzw_to_wxyz(q):
     x, y, z, w = q
     return [w, x, y, z]
