@@ -123,3 +123,30 @@ def test_wrapped_joint_report_is_not_stale():
     q_now = list(msg.points[0].positions)
     q_now[2] = -3.1416
     assert validate_goal_msg(msg, JOINTS, q_now, POS_LIMITS, VEL_LIMITS, 0.05) == []
+
+
+def test_palm_target_gate():
+    from rammp_curobo_ros.palm_demo import palm_target_ok
+
+    ok, _ = palm_target_ok([0.55, 0.1, 0.45])
+    assert ok
+    assert not palm_target_ok([0.55, 0.1, 0.05])[0]  # too low (table)
+    assert not palm_target_ok([0.2, 0.1, 0.45])[0]  # too close to base
+    assert not palm_target_ok([0.9, 0.3, 0.45])[0]  # out of reach
+    assert not palm_target_ok([-0.5, 0.1, 0.45])[0]  # behind the corridor
+    assert not palm_target_ok([0.5, 0.1, 1.2])[0]  # too high
+
+
+def test_palm_detect_prefers_nearest_blob():
+    import numpy as np
+
+    from rammp_curobo_ros.palm_demo import detect_palm
+
+    rng = np.random.default_rng(1)
+    hand = rng.normal([0.55, 0.05, 0.45], 0.02, size=(400, 3))
+    wall = rng.normal([1.05, 0.0, 0.5], [0.02, 0.3, 0.3], size=(3000, 3))
+    palm, n, _ = detect_palm(np.vstack([hand, wall]))
+    assert palm is not None
+    assert np.linalg.norm(palm - [0.55, 0.05, 0.45]) < 0.05
+    none, _n, why = detect_palm(np.zeros((10, 3)))
+    assert none is None and "not enough" in why

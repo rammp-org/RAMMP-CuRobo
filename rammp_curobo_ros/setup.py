@@ -27,6 +27,7 @@ setup(
             "planner_node = rammp_curobo_ros.planner_node:main",
             "scan_world = rammp_curobo_ros.scan_world:main",
             "sweep_scan = rammp_curobo_ros.sweep_scan:main",
+            "palm_demo = rammp_curobo_ros.palm_demo:main",
         ],
     },
 )
