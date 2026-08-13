@@ -152,9 +152,11 @@ for before the e-stop; prove it works while the motion is trivial.
   controller-mode switch and clears it only when the switch completes; a
   fault mid-switch strands it set, and every write is silently discarded
   forever after. Fix: restart the kortex bringup (the arm holds its pose
-  through the restart). Symptom triad that identifies this case: goals
-  "succeed" with zero motion + no fault log spam + internal_fault false /
-  arm state READY.
+  through the restart). Symptoms identifying this case: goals "succeed"
+  with zero motion + NO fault log spam + the arm itself reporting
+  READY/SERVOING via a direct Kortex query. (Do not rely on
+  /fault_controller/internal_fault — it read `true` on this stack even
+  while the arm was healthy in low-level servoing.)
 - After any e-stop or fault, RE-RUN the dry-run step before arming again
   (the arm may have been moved by hand; stale plans are refused, but check
   the world still matches reality too).
