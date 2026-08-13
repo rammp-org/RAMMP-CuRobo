@@ -258,6 +258,14 @@ def main():
         "Operator: hand on the physical e-stop; Ctrl+C stops and holds."
     )
 
+    node.joints()  # wait for the bringup
+    if node.wrist_effort() is None:
+        print(
+            "WARNING: /joint_states carries no effort values — torque touch "
+            "detection is UNAVAILABLE; the final approach will stop at the "
+            "palm plane by position only."
+        )
+
     while True:
         # 1. be at home (the detection vantage)
         q = node.joints()
