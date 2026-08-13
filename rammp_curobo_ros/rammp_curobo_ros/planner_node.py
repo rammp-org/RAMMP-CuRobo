@@ -127,6 +127,24 @@ class RammpCuroboNode(Node):
         self.executor_helper = TrajectoryExecutor(
             self, self.controller_action, self._cb
         )
+        # Servoing-recovery clients (see _try_servoing_recovery): transient
+        # arm faults at motion onset knock the Gen3 out of low-level
+        # servoing; recovery = clear faults, then bounce the JTC so its
+        # hold state resyncs to the true joint positions and the driver
+        # re-enters low-level mode via its controller-switch path.
+        from controller_manager_msgs.srv import SwitchController
+        from example_interfaces.srv import Trigger as ExampleTrigger
+
+        self._reset_fault_type = ExampleTrigger
+        self._reset_fault = self.create_client(
+            ExampleTrigger, "/fault_controller/reset_fault", callback_group=self._cb
+        )
+        self._switch_type = SwitchController
+        self._switch_ctrl = self.create_client(
+            SwitchController,
+            "/controller_manager/switch_controller",
+            callback_group=self._cb,
+        )
         self._gripper = (
             ActionClient(self, GripperCommand, gripper_action, callback_group=self._cb)
             if self.gripper_enabled
