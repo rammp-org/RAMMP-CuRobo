@@ -206,8 +206,11 @@ class TrajectoryExecutor:
                     )
                     hint = (
                         "the arm never left the start — controller "
-                        "reported success without moving (known kortex "
-                        "hiccup; safe to replan and retry)"
+                        "reported success without moving. Once: kortex "
+                        "hiccup, replan and retry. REPEATING: the arm has "
+                        "dropped out of servoing — reset with: ros2 "
+                        "service call /fault_controller/reset_fault "
+                        "example_interfaces/srv/Trigger"
                         if from_start < 0.05
                         else "stopped partway — possible physical contact "
                         "or controller saturation"

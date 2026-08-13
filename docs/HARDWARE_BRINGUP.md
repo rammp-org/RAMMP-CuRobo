@@ -135,6 +135,16 @@ for before the e-stop; prove it works while the motion is trivial.
   bringup spawns a fault controller — `ros2 service list | grep -i fault`
   for the reset interface. If in doubt: e-stop, then power-cycle the arm
   and restart the bringup.
+- **Arm ignores every command but reports success** (seen 2026-08-13):
+  every trajectory "succeeds" with zero motion and the driver log spams
+  "combination of Control Mode and Active State are not supported" — the
+  arm dropped out of low-level servoing (states still stream, writes go
+  nowhere; the stock JTC config's disabled goal tolerances mask it).
+  Fix, verified live:
+  `ros2 service call /fault_controller/reset_fault example_interfaces/srv/Trigger`
+  then confirm the log spam stopped before commanding motion again. A
+  single isolated no-motion "success" is the milder intermittent form —
+  sweep_scan retries it automatically.
 - After any e-stop or fault, RE-RUN the dry-run step before arming again
   (the arm may have been moved by hand; stale plans are refused, but check
   the world still matches reality too).
