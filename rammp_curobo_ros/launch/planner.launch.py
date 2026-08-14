@@ -2,20 +2,20 @@
 
 The node is a planning service: it takes an end position (a tool pose or a
 joint goal) and returns the collision-free joint trajectory. It never owns
-the arm — execution goes to the kinova_arm_ros2 driver's
-/execute_joint_trajectory action (start `kinova_arm_node` separately:
-`--sim` for the simulator, `--ip 192.168.1.10` for the real Gen3).
+the arm — execution goes to whatever ros2_control stack is already running
+(started separately; on this lab's Jetson that is the RAMMP-Kinova
+workspace's kortex bringup or MuJoCo sim).
 
 Planning-only (the Docker/service use — nothing can move):
 
     ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml
 
-Plan + execute against a running kinova_arm_node (sim stub or real —
-same command; the driver publishes no /clock, so use_sim_time stays
-false either way):
+Plan + execute against an existing bringup (sim or real):
 
+    ros2 launch rammp_curobo_ros planner.launch.py use_sim_time:=true \
+        execute:=true                                                   # sim
     ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml \
-        execute:=true
+        execute:=true                                                   # real
 
 Execution stays disabled until execute:=true is passed — the node plans
 (dry-run) but refuses ExecuteTrajectory goals.
@@ -52,13 +52,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "use_sim_time",
             default_value="false",
-            description="true only under a /clock-publishing simulator "
-            "(kinova_arm_node --sim runs on wall clock: leave false)",
+            description="true when running against the MuJoCo sim",
         ),
         DeclareLaunchArgument(
-            "arm_action",
-            default_value="/execute_joint_trajectory",
-            description="the driver's ExecuteJointTrajectory action name",
+            "controller_action",
+            default_value="/joint_trajectory_controller/follow_joint_trajectory",
+            description="FollowJointTrajectory action of the arm's controller",
         ),
     ]
 
@@ -75,7 +74,7 @@ def generate_launch_description():
                 "execute": LaunchConfiguration("execute"),
                 "speed_scale": LaunchConfiguration("speed_scale"),
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
-                "arm_action": LaunchConfiguration("arm_action"),
+                "controller_action": LaunchConfiguration("controller_action"),
             }
         ],
     )

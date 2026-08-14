@@ -1,13 +1,12 @@
-# Execute a previously planned trajectory, forwarded to the
-# kinova_arm_ros2 driver's /execute_joint_trajectory action. Same goal
-# shape as Demo-Software's arm_interfaces/ExecuteTrajectory, plus
-# execution-side speed scaling.
+# Execute a previously planned trajectory on the arm's ros2_control
+# joint trajectory controller. Same goal shape as Demo-Software's
+# arm_interfaces/ExecuteTrajectory, plus execution-side speed scaling.
 #
 # The server refuses to execute unless its `execute` parameter is true,
 # and re-validates the trajectory against joint limits and the arm's
 # CURRENT state (a stale plan whose start no longer matches is rejected —
 # the catch-up sweep would be unplanned motion). Cancelling the goal
-# cancels the driver goal: the arm stops and holds.
+# cancels the controller goal: the arm stops and holds.
 trajectory_msgs/JointTrajectory trajectory
 float64 speed_scale           # (0, 1]; 0 = server's configured default
 ---

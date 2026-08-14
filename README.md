@@ -4,9 +4,8 @@ GPU motion planning (NVIDIA cuRobo) for the RAMMP Kinova Gen3 7-DoF, as a
 standalone planning service any RAMMP module can adopt: **in** goes an end
 position (tool pose or joint goal), **out** comes the collision-free,
 time-parameterized joint trajectory for the arm to execute. The planner
-never owns the arm — execution is the caller's, or the optional
-safety-gated executor's, which drives the kinova_arm_ros2 driver's
-`/execute_joint_trajectory` action (sim and real through the same action).
+never owns the arm — execution is the caller's (or the optional
+safety-gated executor's, pointed at an existing ros2_control bringup).
 
 ```
 core/                     Layer 1 — pip package `rammp-curobo`: pure-Python
@@ -14,8 +13,7 @@ core/                     Layer 1 — pip package `rammp-curobo`: pure-Python
 rammp_curobo_interfaces/  ROS 2 action/srv definitions (dependency-free)
 rammp_curobo_ros/         Layer 2 — planner node + safety-gated executor
                           + tour_demo (the showcase: 4 random points, one
-                          merged trajectory — 0.32 speed until the
-                          driver's reference cap rises)
+                          merged full-speed trajectory)
 examples/                 plan_only.py (no ROS) / plan_and_execute.py
 scripts/                  config baking, live sim checks
 docker/                   the planning service as a container (Jetson/JP6)
@@ -25,9 +23,10 @@ docs/HARDWARE_BRINGUP.md  the real-arm runbook — READ BEFORE TOUCHING HARDWARE
 > **Hardware safety, non-negotiable:** a human holds the physical e-stop
 > during ALL hardware runs. Execution is opt-in at three separate layers
 > (node `execute:=true`, example/demo `--execute`, typed confirmation),
-> defaults to 25% speed (32% for the tour demo), and every plan is
-> re-validated against limits and the arm's live state before anything
-> reaches the driver.
+> defaults to 25% speed (`tour_demo` alone runs full-speed, behind its
+> own all-caps warning and typed 'go'), and every plan is re-validated
+> against limits and the arm's live state before anything reaches the
+> controller.
 
 ## Install (Jetson AGX Orin)
 
@@ -77,15 +76,12 @@ colcon build --symlink-install \
 
 ### 4. Arm driver workspace (only for executing on this bench)
 
-Execution goes through **rammp-org/kinova_arm_ros2** (`kinova_arm_node`,
-the thin ROS 2 shell over the kinova-gen3-driver 1 kHz RT core — it
-replaced the ros2_kortex stack here 2026-08-14). On this Jetson it is
-built at `/tmp/kinova-ros2-ws` by the driver author's rsync dev loop
-(abra has no GitHub key; note /tmp does not survive reboots). Source its
-`install/setup.zsh` under ours when executing; building
-`rammp_curobo_ros` itself does NOT need it, and neither does the
-planning-only Docker image (the driver interface is a lazy, runtime-only
-dependency).
+Execution goes through ros2_control. Sim and real both come from the
+RAMMP-Kinova workspace (`~/RAMMP-Kinova/ros2_ws`), set up once via its
+`scripts/setup_ros2_kortex.sh` (clones Kinovarobotics/ros2_kortex@humble +
+pinned deps, builds `kortex_bringup` and `mujoco_sim`). This repo
+deliberately does not include or launch any arm driver — one
+`/controller_manager` per arm, owned elsewhere.
 
 Performance: `sudo nvpmodel -m 0 && sudo jetson_clocks` before demos.
 
@@ -127,14 +123,12 @@ thing as a container.
 Start the arm side first — this repo never launches it:
 
 ```bash
-# sim (terminal 1) — NOTE: the driver's --sim is a STATIC transport stub
-# (measured q never moves): right for exercising gates/comms, no motion.
+# sim (terminal 1):
 export ROS_LOCALHOST_ONLY=1
-source /opt/ros/humble/setup.zsh && source /tmp/kinova-ros2-ws/install/setup.zsh
-cd /tmp/kinova-ros2-ws/src/kinova-gen3-driver
-ros2 run kinova_arm_ros2 kinova_arm_node --sim --urdf models/gen3_7dof_2f85.urdf
-# real arm instead: same node with --ip 192.168.1.10, ATTENDED ONLY, per
-# docs/HARDWARE_BRINGUP.md — human on the e-stop
+source /opt/ros/humble/setup.zsh && source ~/RAMMP-Kinova/ros2_ws/install/setup.zsh
+ros2 launch mujoco_sim mujoco_bringup.launch.py
+# real arm instead: the kortex bringup per docs/HARDWARE_BRINGUP.md —
+# human on the e-stop
 ```
 
 Then arm the planner and run the demo (terminals sourced the same way,
@@ -146,13 +140,9 @@ ros2 run rammp_curobo_ros tour_demo --execute   # 4 random points, one
                                                 # merged trajectory, lap time
 ```
 
-Without `--execute`, `tour_demo` pre-plans and prints the tour dry. Its
-default `--speed` is 0.32 — the highest scale that keeps the driver's
-divergence guard armed under its 0.5 rad/s reference cap; faster scales
-drop the guard and then lag their timestamps (raise it when the driver's
-`max_ref_speed` goes up).
-`scripts/sim_execution_checks.py` verifies the refusal gates, cancel-hold,
-and the no-motion arrival catch against the sim stub.
+Without `--execute`, `tour_demo` pre-plans and prints the tour dry.
+`scripts/sim_execution_checks.py` additionally verifies the refusal gates
+and mid-motion cancel against the live sim.
 
 ## Safety model (execution gates)
 
@@ -161,9 +151,8 @@ parameter true → speed scale in (0, 1] (default 0.25, exact time dilation
 — plans are never sped up) → joint names match → finite, within position
 AND velocity limits → monotonic timing and step-continuity (rejects the
 stale-buffer/discontinuity failure mode) → arm's live `/joint_states`
-within 0.05 rad of the trajectory start (stale plans refused) → driver
-accepts. Cancel at any time cancels the driver goal — the arm stops and
-holds; after
+within 0.05 rad of the trajectory start (stale plans refused) → controller
+accepts. Cancel at any time stops the controller and holds position; after
 completion the executor verifies arrival within 0.08 rad.
 
 ## Troubleshooting
@@ -177,12 +166,12 @@ completion the executor verifies arrival within 0.08 rad.
 | plan succeeds but joints differ from a joint goal | FK-pose fallback reached the POSE via another joint family — check `goal_mismatch_rad`; the example refuses >0.5 rad without `--allow-mismatch` |
 | execution refused: "arm is X rad from the trajectory start" | plan is stale (arm moved since planning) — re-plan; this gate is intentional |
 | node warns about SIM world without sim time | you're (probably) on the real arm with the kitchen world — relaunch with `world:=world_real_bench.yaml` (measured!) |
-| nodes can't see each other's topics | `ROS_LOCALHOST_ONLY=1` must be exported in EVERY shell (non-interactive shells skip `~/.zshrc` — export it explicitly) |
-| `/joint_states` looks silent / planner says "no fresh joint state" | kinova_arm_node publishes BEST-EFFORT — CLI needs `ros2 topic echo --qos-reliability best_effort /joint_states`; our nodes subscribe sensor-data QoS already |
-| execution succeeds per driver but our node reports TRACKING FAILURE | the driver completes on its timer with no goal check; the arm lagged (speed_scale too high for its 0.5 rad/s reference cap) or never moved — see docs/HARDWARE_BRINGUP.md faults section |
+| nodes can't see each other's topics | `ROS_LOCALHOST_ONLY=1` must be exported in EVERY shell (non-interactive shells skip `~/.zshrc` — export explicitly; RAMMP-Kinova's `tools/launch_stack.zsh` does) |
+| both bringups fight / controllers flap | MuJoCo sim and kortex bringup both claim `/controller_manager` — run exactly one |
 | `update_world` seems ignored / obstacles missing | cuRobo v0.7.8: cylinders/spheres in a WorldConfig are silently dropped (cuboids only), and an empty world silently keeps the previous one — the library guards both, custom worlds go in as boxes |
 | `AttributeError: wp.torch` in mesh collision | newer warp needs explicit `import warp.torch` — the library does this; if embedding cuRobo yourself, copy that |
-| `ros2 topic echo` prints "A message was lost!!!" | benign QoS depth artifact of echo on a high-rate topic |
+| `ros2 topic echo` prints "A message was lost!!!" | benign QoS depth artifact of echo on a 500 Hz topic |
+| arm won't move, controller error mentions tolerances | check speed scale isn't absurdly low (goal-time), and that `arm_driver`'s persisted 25 deg/s soft limit isn't what you're seeing |
 
 ## Integrating from another RAMMP module
 

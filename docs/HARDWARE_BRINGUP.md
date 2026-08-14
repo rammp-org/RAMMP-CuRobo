@@ -1,28 +1,27 @@
 # Real-arm bring-up runbook (Kinova Gen3 @ 192.168.1.10)
 
 Follow this in order. **A human holds the physical e-stop from the moment
-the arm bringup (kinova_arm_node) starts until the last motion ends. No
-exceptions.**
+the kortex bringup starts until the last motion ends. No exceptions.**
 
 The execution code path is byte-identical to the sim-verified one — same
-joint names, same action, same gates. What changes on hardware is the
+controller names, same action, same gates. What changes on hardware is the
 world model, the timing source, and the consequences.
 
 ## 0. Coordination — who has the arm?
 
-Mutually exclusive stacks on this bench can claim the Gen3:
+Three mutually exclusive stacks on this bench can claim the Gen3:
 
 | stack | how it talks to the arm |
 |---|---|
-| **this repo via kinova_arm_ros2** (`kinova_arm_node`) | kinova-gen3-driver 1 kHz RT core, /execute_joint_trajectory |
-| ros2_kortex bringup (RAMMP-Kinova ws) | ros2_control @ 1 kHz, joint_trajectory_controller — RETIRED for this repo 2026-08-14 |
+| **this repo via ros2_kortex** (RAMMP-Kinova ws) | ros2_control @ 1 kHz, joint_trajectory_controller |
 | Demo-Software `arm_driver` | Kortex Python API, high-level servoing |
+| `~/atdev/kinova-gen3-driver` | custom C++ 1 kHz low-level driver |
 
 Only one may run. Before starting, confirm with the team nobody else is
 mid-session, and check locally:
 
 ```bash
-pgrep -af "arm_driver|teleop_socket|trajectory_run|kortex|kinova_arm_node" ; ls /tmp/kinova.lock 2>/dev/null
+pgrep -af "arm_driver|teleop_socket|trajectory_run|kortex" ; ls /tmp/kinova.lock 2>/dev/null
 ```
 
 Note: `arm_driver` persists joint speed soft-limits (MEDIUM: 25 deg/s) and a
@@ -49,35 +48,32 @@ on hardware (the node warns if you try).
 ping -c 2 192.168.1.10        # arm reachable?
 
 source /opt/ros/humble/setup.zsh
-source /tmp/kinova-ros2-ws/install/setup.zsh        # the driver workspace
+source ~/RAMMP-Kinova/ros2_ws/install/setup.zsh     # ros2_kortex lives here
 source ~/RAMMP-CuRobo/install/setup.zsh
 
-# terminal 1 — the arm driver (kinova_arm_ros2; this repo deliberately
-# does not launch it — the planner never owns the arm). Run from the core
-# checkout so models/ resolves:
-cd /tmp/kinova-ros2-ws/src/kinova-gen3-driver
-ros2 run kinova_arm_ros2 kinova_arm_node --ip 192.168.1.10 \
-    --urdf models/gen3_7dof_2f85.urdf
+# terminal 1 — the arm driver + controllers (RAMMP-Kinova workspace; this
+# repo deliberately does not launch it — the planner never owns the arm):
+ros2 launch kortex_bringup gen3.launch.py robot_ip:=192.168.1.10 \
+    dof:=7 gripper:=robotiq_2f_85 launch_rviz:=false
 ```
 
-This must be the ONLY arm stack running. Real-arm gotchas (from the
-driver's README + docs/on-robot-runbook.md in its repo — read that
-runbook too, it is the driver's own attended procedure):
-- The node must be a KORTEX-linked build (`-DKINOVA_ENABLE_KORTEX=ON`);
-  a sim-only build errors out in real mode. Sanity check: the binary is
-  ~10 MB (sim-only ~1.5 MB).
-- The workspace lives in **/tmp** (labmate's rsync dev loop; abra has no
-  GitHub key) — a reboot wipes it; re-sync/build before hardware days.
-- No launch files, no controller_manager, no fault_controller — the node
-  IS the whole arm stack, and it enters low-level servoing itself.
+This must be the ONLY bringup: never combine it with the MuJoCo sim or a
+second kortex bringup (one /controller_manager per arm).
+
+Gotchas (from the ros2_kortex source, all defaults):
+- `robot_ip` is REQUIRED (no default) — the launch fails without it.
+- `gripper:=robotiq_2f_85` must be passed or the gripper controller is
+  simply not spawned.
+- `launch_rviz` defaults **true** — pass false on the headless Jetson.
+- Do NOT have the MuJoCo sim running — both bringups claim
+  `/controller_manager`.
 
 Verify before going on:
 
 ```bash
-ros2 action list | grep execute_joint_trajectory
-ros2 topic hz /joint_states     # ~100 Hz (hz subscribes sensor-data QoS;
-                                # `ros2 topic echo` instead needs
-                                # --qos-reliability best_effort)
+ros2 control list_controllers   # joint_state_broadcaster, joint_trajectory_controller,
+                                # robotiq_gripper_controller — all active
+ros2 topic hz /joint_states     # streaming
 ```
 
 ## 3. Planner node — dry-run first
@@ -117,7 +113,7 @@ press Ctrl+C mid-motion:
 ```bash
 python3 examples/plan_and_execute.py --joints-relative -0.15 0 0 0 0 0 0 \
     --execute --speed-scale 0.15
-# Ctrl+C while it moves -> goal cancel -> driver stops and holds
+# Ctrl+C while it moves -> goal cancel -> controller stops and holds
 ```
 
 Confirm the arm freezes and holds. This is the software abort you'll reach
@@ -129,39 +125,50 @@ for before the e-stop; prove it works while the motion is trivial.
 - Keep `world_real_bench.yaml` matching reality (step 1) — obstacles are
   measured and edited by hand, or pushed live from another module via
   `/rammp_curobo/set_world`.
+- Gripper: `ros2 service call /rammp_curobo/close_gripper std_srvs/srv/Trigger`
+  (and open) — the arm doesn't move, but keep clear of the fingers.
 - Cartesian goals (`--pos ... --quat ...`) only AFTER the world file has
   been validated against reality, and never near surfaces on the first day.
-- **Speed ceiling with this driver:** its position mode rate-limits
-  commanded references to 0.5 rad/s (deliberately conservative until it
-  has hardware data). cuRobo full-speed plans peak ~1.39 rad/s, so keep
-  `speed_scale` ≤ 0.32 (the guard-armed ceiling) — above that the
-  divergence guard drops out, the arm lags its timestamps, the driver
-  still "succeeds" on its timer, and our arrival check fails the run. Full-tilt tours return when the driver's `max_ref_speed` is raised.
-- Gripper control is NOT available through this driver yet (the kortex-era
-  `/rammp_curobo/open_gripper` services were removed with it).
+- Raise `speed_scale` gradually; 1.0 means "as planned", which is full
+  cuRobo time-parameterization — do not go there this week.
 
 ## Faults / recovery
 
 - Software abort: Ctrl+C on the example (goal cancel), or
-  `ros2 action send_goal` cancel — the driver's Supervisor resets its
-  trajectory executor and the arm holds its position.
-- **No-motion "success"** (goals complete, arm doesn't move): the driver
-  completes on its TIMER and has no goal-tolerance check yet, so our
-  executor's wrap-aware arrival check is what catches this (verified
-  against the static sim). Recovery: restart `kinova_arm_node` — it
-  re-enters low-level servoing on startup (there is no fault_controller
-  or controller_manager in this stack). If it repeats, e-stop,
-  power-cycle the arm, restart the node.
-- **PATH_TOLERANCE_VIOLATED (-4)** mid-motion: the driver's divergence
-  guard tripped — physical contact/blockage, or the plan out-ran the
-  0.5 rad/s reference cap. Our executor arms the guard only on the
-  bounded joints (joint_2/4/6) and only under the cap, because the
-  driver's guard is not wrap-aware (raw |q_meas − q_desired| explodes
-  near ±pi, and joint_3 lives at +pi in the home family).
-- The kortex-era fault taxonomy (servoing drop at goal transitions,
-  reset_fault + JTC bounce, block_write wedge) applies to the RETIRED
-  ros2_kortex stack only — see git history (pre-2026-08-14) if that
-  stack is ever revived.
+  `ros2 action send_goal` cancel; the JTC holds position.
+- Controller/arm fault: check `ros2 control list_controllers`; the kortex
+  bringup spawns a fault controller — `ros2 service list | grep -i fault`
+  for the reset interface. If in doubt: e-stop, then power-cycle the arm
+  and restart the bringup.
+- **Arm ignores every command but reports success** (seen 2026-08-13):
+  every trajectory "succeeds" with zero motion and the driver log spams
+  "combination of Control Mode and Active State are not supported" — the
+  arm dropped out of low-level servoing (states still stream, writes go
+  nowhere; the stock JTC config's disabled goal tolerances mask it).
+  Fix, verified live (reset_fault ALONE is not enough — on this driver
+  build it restores single-level mode, and the JTC's stale hold position
+  is a jump hazard):
+  1. `ros2 service call /fault_controller/reset_fault example_interfaces/srv/Trigger`
+  2. `ros2 control switch_controllers --deactivate joint_trajectory_controller`
+  3. `ros2 control switch_controllers --activate joint_trajectory_controller`
+  (the planner node also runs this sequence automatically on the
+  no-motion signature). Verify low-level servoing (mode 3) is back via a
+  parallel Kortex query before commanding motion. The transient form fires
+  at controller goal TRANSITIONS (a new goal right after a completed one)
+  — which is why tour_demo merges its whole tour into ONE trajectory and
+  retries from a standstill only.
+- **Reset succeeded, no fault spam, arm STILL ignores everything** (also
+  2026-08-13): the arm itself reports SERVOING_READY (verifiable with a
+  parallel Kortex session) but nothing moves — the DRIVER is wedged, not
+  the arm. kortex_driver sets a `block_write` flag when preparing a
+  controller-mode switch and clears it only when the switch completes; a
+  fault mid-switch strands it set, and every write is silently discarded
+  forever after. Fix: restart the kortex bringup (the arm holds its pose
+  through the restart). Symptoms identifying this case: goals "succeed"
+  with zero motion + NO fault log spam + the arm itself reporting
+  READY/SERVOING via a direct Kortex query. (Do not rely on
+  /fault_controller/internal_fault — it read `true` on this stack even
+  while the arm was healthy in low-level servoing.)
 - After any e-stop or fault, RE-RUN the dry-run step before arming again
   (the arm may have been moved by hand; stale plans are refused, but check
   the world still matches reality too).

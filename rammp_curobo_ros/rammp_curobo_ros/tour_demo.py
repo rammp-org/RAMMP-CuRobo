@@ -26,7 +26,6 @@ import time
 
 import rclpy
 from rclpy.action import ActionClient
-from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
 
 from rammp_curobo.geometry import ang_diff, yaw_about_world_z
@@ -64,10 +63,7 @@ class TourDemo:
     def __init__(self, node):
         self.node = node
         self._q = None
-        # sensor-data QoS: kinova_arm_node streams best-effort
-        node.create_subscription(
-            JointState, "/joint_states", self._js_cb, qos_profile_sensor_data
-        )
+        node.create_subscription(JointState, "/joint_states", self._js_cb, 10)
         self.plan_pose = ActionClient(
             node, PlanToPose, NODE_NAMESPACE + "/plan_to_pose"
         )
@@ -91,8 +87,8 @@ class TourDemo:
             rclpy.spin_once(self.node, timeout_sec=0.2)
             if time.monotonic() - t0 > 10:
                 sys.exit(
-                    "no /joint_states — start the arm driver "
-                    "(kinova_arm_node, sim or real) and the planner first:\n"
+                    "no /joint_states — start the arm bringup (RAMMP-Kinova "
+                    "workspace) and the planner first:\n"
                     "  ros2 launch rammp_curobo_ros planner.launch.py "
                     "config:=gen3_real.yaml execute:=true"
                 )
@@ -186,17 +182,9 @@ def main():
     ap.add_argument(
         "--speed",
         type=float,
-        # kinova_arm_ros2's position mode rate-limits commanded references
-        # to 0.5 rad/s (deliberately conservative until it has hardware
-        # data); cuRobo plans peak at the 1.3963 rad/s proximal limit. The
-        # executor arms the driver's divergence guard only up to
-        # 0.9*0.5/1.3963 = 0.32 — above that the guard drops out, and
-        # much above, the arm lags its timestamps and fails the arrival
-        # check. Raise this once the driver's max_ref_speed goes up.
-        default=0.32,
-        help="execution scale (default 0.32 — the highest scale that keeps "
-        "the driver's divergence guard armed; its ref-speed cap is "
-        "0.5 rad/s, so 1.0 lags and fails)",
+        default=1.0,
+        help="execution scale (1.0 = the arm's full rated speed; the "
+        "executor refuses anything above)",
     )
     ap.add_argument("--points", type=int, default=4)
     ap.add_argument(

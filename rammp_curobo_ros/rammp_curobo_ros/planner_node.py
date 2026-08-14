@@ -9,32 +9,34 @@ Actions (node name rammp_curobo):
     /rammp_curobo/execute_trajectory  rammp_curobo_interfaces/ExecuteTrajectory
 Services:
     /rammp_curobo/set_world           rammp_curobo_interfaces/srv/SetWorld
+    /rammp_curobo/open_gripper, /rammp_curobo/close_gripper (std_srvs/Trigger)
 
 Planning NEVER moves the arm — results carry the trajectory for inspection.
 Execution is a separate action, gated by the `execute` parameter (default
-false), start-state matching, and limit re-validation (executor.py). The arm
-side is kinova_arm_ros2's `kinova_arm_node` (sim via --sim, real via --ip) —
-one arm stack at a time, ever. Its /joint_states stream is BEST-EFFORT, so
-this node subscribes with sensor-data QoS (compatible with reliable
-publishers too).
+false), start-state matching, and limit re-validation (executor.py).
+Identical against the MuJoCo sim and the real ros2_kortex bringup: both
+expose the same controller names (do not run both — they share
+/controller_manager and the same physical arm).
 """
 
 import threading
 import time
 
 import rclpy
-from rclpy.action import ActionServer, CancelResponse
+from control_msgs.action import GripperCommand
+from rclpy.action import ActionClient, ActionServer, CancelResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
+from std_srvs.srv import Trigger
 
 from rammp_curobo_interfaces.action import ExecuteTrajectory, PlanToJoints, PlanToPose
 from rammp_curobo_interfaces.srv import SetWorld
 from rammp_curobo_ros.conversions import trajectory_to_msg
 from rammp_curobo_ros.executor import (
     TrajectoryExecutor,
+    await_future,
     validate_goal_msg,
 )
 
@@ -49,8 +51,8 @@ class RammpCuroboNode(Node):
         self.joint_states_topic = self.declare_parameter(
             "joint_states_topic", "/joint_states"
         ).value
-        self.arm_action = self.declare_parameter(
-            "arm_action", "/execute_joint_trajectory"
+        self.controller_action = self.declare_parameter(
+            "controller_action", "/joint_trajectory_controller/follow_joint_trajectory"
         ).value
         # Master enable for real motion. False = dry-run node: planning
         # works, execution goals are refused with instructions.
@@ -63,9 +65,19 @@ class RammpCuroboNode(Node):
         self.tracking_tolerance = float(
             self.declare_parameter("tracking_tolerance_rad", 0.08).value
         )
+        self.gripper_enabled = bool(
+            self.declare_parameter("gripper_enabled", True).value
+        )
+        gripper_action = self.declare_parameter(
+            "gripper_action", "/robotiq_gripper_controller/gripper_cmd"
+        ).value
+        self.gripper_open_pos = float(self.declare_parameter("gripper_open", 0.0).value)
+        self.gripper_closed_pos = float(
+            self.declare_parameter("gripper_closed", 0.8).value
+        )
 
         # Refuse to double-serve. Two planner nodes on the same action names
-        # answer every goal twice and race each other's driver goals —
+        # answer every goal twice and race each other's controller goals —
         # on hardware this produced phantom TRACKING FAILUREs and an aborted
         # scan (2026-08-13). Fail loudly instead.
         time.sleep(1.0)  # let discovery see an already-running peer
@@ -87,13 +99,11 @@ class RammpCuroboNode(Node):
         self._joint_msg = None
         self._joint_msg_time = None
 
-        # sensor-data QoS: kinova_arm_node publishes /joint_states
-        # best-effort; a reliable subscription would receive NOTHING.
         self.create_subscription(
             JointState,
             self.joint_states_topic,
             self._joint_state_cb,
-            qos_profile_sensor_data,
+            10,
             callback_group=self._cb,
         )
 
@@ -114,12 +124,32 @@ class RammpCuroboNode(Node):
         self._pos_limits = lim["position"]
         self._vel_limits = lim["velocity"]
 
-        # Constructed only when execution is enabled: a planning-only
-        # deployment (the Docker image) must not require the driver's
-        # kinova_arm_interfaces package to be installed at all.
-        self.executor_helper = None
-        if bool(self.get_parameter("execute").value):
-            self.executor_helper = TrajectoryExecutor(self, self.arm_action, self._cb)
+        self.executor_helper = TrajectoryExecutor(
+            self, self.controller_action, self._cb
+        )
+        # Servoing-recovery clients (see _try_servoing_recovery): transient
+        # arm faults at motion onset knock the Gen3 out of low-level
+        # servoing; recovery = clear faults, then bounce the JTC so its
+        # hold state resyncs to the true joint positions and the driver
+        # re-enters low-level mode via its controller-switch path.
+        from controller_manager_msgs.srv import SwitchController
+        from example_interfaces.srv import Trigger as ExampleTrigger
+
+        self._reset_fault_type = ExampleTrigger
+        self._reset_fault = self.create_client(
+            ExampleTrigger, "/fault_controller/reset_fault", callback_group=self._cb
+        )
+        self._switch_type = SwitchController
+        self._switch_ctrl = self.create_client(
+            SwitchController,
+            "/controller_manager/switch_controller",
+            callback_group=self._cb,
+        )
+        self._gripper = (
+            ActionClient(self, GripperCommand, gripper_action, callback_group=self._cb)
+            if self.gripper_enabled
+            else None
+        )
 
         ActionServer(
             self,
@@ -146,6 +176,19 @@ class RammpCuroboNode(Node):
         self.create_service(
             SetWorld, "~/set_world", self._set_world_cb, callback_group=self._cb
         )
+        if self.gripper_enabled:
+            self.create_service(
+                Trigger,
+                "~/open_gripper",
+                self._open_gripper_cb,
+                callback_group=self._cb,
+            )
+            self.create_service(
+                Trigger,
+                "~/close_gripper",
+                self._close_gripper_cb,
+                callback_group=self._cb,
+            )
 
         # Real-arm misconfiguration tripwire: without sim time this node is
         # presumably talking to the REAL Gen3, and the sim kitchen's
@@ -163,8 +206,8 @@ class RammpCuroboNode(Node):
 
         exec_on = bool(self.get_parameter("execute").value)
         self.get_logger().info(
-            "rammp_curobo ready — execute=%s, speed_scale=%.2f, arm action=%s"
-            % (exec_on, self.speed_scale, self.arm_action)
+            "rammp_curobo ready — execute=%s, speed_scale=%.2f, controller=%s"
+            % (exec_on, self.speed_scale, self.controller_action)
         )
         if not exec_on:
             self.get_logger().info(
@@ -267,7 +310,7 @@ class RammpCuroboNode(Node):
             result.success = False
             result.message = (
                 "no fresh joint state on %s — is the arm/sim "
-                "driver running?" % self.joint_states_topic
+                "bringup running?" % self.joint_states_topic
             )
             goal_handle.abort()
             return result
@@ -305,14 +348,6 @@ class RammpCuroboNode(Node):
             return refuse(
                 "execution disabled (dry-run node). Relaunch with "
                 "execute:=true — and only with a human on the e-stop."
-            )
-        if self.executor_helper is None:
-            # `ros2 param set execute true` on a dry-run node flips the
-            # parameter but cannot conjure the executor (or its driver
-            # interface package) — refuse cleanly instead of crashing.
-            return refuse(
-                "node was launched without execute:=true — the executor "
-                "was never constructed; relaunch to enable execution"
             )
         if not self._exec_lock.acquire(blocking=False):
             return refuse("an execution is already running")
@@ -362,15 +397,52 @@ class RammpCuroboNode(Node):
             goal_handle.succeed()
             return result
         if "never left the start" in message:
-            # No-motion signature. The kortex-era auto-recovery (fault reset
-            # + JTC bounce) has no equivalent here: kinova_arm_node owns
-            # servoing itself and has no controller_manager. If this
-            # repeats, restart the driver node.
-            self.get_logger().warning(
-                "no-motion failure — if this repeats, restart "
-                "kinova_arm_node (it re-enters low-level servoing on start)"
-            )
+            # No-motion signature: the arm is exactly where it was, so a
+            # servoing reset is benign — do it now so the client's retry
+            # lands on a live arm instead of a dead one. Partial-motion
+            # failures (possible contact) never auto-reset.
+            self._try_servoing_recovery()
         return refuse(message, canceled=(status == "canceled"))
+
+    def _try_servoing_recovery(self):
+        """Clear faults, then bounce the JTC to resync + restore servoing.
+
+        Safe by construction: only called when the arm never left its
+        start; deactivation stops all writes before anything re-enables
+        streaming, and activation re-reads the true joint positions as
+        the controller's hold state.
+        """
+        self.get_logger().warning(
+            "no-motion failure: recovering servoing (fault reset + "
+            "trajectory-controller restart; the arm does not move)"
+        )
+        if self._reset_fault.wait_for_service(timeout_sec=2.0):
+            await_future(
+                self._reset_fault.call_async(self._reset_fault_type.Request()), 5.0
+            )
+        if not self._switch_ctrl.wait_for_service(timeout_sec=2.0):
+            self.get_logger().error(
+                "controller_manager switch service unavailable — cannot "
+                "bounce the trajectory controller; restart the bringup"
+            )
+            return
+        jtc = "joint_trajectory_controller"
+        for field in ("deactivate_controllers", "activate_controllers"):
+            req = self._switch_type.Request()
+            getattr(req, field).append(jtc)
+            req.strictness = self._switch_type.Request.STRICT
+            res = await_future(self._switch_ctrl.call_async(req), 5.0)
+            if res is None or not res.ok:
+                self.get_logger().error("JTC %s failed — restart the bringup" % field)
+                return
+            time.sleep(1.0)
+        # The arm needs settling time after a fault clear + servoing-mode
+        # re-entry: an immediate retry died again in the field (2026-08-13)
+        # while the same sequence with generous pauses recovered fine.
+        time.sleep(2.5)
+        self.get_logger().info(
+            "servoing recovery complete — the next execution attempt " "should move"
+        )
 
     # ---------------------------------------------------------------- services
     def _set_world_cb(self, request, response):
@@ -383,6 +455,41 @@ class RammpCuroboNode(Node):
                 response.success = False
                 response.message = str(exc)
         return response
+
+    def _gripper_cmd(self, position, response):
+        if not bool(self.get_parameter("execute").value):
+            response.success = False
+            response.message = "execution disabled (dry-run node)"
+            return response
+        if not self._gripper.wait_for_server(timeout_sec=2.0):
+            response.success = False
+            response.message = "gripper action server not available"
+            return response
+        goal = GripperCommand.Goal()
+        goal.command.position = float(position)
+        goal.command.max_effort = 100.0
+        send = await_future(self._gripper.send_goal_async(goal), 5.0)
+        if send is None or not send.accepted:
+            response.success = False
+            response.message = "gripper goal not accepted"
+            return response
+        wrapped = await_future(send.get_result_async(), 10.0)
+        if wrapped is None:
+            response.success = False
+            response.message = "gripper did not finish in 10 s"
+            return response
+        response.success = True
+        response.message = "gripper at %.3f (stalled=%s)" % (
+            wrapped.result.position,
+            wrapped.result.stalled,
+        )
+        return response
+
+    def _open_gripper_cb(self, request, response):
+        return self._gripper_cmd(self.gripper_open_pos, response)
+
+    def _close_gripper_cb(self, request, response):
+        return self._gripper_cmd(self.gripper_closed_pos, response)
 
 
 def main(args=None):
