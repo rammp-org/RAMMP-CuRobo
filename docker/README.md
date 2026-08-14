@@ -13,10 +13,18 @@ The container holds **no arm driver** and starts with `execute:=false`:
 executing the returned trajectory is the caller's job, on whatever
 controller stack owns the arm.
 
-## Prerequisites (once per machine)
+## Where to build
 
-Docker is NOT currently installed on this lab's Jetson. Install engine +
-NVIDIA runtime, then let the runtime mount the GPU:
+On the machine that will RUN the container — any JetPack 6 (L4T r36.x)
+Jetson with **~25 GB free during the build** (~15 GB image afterwards).
+The lab's planning Jetson (57 GB eMMC, mostly full) deliberately does NOT
+host this image; it was validated there only up to the pre-Docker line:
+planner service + client contract proven live, base-image tag and the
+cuRobo v0.7.8 tag→commit pin verified against the registries 2026-08-14.
+
+## Prerequisites (once, on the target machine)
+
+Engine + NVIDIA runtime, then let the runtime mount the GPU:
 
 ```bash
 sudo apt-get update && sudo apt-get install -y docker.io nvidia-container-toolkit
@@ -24,10 +32,10 @@ sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart doc
 sudo usermod -aG docker $USER   # then re-login
 ```
 
-## Build (on the Jetson, ~1 h — cuRobo compiles its CUDA kernels)
+## Build (~1 h — cuRobo compiles its CUDA kernels)
 
 ```bash
-cd ~/RAMMP-CuRobo
+git clone <this-repo> && cd RAMMP-CuRobo
 docker build -f docker/Dockerfile -t rammp-curobo:jp6 .
 ```
 
