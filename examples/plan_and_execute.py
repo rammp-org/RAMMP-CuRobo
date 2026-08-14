@@ -18,7 +18,7 @@ Examples (planner node running — see rammp_curobo_ros/launch/planner.launch.py
     python3 examples/plan_and_execute.py --joints 0.2 0.262 3.142 -2.269 0.0 0.960 1.571 \
         --execute --speed-scale 0.15
 
-Ctrl+C during execution cancels the goal: the controller stops and holds.
+Ctrl+C during execution cancels the goal: the driver stops and holds.
 """
 
 import argparse

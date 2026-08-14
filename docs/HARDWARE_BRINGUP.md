@@ -1,10 +1,11 @@
 # Real-arm bring-up runbook (Kinova Gen3 @ 192.168.1.10)
 
 Follow this in order. **A human holds the physical e-stop from the moment
-the kortex bringup starts until the last motion ends. No exceptions.**
+the arm bringup (kinova_arm_node) starts until the last motion ends. No
+exceptions.**
 
 The execution code path is byte-identical to the sim-verified one — same
-controller names, same action, same gates. What changes on hardware is the
+joint names, same action, same gates. What changes on hardware is the
 world model, the timing source, and the consequences.
 
 ## 0. Coordination — who has the arm?
@@ -74,9 +75,9 @@ Verify before going on:
 
 ```bash
 ros2 action list | grep execute_joint_trajectory
-ros2 topic hz --qos-reliability best_effort /joint_states   # ~100 Hz;
-                                # plain `ros2 topic hz` shows NOTHING
-                                # (best-effort publisher)
+ros2 topic hz /joint_states     # ~100 Hz (hz subscribes sensor-data QoS;
+                                # `ros2 topic echo` instead needs
+                                # --qos-reliability best_effort)
 ```
 
 ## 3. Planner node — dry-run first
@@ -116,7 +117,7 @@ press Ctrl+C mid-motion:
 ```bash
 python3 examples/plan_and_execute.py --joints-relative -0.15 0 0 0 0 0 0 \
     --execute --speed-scale 0.15
-# Ctrl+C while it moves -> goal cancel -> controller stops and holds
+# Ctrl+C while it moves -> goal cancel -> driver stops and holds
 ```
 
 Confirm the arm freezes and holds. This is the software abort you'll reach
@@ -133,9 +134,9 @@ for before the e-stop; prove it works while the motion is trivial.
 - **Speed ceiling with this driver:** its position mode rate-limits
   commanded references to 0.5 rad/s (deliberately conservative until it
   has hardware data). cuRobo full-speed plans peak ~1.39 rad/s, so keep
-  `speed_scale` ≤ ~0.35 — above that the arm lags its timestamps, the
-  driver still "succeeds" on its timer, and our arrival check fails the
-  run. Full-tilt tours return when the driver's `max_ref_speed` is raised.
+  `speed_scale` ≤ 0.32 (the guard-armed ceiling) — above that the
+  divergence guard drops out, the arm lags its timestamps, the driver
+  still "succeeds" on its timer, and our arrival check fails the run. Full-tilt tours return when the driver's `max_ref_speed` is raised.
 - Gripper control is NOT available through this driver yet (the kortex-era
   `/rammp_curobo/open_gripper` services were removed with it).
 

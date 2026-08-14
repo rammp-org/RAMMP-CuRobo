@@ -14,7 +14,8 @@ core/                     Layer 1 — pip package `rammp-curobo`: pure-Python
 rammp_curobo_interfaces/  ROS 2 action/srv definitions (dependency-free)
 rammp_curobo_ros/         Layer 2 — planner node + safety-gated executor
                           + tour_demo (the showcase: 4 random points, one
-                          merged full-speed trajectory)
+                          merged trajectory — 0.32 speed until the
+                          driver's reference cap rises)
 examples/                 plan_only.py (no ROS) / plan_and_execute.py
 scripts/                  config baking, live sim checks
 docker/                   the planning service as a container (Jetson/JP6)
@@ -24,8 +25,9 @@ docs/HARDWARE_BRINGUP.md  the real-arm runbook — READ BEFORE TOUCHING HARDWARE
 > **Hardware safety, non-negotiable:** a human holds the physical e-stop
 > during ALL hardware runs. Execution is opt-in at three separate layers
 > (node `execute:=true`, example/demo `--execute`, typed confirmation),
-> defaults to 25% speed, and every plan is re-validated against limits
-> and the arm's live state before anything reaches the driver.
+> defaults to 25% speed (32% for the tour demo), and every plan is
+> re-validated against limits and the arm's live state before anything
+> reaches the driver.
 
 ## Install (Jetson AGX Orin)
 
@@ -145,9 +147,10 @@ ros2 run rammp_curobo_ros tour_demo --execute   # 4 random points, one
 ```
 
 Without `--execute`, `tour_demo` pre-plans and prints the tour dry. Its
-default `--speed` is 0.35: the current driver rate-limits commanded
-references to 0.5 rad/s, so faster scales lag their timestamps and fail
-the arrival check (raise it when the driver's `max_ref_speed` goes up).
+default `--speed` is 0.32 — the highest scale that keeps the driver's
+divergence guard armed under its 0.5 rad/s reference cap; faster scales
+drop the guard and then lag their timestamps (raise it when the driver's
+`max_ref_speed` goes up).
 `scripts/sim_execution_checks.py` verifies the refusal gates, cancel-hold,
 and the no-motion arrival catch against the sim stub.
 
@@ -158,8 +161,9 @@ parameter true → speed scale in (0, 1] (default 0.25, exact time dilation
 — plans are never sped up) → joint names match → finite, within position
 AND velocity limits → monotonic timing and step-continuity (rejects the
 stale-buffer/discontinuity failure mode) → arm's live `/joint_states`
-within 0.05 rad of the trajectory start (stale plans refused) → controller
-accepts. Cancel at any time stops the controller and holds position; after
+within 0.05 rad of the trajectory start (stale plans refused) → driver
+accepts. Cancel at any time cancels the driver goal — the arm stops and
+holds; after
 completion the executor verifies arrival within 0.08 rad.
 
 ## Troubleshooting

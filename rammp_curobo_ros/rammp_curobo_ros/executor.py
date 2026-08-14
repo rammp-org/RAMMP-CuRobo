@@ -134,44 +134,61 @@ def validate_goal_msg(
 
 
 def _peak_velocity(msg):
-    """Max |velocity| across the (scaled) plan, or None when absent."""
-    _pos, vel, _times = msg_arrays(msg)
-    if vel is None:
-        return None
-    return float(np.abs(vel).max())
+    """Max joint speed of the (scaled) plan, from POSITIONS as well as the
+    claimed velocities — position steps can't be spoofed by a zeroed
+    velocity array, and the guard-arming decision keys off this."""
+    pos, vel, times = msg_arrays(msg)
+    peak = 0.0
+    if vel is not None and vel.size:
+        peak = float(np.abs(vel).max())
+    if pos.shape[0] > 1:
+        dts = np.maximum(np.diff(times), 1e-9)
+        peak = max(peak, float((np.abs(np.diff(pos, axis=0)) / dts[:, None]).max()))
+    return peak
 
 
 def build_driver_goal(scaled, log=None):
     """A driver goal for `scaled`, with the path guard armed only when safe.
 
-    The guard is disabled entirely when the plan's peak velocity exceeds the
-    driver's reference-speed cap (lag, not contact, would trip it) or when
-    the plan carries no velocities (can't tell). On the continuous joints it
-    is always disabled — the driver's guard is not wrap-aware.
+    The guard is disabled entirely when the plan's peak speed exceeds the
+    driver's reference-speed cap (lag, not contact, would trip it). On the
+    continuous joints it is always disabled — the driver's guard is not
+    wrap-aware. Raises ValueError unless joint_names is exactly
+    joint_1..joint_7 in order: the driver is POSITIONAL (it ignores
+    joint_names — message_mapping copies by index), so any other order
+    would execute transposed joints.
     """
     from control_msgs.msg import JointTolerance
     from kinova_arm_interfaces.action import ExecuteJointTrajectory
 
+    expected = ["joint_%d" % i for i in range(1, 8)]
+    if list(scaled.joint_names) != expected:
+        raise ValueError(
+            "driver contract is positional joint_1..joint_7; got %s"
+            % list(scaled.joint_names)
+        )
     goal = ExecuteJointTrajectory.Goal()
     goal.trajectory = scaled
     goal.control_mode = 0  # POSITION
-    goal.preemption = 0  # QUEUE — this node serializes executions anyway
+    # LATEST_WINS: this node serializes intentional executions itself, so
+    # preemption only matters against a ZOMBIE goal (a send/deadline
+    # timeout that left one live). QUEUE would silently line a fresh goal
+    # up behind it — starting motion later, after its start-state check
+    # went stale. Replacement is the safe failure mode.
+    goal.preemption = 1
     goal.sender_id = "rammp_curobo"
     peak = _peak_velocity(scaled)
-    if peak is not None and peak <= 0.9 * DRIVER_REF_SPEED_CAP:
+    if peak <= 0.9 * DRIVER_REF_SPEED_CAP:
         for wrapped in CONTINUOUS_JOINTS:
             tol = JointTolerance()
             tol.position = -1.0 if wrapped else PATH_TOLERANCE_RAD
             goal.path_tolerance.append(tol)
     elif log is not None:
         log.warning(
-            "path guard disabled: plan peak velocity %s exceeds the "
+            "path guard disabled: plan peak speed %.2f rad/s exceeds the "
             "driver's %.2f rad/s reference cap — the arm will lag the "
             "timestamps; lower the speed scale for tracked motion"
-            % (
-                "%.2f rad/s" % peak if peak is not None else "unknown",
-                DRIVER_REF_SPEED_CAP,
-            )
+            % (peak, DRIVER_REF_SPEED_CAP)
         )
     # goal_tolerance stays empty (= disabled): the driver defines the field
     # but does not check it yet — the arrival check in run() is the goal gate.
@@ -224,10 +241,16 @@ class TrajectoryExecutor:
                 "running?" % self._action_name
             )
 
-        goal = build_driver_goal(scaled, log=self._log)
+        try:
+            goal = build_driver_goal(scaled, log=self._log)
+        except ValueError as exc:
+            return "failed", str(exc)
         send = await_future(self._client.send_goal_async(goal), 5.0)
         if send is None:
-            return "failed", "driver did not answer the goal in 5 s"
+            return "failed", (
+                "driver did not answer the goal in 5 s — the goal may still "
+                "arrive late and execute; verify the driver before retrying"
+            )
         if not send.accepted:
             return "failed", "driver rejected the trajectory goal"
         self._log.info(
@@ -251,8 +274,21 @@ class TrajectoryExecutor:
                     "Cancel requested — cancelling driver goal "
                     "(arm stops and holds)."
                 )
-                await_future(send.cancel_goal_async(), 2.0)
-                await_future(result_future, 5.0)
+                cancel_ack = await_future(send.cancel_goal_async(), 2.0)
+                wrapped = await_future(result_future, 5.0)
+                if wrapped is not None and int(wrapped.result.error_code) == 0:
+                    # the driver's timer completed the goal before the
+                    # cancel landed — the FULL trajectory executed
+                    return "canceled", (
+                        "cancel arrived after completion — the full "
+                        "trajectory executed; the driver holds the endpoint"
+                    )
+                if cancel_ack is None and wrapped is None:
+                    return "failed", (
+                        "cancel UNCONFIRMED — the driver answered neither "
+                        "the cancel nor the result; VERIFY THE ARM STOPPED "
+                        "before doing anything else"
+                    )
                 return "canceled", "canceled; the driver holds position"
             if feedback_cb is not None:
                 feedback_cb(min(1.0, elapsed / max(duration, 1e-6)))
@@ -261,7 +297,13 @@ class TrajectoryExecutor:
                     "Execution timed out (%.1f s > %.1f s) — "
                     "cancelling driver goal." % (elapsed, deadline)
                 )
-                await_future(send.cancel_goal_async(), 2.0)
+                cancel_ack = await_future(send.cancel_goal_async(), 2.0)
+                wrapped = await_future(result_future, 3.0)
+                if cancel_ack is None and wrapped is None:
+                    return "failed", (
+                        "execution timed out and the cancel is UNCONFIRMED "
+                        "— driver unresponsive; VERIFY THE ARM STOPPED"
+                    )
                 return "failed", "execution timed out; driver goal cancelled"
 
         wrapped = result_future.result()

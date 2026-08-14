@@ -306,6 +306,14 @@ class RammpCuroboNode(Node):
                 "execution disabled (dry-run node). Relaunch with "
                 "execute:=true — and only with a human on the e-stop."
             )
+        if self.executor_helper is None:
+            # `ros2 param set execute true` on a dry-run node flips the
+            # parameter but cannot conjure the executor (or its driver
+            # interface package) — refuse cleanly instead of crashing.
+            return refuse(
+                "node was launched without execute:=true — the executor "
+                "was never constructed; relaunch to enable execution"
+            )
         if not self._exec_lock.acquire(blocking=False):
             return refuse("an execution is already running")
         try:
