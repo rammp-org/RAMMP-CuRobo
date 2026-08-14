@@ -8,7 +8,8 @@ NO ROS imports — keep it that way), `rammp_curobo_interfaces/` (rosidl,
 dependency-free by policy), `rammp_curobo_ros/` (ament_python node),
 `docker/` (the service containerized for other RAMMP codebases). This
 repo deliberately contains and launches NO arm driver — bringup is the
-RAMMP-Kinova workspace's, execution ownership is the caller's. The
+kinova_arm_ros2 workspace's (/tmp/kinova-ros2-ws), execution ownership
+is the caller's. The
 camera-scanning and palm-demo code was removed 2026-08-14 (git history
 has it) — don't reintroduce it casually.
 
@@ -27,7 +28,8 @@ has it) — don't reintroduce it casually.
   need it not (lazy import, executor constructed only when execute=true).
 - Driver facts (verified in core source 2026-08-14): positions+times only
   (velocities dropped, linear interp @250 Hz); ref speed capped 0.5 rad/s
-  (full-speed plans LAG — keep speed_scale ≤0.35 until raised); completes
+  (full-speed plans LAG — keep speed_scale ≤0.32, the guard-armed
+  ceiling, until raised); completes
   on TIMER, no goal-tolerance check (our arrival gate is the real one);
   /joint_states BEST-EFFORT ~100 Hz (sensor QoS subs everywhere);
   measured q wrapped to (-pi,pi] and the driver's path guard is NOT
@@ -78,7 +80,7 @@ Execution gates live in `rammp_curobo_ros/planner_node.py` (`_execute_cb`:
 execute param, speed clamp) + `executor.py` (the rest) and are all
 verified live: execute param (default false) → speed clamp (0,1] → name /
 limit / continuity / monotonic-time checks → live start-state match →
-cancel = controller stop+hold → arrival check. The example adds --execute
+cancel = driver-goal cancel, arm holds → arrival check. The example adds --execute
 + typed-yes. Hardware runs follow docs/HARDWARE_BRINGUP.md with a human on
 the physical e-stop; never drive the real arm autonomously from an agent
 session.

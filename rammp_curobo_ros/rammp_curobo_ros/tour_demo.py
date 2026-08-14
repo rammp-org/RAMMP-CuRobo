@@ -188,12 +188,15 @@ def main():
         type=float,
         # kinova_arm_ros2's position mode rate-limits commanded references
         # to 0.5 rad/s (deliberately conservative until it has hardware
-        # data); cuRobo full-speed plans peak ~1.39 rad/s, so anything
-        # above ~0.35 lags its timestamps and fails the arrival check.
-        # Raise this once the driver's max_ref_speed goes up.
-        default=0.35,
-        help="execution scale (default 0.35 — the current driver caps "
-        "commanded joint speed at 0.5 rad/s; 1.0 lags and fails)",
+        # data); cuRobo plans peak at the 1.3963 rad/s proximal limit. The
+        # executor arms the driver's divergence guard only up to
+        # 0.9*0.5/1.3963 = 0.32 — above that the guard drops out, and
+        # much above, the arm lags its timestamps and fails the arrival
+        # check. Raise this once the driver's max_ref_speed goes up.
+        default=0.32,
+        help="execution scale (default 0.32 — the highest scale that keeps "
+        "the driver's divergence guard armed; its ref-speed cap is "
+        "0.5 rad/s, so 1.0 lags and fails)",
     )
     ap.add_argument("--points", type=int, default=4)
     ap.add_argument(

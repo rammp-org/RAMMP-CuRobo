@@ -81,9 +81,12 @@ def main():
     )
 
     plan_client = ActionClient(node, PlanToJoints, PREFIX + "/plan_to_joints")
-    assert plan_client.wait_for_server(timeout_sec=5.0)
+    assert plan_client.wait_for_server(timeout_sec=5.0), (
+        "planner action server not found — is planner.launch.py running "
+        "with execute:=true?"
+    )
     exec_client = ActionClient(node, ExecuteTrajectory, PREFIX + "/execute_trajectory")
-    assert exec_client.wait_for_server(timeout_sec=5.0)
+    assert exec_client.wait_for_server(timeout_sec=5.0), "no execute server"
 
     # CHECK 1: plan from the LIVE state — proves the planner receives the
     # driver's best-effort /joint_states (QoS mismatch would starve it).

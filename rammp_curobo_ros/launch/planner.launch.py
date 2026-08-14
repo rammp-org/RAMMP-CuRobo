@@ -10,12 +10,12 @@ Planning-only (the Docker/service use — nothing can move):
 
     ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml
 
-Plan + execute against an existing bringup (sim or real):
+Plan + execute against a running kinova_arm_node (sim stub or real —
+same command; the driver publishes no /clock, so use_sim_time stays
+false either way):
 
-    ros2 launch rammp_curobo_ros planner.launch.py use_sim_time:=true \
-        execute:=true                                                   # sim
     ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml \
-        execute:=true                                                   # real
+        execute:=true
 
 Execution stays disabled until execute:=true is passed — the node plans
 (dry-run) but refuses ExecuteTrajectory goals.
