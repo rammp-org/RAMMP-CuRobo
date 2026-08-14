@@ -1,0 +1,12 @@
+# keep the Docker build context to source only
+.git
+build/
+install/
+log/
+docs/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+**/.pytest_cache/
+*.MOV
+*.jpg
