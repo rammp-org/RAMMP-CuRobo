@@ -1,5 +1,12 @@
 # Integrating rammp-curobo from another RAMMP module
 
+Three ways in, same planner underneath: import the pure-Python core, call
+the ROS actions of a planner node you launch yourself, or run the
+**Docker image** (see `docker/README.md`) and call the same ROS actions
+with zero GPU-stack setup on your side. In every case the contract is:
+end position in → collision-free time-parameterized joint trajectory out;
+executing it is your side's job.
+
 ## Pure Python (no ROS) — the 5 lines
 
 ```python

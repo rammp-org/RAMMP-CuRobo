@@ -17,7 +17,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
 from rammp_curobo_interfaces.action import ExecuteTrajectory, PlanToJoints
-from rammp_curobo_ros.scan_common import NODE_NAMESPACE
+from rammp_curobo_ros.ros_util import NODE_NAMESPACE
 
 PREFIX = NODE_NAMESPACE
 

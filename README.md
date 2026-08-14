@@ -1,31 +1,37 @@
 # RAMMP-CuRobo
 
-GPU motion planning (NVIDIA cuRobo) + safe execution for the RAMMP Kinova
-Gen3 7-DoF, as a standalone repo any RAMMP module can adopt with a few
-lines. Planning runs identically against the MuJoCo simulation and the real
-arm's `ros2_kortex` bringup — same controller names, same action, same code.
+GPU motion planning (NVIDIA cuRobo) for the RAMMP Kinova Gen3 7-DoF, as a
+standalone planning service any RAMMP module can adopt: **in** goes an end
+position (tool pose or joint goal), **out** comes the collision-free,
+time-parameterized joint trajectory for the arm to execute. The planner
+never owns the arm — execution is the caller's (or the optional
+safety-gated executor's, pointed at an existing ros2_control bringup).
 
 ```
 core/                     Layer 1 — pip package `rammp-curobo`: pure-Python
                           cuRobo wrapper, NO ROS imports (configs baked in)
 rammp_curobo_interfaces/  ROS 2 action/srv definitions (dependency-free)
 rammp_curobo_ros/         Layer 2 — planner node + safety-gated executor
+                          + tour_demo (the showcase: 4 random points, one
+                          merged full-speed trajectory)
 examples/                 plan_only.py (no ROS) / plan_and_execute.py
 scripts/                  config baking, live sim checks
+docker/                   the planning service as a container (Jetson/JP6)
 docs/HARDWARE_BRINGUP.md  the real-arm runbook — READ BEFORE TOUCHING HARDWARE
 ```
 
 > **Hardware safety, non-negotiable:** a human holds the physical e-stop
 > during ALL hardware runs. Execution is opt-in at three separate layers
-> (node `execute:=true`, example `--execute`, typed `yes`), starts at 25%
-> speed or less, and every plan is re-validated against limits and the
-> arm's live state before anything reaches the controller.
+> (node `execute:=true`, example/demo `--execute`, typed confirmation),
+> starts at 25% speed or less, and every plan is re-validated against
+> limits and the arm's live state before anything reaches the controller.
 
 ## Install (Jetson AGX Orin)
 
 Verified on: JetPack 6.2.2 (L4T R36.5.0), CUDA 12.6.11, Ubuntu 22.04,
 ROS 2 Humble, Python 3.10. cuRobo's install is the long pole — pin
-everything; do not "upgrade" any of it.
+everything; do not "upgrade" any of it. (Prefer the container? See
+**docker/** — same pins, one build.)
 
 ### 1. PyTorch (Jetson CUDA wheels)
 
@@ -66,13 +72,14 @@ colcon build --symlink-install \
     --packages-select rammp_curobo_interfaces rammp_curobo_ros
 ```
 
-### 4. Arm driver workspace (for execution)
+### 4. Arm driver workspace (only for executing on this bench)
 
 Execution goes through ros2_control. Sim and real both come from the
 RAMMP-Kinova workspace (`~/RAMMP-Kinova/ros2_ws`), set up once via its
 `scripts/setup_ros2_kortex.sh` (clones Kinovarobotics/ros2_kortex@humble +
-pinned deps, builds `kortex_bringup` and `mujoco_sim`). Follow that repo's
-README if starting fresh.
+pinned deps, builds `kortex_bringup` and `mujoco_sim`). This repo
+deliberately does not include or launch any arm driver — one
+`/controller_manager` per arm, owned elsewhere.
 
 Performance: `sudo nvpmodel -m 0 && sudo jetson_clocks` before demos.
 
@@ -95,79 +102,35 @@ python3 examples/plan_only.py --joints 0.3 0.262 3.142 -2.269 0.0 0.960 1.571
 > (sourcing `setup.bash` from zsh fails with "no such file or directory:
 > .../setup.sh").
 
-## Run against the simulation
+## Run the planning service
 
 ```bash
-# terminal 1 — RAMMP-Kinova's sim (physics + ros2_control + controllers)
 export ROS_LOCALHOST_ONLY=1
-source /opt/ros/humble/setup.zsh && source ~/RAMMP-Kinova/ros2_ws/install/setup.zsh
-ros2 launch mujoco_sim mujoco_bringup.launch.py
-
-# terminal 2 — planner node (execute enabled: it's a sim)
-export ROS_LOCALHOST_ONLY=1
-source /opt/ros/humble/setup.zsh && source ~/RAMMP-Kinova/ros2_ws/install/setup.zsh
-source ~/RAMMP-CuRobo/install/setup.zsh
-ros2 launch rammp_curobo_ros planner.launch.py execute:=true use_sim_time:=true
-
-# terminal 3 — plan, preview, confirm, execute at 25% speed
-source ... (as terminal 2)
-python3 examples/plan_and_execute.py \
-    --joints 0.2 0.262 3.142 -2.269 0.0 0.960 1.571 --execute --speed-scale 0.25
+source /opt/ros/humble/setup.zsh && source ~/RAMMP-CuRobo/install/setup.zsh
+ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml
 ```
 
-Without `--execute` the same command is a pure dry-run (prints the
-trajectory, nothing moves). `scripts/sim_execution_checks.py` additionally
-verifies the refusal gates and mid-motion cancel against the live sim.
+That's the whole service: `/rammp_curobo/plan_to_pose` and
+`/rammp_curobo/plan_to_joints` take a goal (optionally with explicit
+`start_joints` — no `/joint_states` needed) and return the trajectory.
+See **INTEGRATION.md** for client code, and **docker/** to run the same
+thing as a container.
 
-## Run on the real arm
+## Run with execution (this bench)
 
-One-terminal form: `ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml execute:=true launch_arm:=true` (starts the kortex driver + controllers + planner together; requires the RAMMP-Kinova workspace sourced, and must be the only bringup).
+Start the arm side first (RAMMP-Kinova workspace: MuJoCo sim, or the real
+kortex bringup per **docs/HARDWARE_BRINGUP.md** — human on the e-stop),
+then arm the planner and run the demo:
 
-Follow **docs/HARDWARE_BRINGUP.md** step by step — coordination (three
-stacks can claim this arm; only one may run), measuring
-`world_real_bench.yaml`, the kortex bringup command with its gotchas, the
-dry-run gate, the first small joint move at 15% speed, and the required
-abort drill. Human on the e-stop throughout.
-
-## Automatic obstacle scanning
-
-`sweep_scan` builds the collision world (a "digital twin" of the
-workspace) from a wrist depth camera — no tape
-measure: the arm moves to a high "periscope" posture (camera ~0.78 m up,
-pitched 42 deg down), rotates its base 90 deg left to 90 deg right in
-stop-and-capture stations (two pitch rows: near field + far field), fuses
-every station into one cloud, clusters it into tight boxes (fill-ratio
-splitting, nearest-first when capped), and writes the world YAML over the
-conservative table plane. Sim-verified against ground truth: 26/26
-stations, 100% recall, zero phantoms, and every plan made in the scanned
-world was collision-free in the true world (5/5 goals).
-
-```zsh
-# terminal 1: arm bringup (sim or real)     terminal 2: planner, armed
+```bash
 ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml execute:=true
-
-# terminal 3: the sweep (~3 min; on the REAL arm: hand on the e-stop)
-ros2 run rammp_curobo_ros sweep_scan --camera camera_d405_wrist.yaml --apply
-
-# then plan/execute as usual — or restart the planner later against the file:
-ros2 launch rammp_curobo_ros planner.launch.py \
-    world:=$HOME/.ros/rammp_curobo/scanned_world.yaml execute:=true
+ros2 run rammp_curobo_ros tour_demo --execute   # 4 random points, one
+                                                # merged trajectory, lap time
 ```
 
-Cameras are YAML-swappable (`rammp_curobo_ros/config/`): `camera_sim_d405`
-(MuJoCo), `camera_d405_wrist` (real RealSense D405), `camera_kinova_wrist`
-(the Gen3 built-in module; also used by the one-shot `scan_world`).
-
-**First-time D405 checklist:** (1) mount the D405 on the wrist and measure
-its offset from bracelet_link into `camera_d405_wrist.yaml` (placeholder
-values ship); (2) `ros2 launch realsense2_camera rs_launch.py
-camera_namespace:=d405 camera_name:=d405` and fix the topic names in the
-YAML if they differ; (3) verify the mount before any sweep:
-`ros2 run rammp_curobo_ros sweep_scan --camera camera_d405_wrist.yaml
---dry-capture --debug` — the printed camera position/view axis must match
-where it physically points, and a scan of the bare table must produce no
-boxes. Only then run the sweep. Re-scan whenever the scene changes; space
-the camera never saw is UNKNOWN, not certified free.
+Without `--execute`, `tour_demo` pre-plans and prints the tour dry.
+`scripts/sim_execution_checks.py` additionally verifies the refusal gates
+and mid-motion cancel against the live sim.
 
 ## Safety model (execution gates)
 
@@ -201,4 +164,4 @@ completion the executor verifies arrival within 0.08 rad.
 ## Integrating from another RAMMP module
 
 See **INTEGRATION.md** — 5 lines for pure-Python planning, ~15 for
-plan+execute over ROS actions.
+plan-over-ROS-actions, and the Docker service.

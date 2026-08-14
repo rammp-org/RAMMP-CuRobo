@@ -30,7 +30,7 @@ from sensor_msgs.msg import JointState
 
 from rammp_curobo.geometry import ang_diff, yaw_about_world_z
 from rammp_curobo_interfaces.action import ExecuteTrajectory, PlanToJoints, PlanToPose
-from rammp_curobo_ros.scan_common import NODE_NAMESPACE, spin_until_done
+from rammp_curobo_ros.ros_util import NODE_NAMESPACE, spin_until_done
 
 HOME = [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]
 # tool_frame orientation at HOME (FK-verified on gen3_real.yaml to 3e-4):
@@ -87,9 +87,10 @@ class TourDemo:
             rclpy.spin_once(self.node, timeout_sec=0.2)
             if time.monotonic() - t0 > 10:
                 sys.exit(
-                    "no /joint_states — start the arm stack first:\n"
+                    "no /joint_states — start the arm bringup (RAMMP-Kinova "
+                    "workspace) and the planner first:\n"
                     "  ros2 launch rammp_curobo_ros planner.launch.py "
-                    "config:=gen3_real.yaml execute:=true launch_arm:=true"
+                    "config:=gen3_real.yaml execute:=true"
                 )
         return list(self._q)
 

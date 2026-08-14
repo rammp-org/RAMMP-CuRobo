@@ -51,17 +51,14 @@ source /opt/ros/humble/setup.zsh
 source ~/RAMMP-Kinova/ros2_ws/install/setup.zsh     # ros2_kortex lives here
 source ~/RAMMP-CuRobo/install/setup.zsh
 
-# ONE terminal: arm driver + controllers + planner together (dry-run):
-ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml launch_arm:=true
-
-# (equivalent split form — driver alone, planner in another terminal:
-#  ros2 launch kortex_bringup gen3.launch.py robot_ip:=192.168.1.10 \
-#      dof:=7 gripper:=robotiq_2f_85 launch_rviz:=false )
+# terminal 1 — the arm driver + controllers (RAMMP-Kinova workspace; this
+# repo deliberately does not launch it — the planner never owns the arm):
+ros2 launch kortex_bringup gen3.launch.py robot_ip:=192.168.1.10 \
+    dof:=7 gripper:=robotiq_2f_85 launch_rviz:=false
 ```
 
-`launch_arm:=true` must be the ONLY bringup: never combine it with the
-MuJoCo sim or a separately-started kortex bringup (one
-/controller_manager per arm).
+This must be the ONLY bringup: never combine it with the MuJoCo sim or a
+second kortex bringup (one /controller_manager per arm).
 
 Gotchas (from the ros2_kortex source, all defaults):
 - `robot_ip` is REQUIRED (no default) — the launch fails without it.
@@ -125,11 +122,9 @@ for before the e-stop; prove it works while the motion is trivial.
 ## 5. Only after 3 & 4 are clean
 
 - Repeat with other single-joint deltas; then 25% speed (`--speed-scale 0.25`).
-- Build the collision world automatically: `ros2 run rammp_curobo_ros
-  sweep_scan --camera camera_d405_wrist.yaml --apply` (see the README's
-  "Automatic obstacle scanning" section — the camera mount YAML must be
-  measured and dry-capture-verified first). The static table plane still
-  comes from this runbook's step 1 either way.
+- Keep `world_real_bench.yaml` matching reality (step 1) — obstacles are
+  measured and edited by hand, or pushed live from another module via
+  `/rammp_curobo/set_world`.
 - Gripper: `ros2 service call /rammp_curobo/close_gripper std_srvs/srv/Trigger`
   (and open) — the arm doesn't move, but keep clear of the fingers.
 - Cartesian goals (`--pos ... --quat ...`) only AFTER the world file has
@@ -158,9 +153,10 @@ for before the e-stop; prove it works while the motion is trivial.
   3. `ros2 control switch_controllers --activate joint_trajectory_controller`
   (the planner node also runs this sequence automatically on the
   no-motion signature). Verify low-level servoing (mode 3) is back via a
-  parallel Kortex query before commanding motion. A
-  single isolated no-motion "success" is the milder intermittent form —
-  sweep_scan retries it automatically.
+  parallel Kortex query before commanding motion. The transient form fires
+  at controller goal TRANSITIONS (a new goal right after a completed one)
+  — which is why tour_demo merges its whole tour into ONE trajectory and
+  retries from a standstill only.
 - **Reset succeeded, no fault spam, arm STILL ignores everything** (also
   2026-08-13): the arm itself reports SERVOING_READY (verifiable with a
   parallel Kortex session) but nothing moves — the DRIVER is wedged, not

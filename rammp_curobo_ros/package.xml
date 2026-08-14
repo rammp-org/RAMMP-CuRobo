@@ -18,12 +18,11 @@
   <depend>control_msgs</depend>
   <depend>std_srvs</depend>
   <depend>builtin_interfaces</depend>
-  <depend>tf2_ros</depend>
   <depend>controller_manager_msgs</depend>
+  <!-- servoing-recovery fault reset (kortex fault_controller's Trigger) -->
+  <exec_depend>example_interfaces</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
-  <!-- scipy: cluster_boxes in scan_common (the scan tools, not the planner) -->
-  <exec_depend>python3-scipy</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 

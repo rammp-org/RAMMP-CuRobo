@@ -1,9 +1,16 @@
 # RAMMP-CuRobo — agent notes
 
-Standalone cuRobo planning + execution for the RAMMP Kinova Gen3 7-DoF
-(+ Robotiq 2F-85). Three parts: `core/` (pip `rammp-curobo`, pure Python,
+Standalone cuRobo planning for the RAMMP Kinova Gen3 7-DoF (+ Robotiq
+2F-85): a planning SERVICE — end position in, collision-free joint
+trajectory out — plus one showcase (`tour_demo`) and a safety-gated
+executor for this bench. Parts: `core/` (pip `rammp-curobo`, pure Python,
 NO ROS imports — keep it that way), `rammp_curobo_interfaces/` (rosidl,
-dependency-free by policy), `rammp_curobo_ros/` (ament_python node).
+dependency-free by policy), `rammp_curobo_ros/` (ament_python node),
+`docker/` (the service containerized for other RAMMP codebases). This
+repo deliberately contains and launches NO arm driver — bringup is the
+RAMMP-Kinova workspace's, execution ownership is the caller's. The
+camera-scanning and palm-demo code was removed 2026-08-14 (git history
+has it) — don't reintroduce it casually.
 
 ## Environment (this lab's Jetson AGX Orin, 192.168.1.11)
 
