@@ -10,3 +10,4 @@ dist/
 *.npy
 *.npz
 scanned_world*.yaml
+*.MOV
