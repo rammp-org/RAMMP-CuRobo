@@ -48,6 +48,13 @@ docker run --rm -it --runtime nvidia --network host --ipc host \
 - Different world: append the launch invocation with your own args, e.g.
   `... rammp-curobo:jp6 ros2 launch rammp_curobo_ros planner.launch.py
   config:=gen3_real.yaml world:=/path/mounted/world.yaml`.
+- **Verify the bridge on first start** (the container runs as root; mixed
+  root/non-root Fast DDS shared memory is a classic silent-delivery
+  failure): from a host shell, `ros2 action list | grep rammp_curobo`
+  must show the plan actions, and one round-trip plan must return. If
+  discovery works but calls hang, run the container with
+  `--user $(id -u):$(id -g) -e HOME=/tmp` (move the cache volume to
+  `/tmp/.cache`) so DDS shared memory is same-UID as the host nodes.
 
 ## Client side (your codebase)
 
@@ -55,20 +62,36 @@ Build `rammp_curobo_interfaces` in your workspace (copy the package or add
 this repo to your `src/`; it is dependency-free rosidl by design), then:
 
 ```python
+import rclpy
 from rammp_curobo_interfaces.action import PlanToPose
 from rclpy.action import ActionClient
 
+rclpy.init()
+node = rclpy.create_node("my_planner_client")
 client = ActionClient(node, PlanToPose, "/rammp_curobo/plan_to_pose")
+client.wait_for_server()
+
 goal = PlanToPose.Goal()
 goal.target.position.x, goal.target.position.y, goal.target.position.z = p
 (goal.target.orientation.x, goal.target.orientation.y,
  goal.target.orientation.z, goal.target.orientation.w) = quat_xyzw
 goal.start_joints = list(q_now)   # RECOMMENDED: explicit start; empty = the
                                   # planner's /joint_states subscription
-res = client.send_goal(goal).result
+
+# action calls only complete while the node spins — spin between the two
+# futures (send_goal() without a spinning executor would block forever)
+send = client.send_goal_async(goal)
+rclpy.spin_until_future_complete(node, send)
+result_future = send.result().get_result_async()
+rclpy.spin_until_future_complete(node, result_future)   # planning: ~0.2-2 s warm
+res = result_future.result().result
 if res.success:
     execute(res.trajectory)       # your controller, your gates
 ```
+
+(Inside an application that already spins its executor, drop the
+`spin_until_future_complete` calls and await/collect the same futures —
+see `tour_demo.py` + `ros_util.spin_until_done` for the in-repo pattern.)
 
 Passing `start_joints` explicitly keeps the container fully stateless — it
 then needs no `/joint_states` from your side at all, and you can pre-plan

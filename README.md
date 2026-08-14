@@ -23,8 +23,10 @@ docs/HARDWARE_BRINGUP.md  the real-arm runbook — READ BEFORE TOUCHING HARDWARE
 > **Hardware safety, non-negotiable:** a human holds the physical e-stop
 > during ALL hardware runs. Execution is opt-in at three separate layers
 > (node `execute:=true`, example/demo `--execute`, typed confirmation),
-> starts at 25% speed or less, and every plan is re-validated against
-> limits and the arm's live state before anything reaches the controller.
+> defaults to 25% speed (`tour_demo` alone runs full-speed, behind its
+> own all-caps warning and typed 'go'), and every plan is re-validated
+> against limits and the arm's live state before anything reaches the
+> controller.
 
 ## Install (Jetson AGX Orin)
 
@@ -118,9 +120,19 @@ thing as a container.
 
 ## Run with execution (this bench)
 
-Start the arm side first (RAMMP-Kinova workspace: MuJoCo sim, or the real
-kortex bringup per **docs/HARDWARE_BRINGUP.md** — human on the e-stop),
-then arm the planner and run the demo:
+Start the arm side first — this repo never launches it:
+
+```bash
+# sim (terminal 1):
+export ROS_LOCALHOST_ONLY=1
+source /opt/ros/humble/setup.zsh && source ~/RAMMP-Kinova/ros2_ws/install/setup.zsh
+ros2 launch mujoco_sim mujoco_bringup.launch.py
+# real arm instead: the kortex bringup per docs/HARDWARE_BRINGUP.md —
+# human on the e-stop
+```
+
+Then arm the planner and run the demo (terminals sourced the same way,
+plus this repo's `install/setup.zsh`):
 
 ```bash
 ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml execute:=true
@@ -154,7 +166,7 @@ completion the executor verifies arrival within 0.08 rad.
 | plan succeeds but joints differ from a joint goal | FK-pose fallback reached the POSE via another joint family — check `goal_mismatch_rad`; the example refuses >0.5 rad without `--allow-mismatch` |
 | execution refused: "arm is X rad from the trajectory start" | plan is stale (arm moved since planning) — re-plan; this gate is intentional |
 | node warns about SIM world without sim time | you're (probably) on the real arm with the kitchen world — relaunch with `world:=world_real_bench.yaml` (measured!) |
-| nodes can't see each other's topics | `ROS_LOCALHOST_ONLY=1` must be exported in EVERY shell (non-interactive shells skip `~/.zshrc` — export explicitly, the sim launcher does) |
+| nodes can't see each other's topics | `ROS_LOCALHOST_ONLY=1` must be exported in EVERY shell (non-interactive shells skip `~/.zshrc` — export explicitly; RAMMP-Kinova's `tools/launch_stack.zsh` does) |
 | both bringups fight / controllers flap | MuJoCo sim and kortex bringup both claim `/controller_manager` — run exactly one |
 | `update_world` seems ignored / obstacles missing | cuRobo v0.7.8: cylinders/spheres in a WorldConfig are silently dropped (cuboids only), and an empty world silently keeps the previous one — the library guards both, custom worlds go in as boxes |
 | `AttributeError: wp.torch` in mesh collision | newer warp needs explicit `import warp.torch` — the library does this; if embedding cuRobo yourself, copy that |

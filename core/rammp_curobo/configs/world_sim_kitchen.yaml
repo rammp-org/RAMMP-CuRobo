@@ -89,7 +89,7 @@ objects:
     position: [0.08, -0.45, -0.06]     # island, right side
     color: [0.20, 0.62, 0.60, 1.0]     # teal ceramic: decisively saturated —
                                        # pale blue cross-matched the counter
-                                       # up close in the D405 view
+                                       # up close in the sim wrist-camera view
     free: true
     density: 800.0
   - name: snack_box

@@ -57,6 +57,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "controller_action",
             default_value="/joint_trajectory_controller/follow_joint_trajectory",
+            description="FollowJointTrajectory action of the arm's controller",
         ),
     ]
 

@@ -202,10 +202,12 @@ def main():
     if max(abs(ang_diff(a, b)) for a, b in zip(q_now, HOME)) > 0.1:
         if not args.execute:
             sys.exit("arm is not at home — rerun with --execute to home it")
-        input(
-            "arm is away from home — press ENTER to home it at 25% "
-            "(hand on e-stop), Ctrl+C to quit: "
+        reply = input(
+            "arm is away from home — type 'go' to home it at 25% "
+            "(hand on e-stop), anything else quits: "
         )
+        if reply.strip() != "go":
+            sys.exit("aborted — nothing moved")
         plan = demo.plan_home_from(None)
         if plan is None or not plan.success:
             sys.exit("cannot plan home")

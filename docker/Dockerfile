@@ -24,7 +24,7 @@ ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
 
 # --- ROS 2 Humble (base image is Ubuntu 22.04 = Humble's target) ---------
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl gnupg lsb-release git git-lfs ca-certificates \
+        curl gnupg lsb-release git ca-certificates \
     && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
         -o /usr/share/keyrings/ros-archive-keyring.gpg \
     && echo "deb [arch=arm64 signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
@@ -46,16 +46,21 @@ RUN python3 -m pip install --no-cache-dir \
 
 # --- cuRobo: PINNED v0.7.8, source build for Orin (sm_87) ----------------
 # The tag is additionally pinned to its commit hash so a moved tag fails
-# the build instead of silently changing the planner.
+# the build instead of silently changing the planner. warp and numpy are
+# pinned BEFORE the cuRobo install so pip's resolver keeps the
+# bench-verified versions instead of pulling latest for cuRobo's bare
+# 'warp-lang>=0.9.0' / 'numpy' requirements. ninja makes MAX_JOBS real
+# (torch cpp_extension only parallelizes through it). v0.7.8 has no
+# git-LFS content — plain clone is complete.
 ENV TORCH_CUDA_ARCH_LIST="8.7+PTX" MAX_JOBS=4
-RUN git lfs install \
-    && git clone https://github.com/NVlabs/curobo.git /opt/curobo \
+RUN git clone https://github.com/NVlabs/curobo.git /opt/curobo \
     && cd /opt/curobo \
     && git checkout tags/v0.7.8 \
     && test "$(git rev-parse HEAD)" = "d64c4b005459db10c5dd867d8b30a87d5bda9bdb" \
-    && python3 -m pip install --no-cache-dir -U "packaging>=24.1" "setuptools>=70,<80" \
-    && python3 -m pip install --no-cache-dir --no-build-isolation /opt/curobo \
-    && python3 -m pip install --no-cache-dir "warp-lang==1.5.1"
+    && python3 -m pip install --no-cache-dir -U \
+        "packaging>=24.1" "setuptools>=70,<80" \
+        "numpy==1.26.4" "warp-lang==1.5.1" ninja \
+    && python3 -m pip install --no-cache-dir --no-build-isolation /opt/curobo
 
 # --- this repo: pip core + the two ament packages ------------------------
 COPY . /opt/rammp_curobo_src

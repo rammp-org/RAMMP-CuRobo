@@ -60,7 +60,8 @@ has it) — don't reintroduce it casually.
 
 ## Safety (do not weaken)
 
-Execution gates live in `rammp_curobo_ros/executor.py` and are all
+Execution gates live in `rammp_curobo_ros/planner_node.py` (`_execute_cb`:
+execute param, speed clamp) + `executor.py` (the rest) and are all
 verified live: execute param (default false) → speed clamp (0,1] → name /
 limit / continuity / monotonic-time checks → live start-state match →
 cancel = controller stop+hold → arrival check. The example adds --execute
