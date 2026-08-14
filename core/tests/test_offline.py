@@ -182,6 +182,23 @@ def test_quaternion_round_trip_and_tool_math():
     assert tool_axis(spun) == pytest.approx([0, 0, -1], abs=1e-9)
 
 
+def test_yaw_about_world_z_keeps_attitude_level():
+    from rammp_curobo.geometry import yaw_about_world_z
+
+    # the Gen3 home tool attitude (FK-verified): tool z level along +x
+    home = [0.5, 0.5, 0.5, 0.5]  # xyzw
+    assert yaw_about_world_z(home, 0.0) == pytest.approx(home)
+    # steering about WORLD z swings the heading but the wrist stays level:
+    # tool z ends at [cos b, sin b, 0] for every bearing b
+    for deg in (-45.0, -20.0, 10.0, 45.0):
+        b = math.radians(deg)
+        q = yaw_about_world_z(home, b)
+        assert sum(v * v for v in q) == pytest.approx(1.0)
+        assert tool_axis(xyzw_to_wxyz(q)) == pytest.approx(
+            [math.cos(b), math.sin(b), 0.0], abs=1e-9
+        )
+
+
 def test_real_arm_config_loads():
     cfg, cfg_dir = load_planner_config("gen3_real.yaml")
     assert cfg["world"] == "world_real_bench.yaml"

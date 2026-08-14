@@ -43,6 +43,24 @@ def wxyz_to_xyzw(q):
     return [x, y, z, w]
 
 
+def yaw_about_world_z(xyzw, rad):
+    """Rz(rad) ⊗ q: steer an orientation about the WORLD z axis. xyzw.
+
+    Complements spin_about_tool (which rolls about the tool's OWN z):
+    this keeps the attitude — e.g. a level wrist stays level — while
+    swinging its heading by `rad` around vertical.
+    """
+    half = rad / 2.0
+    c, s = math.cos(half), math.sin(half)
+    x, y, z, w = (float(v) for v in xyzw)
+    return (
+        c * x - s * y,
+        c * y + s * x,
+        c * z + s * w,
+        c * w - s * z,
+    )
+
+
 def spin_about_tool(wxyz, deg):
     """q ⊗ Rz(deg): spin an orientation about its own tool (z) axis. wxyz."""
     half = math.radians(deg) / 2.0
