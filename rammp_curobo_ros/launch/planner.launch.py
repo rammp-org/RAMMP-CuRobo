@@ -2,9 +2,9 @@
 
 The node is a planning service: it takes an end position (a tool pose or a
 joint goal) and returns the collision-free joint trajectory. It never owns
-the arm — execution goes to whatever ros2_control stack is already running
-(started separately; on this lab's Jetson that is the RAMMP-Kinova
-workspace's kortex bringup or MuJoCo sim).
+the arm — execution goes to the kinova_arm_ros2 driver's
+/execute_joint_trajectory action (start `kinova_arm_node` separately:
+`--sim` for the simulator, `--ip 192.168.1.10` for the real Gen3).
 
 Planning-only (the Docker/service use — nothing can move):
 
@@ -52,12 +52,13 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "use_sim_time",
             default_value="false",
-            description="true when running against the MuJoCo sim",
+            description="true only under a /clock-publishing simulator "
+            "(kinova_arm_node --sim runs on wall clock: leave false)",
         ),
         DeclareLaunchArgument(
-            "controller_action",
-            default_value="/joint_trajectory_controller/follow_joint_trajectory",
-            description="FollowJointTrajectory action of the arm's controller",
+            "arm_action",
+            default_value="/execute_joint_trajectory",
+            description="the driver's ExecuteJointTrajectory action name",
         ),
     ]
 
@@ -74,7 +75,7 @@ def generate_launch_description():
                 "execute": LaunchConfiguration("execute"),
                 "speed_scale": LaunchConfiguration("speed_scale"),
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
-                "controller_action": LaunchConfiguration("controller_action"),
+                "arm_action": LaunchConfiguration("arm_action"),
             }
         ],
     )

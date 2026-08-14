@@ -58,8 +58,11 @@ if plan.success:
 The node re-validates every execution goal (limits, continuity, live
 start-state match) and refuses anything stale — plan again if the arm moved.
 `/rammp_curobo/plan_to_pose` takes a `geometry_msgs/Pose`;
-`/rammp_curobo/set_world` swaps the collision world;
-`/rammp_curobo/open_gripper` / `close_gripper` are `std_srvs/Trigger`.
+`/rammp_curobo/set_world` swaps the collision world. Execution drives
+kinova_arm_ros2's `/execute_joint_trajectory` (needs that workspace
+sourced and `kinova_arm_node` running; planning alone does not). The
+kortex-era gripper services were removed with the old driver — the new
+one has no gripper path yet.
 
 ## Adopting into Demo-Software
 
@@ -67,10 +70,11 @@ start-state match) and refuses anything stale — plan again if the arm moved.
   `third_party/`); colcon picks up the two ament packages, the pip core
   installs once per machine (add to setup.sh alongside the other pip deps,
   rosdep-stub pattern like `python3-kortex-api`).
-- **Mutual exclusion:** execution drives ros2_kortex's
-  `joint_trajectory_controller` — `hardware/arm_driver` must NOT be running
-  at the same time (both own the arm at 192.168.1.10). Sequencing that
-  handover is a team decision, not something this repo enforces.
+- **Mutual exclusion:** execution drives kinova_arm_ros2's
+  `kinova_arm_node` — `hardware/arm_driver` (or any other arm stack) must
+  NOT be running at the same time (all own the arm at 192.168.1.10).
+  Sequencing that handover is a team decision, not something this repo
+  enforces.
 - `ExecuteTrajectory` here has the same goal shape as
   `arm_interfaces/ExecuteTrajectory` (a `trajectory_msgs/JointTrajectory`),
   plus `speed_scale` — a future `arm_driver` integration could accept the

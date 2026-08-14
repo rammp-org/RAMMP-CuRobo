@@ -4,23 +4,24 @@
   <name>rammp_curobo_ros</name>
   <version>0.1.0</version>
   <description>Thin ROS 2 wrapper around the rammp_curobo planning core:
-    plan/execute action servers and a safety-gated FollowJointTrajectory
-    executor for the Kinova Gen3 (MuJoCo sim or ros2_kortex, same names).
+    plan/execute action servers and a safety-gated executor driving the
+    kinova_arm_ros2 driver (sim and real through the same action).
     Needs the rammp-curobo pip package + pinned cuRobo stack (see README).</description>
   <maintainer email="chrisman4247@gmail.com">RAMMP</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
   <depend>rammp_curobo_interfaces</depend>
+  <!-- the arm driver's action interface (rammp-org/kinova_arm_ros2).
+       Runtime-only, and only for EXECUTION: the planning-only deployment
+       (Docker) runs without it (lazy import, executor not constructed). -->
+  <exec_depend>kinova_arm_interfaces</exec_depend>
   <depend>trajectory_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
+  <!-- control_msgs: JointTolerance in the driver goal -->
   <depend>control_msgs</depend>
-  <depend>std_srvs</depend>
   <depend>builtin_interfaces</depend>
-  <depend>controller_manager_msgs</depend>
-  <!-- servoing-recovery fault reset (kortex fault_controller's Trigger) -->
-  <exec_depend>example_interfaces</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
 
