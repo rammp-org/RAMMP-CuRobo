@@ -18,15 +18,28 @@ has it) — don't reintroduce it casually.
 - torch 2.10.0 / torchvision 0.25.0 from https://pypi.jetson-ai-lab.io/jp6/cu126.
 - cuRobo **PINNED v0.7.8** (v0.8 is an API rewrite — never upgrade),
   pip-editable from `~/RAMMP-Kinova/ros2_ws/curobo`; warp-lang 1.5.1.
-- Arm: Kinova Gen3 7-DoF at **192.168.1.10**. ros2_control stack (sim
-  MuJoCo + real ros2_kortex) lives in `~/RAMMP-Kinova/ros2_ws` — source it
-  before ours for execution.
+- Arm: Kinova Gen3 7-DoF at **192.168.1.10**. Execution driver (since
+  2026-08-14): **rammp-org/kinova_arm_ros2** `kinova_arm_node` over the
+  kinova-gen3-driver 1 kHz core — built at `/tmp/kinova-ros2-ws` by the
+  driver author's rsync loop (abra has NO GitHub SSH key; /tmp dies on
+  reboot; `~/atdev/kinova-gen3-driver` is a STALE checkout, don't trust
+  it). Source that ws under ours for execution only — building/planning
+  need it not (lazy import, executor constructed only when execute=true).
+- Driver facts (verified in core source 2026-08-14): positions+times only
+  (velocities dropped, linear interp @250 Hz); ref speed capped 0.5 rad/s
+  (full-speed plans LAG — keep speed_scale ≤0.35 until raised); completes
+  on TIMER, no goal-tolerance check (our arrival gate is the real one);
+  /joint_states BEST-EFFORT ~100 Hz (sensor QoS subs everywhere);
+  measured q wrapped to (-pi,pi] and the driver's path guard is NOT
+  wrap-aware (we arm it only on bounded joints 2/4/6); `--sim` is a
+  STATIC stub — no motion, gates/comms testing only; no gripper support.
 - `ROS_LOCALHOST_ONLY=1` in EVERY shell that runs ROS here. Non-interactive
   shells skip ~/.zshrc — export it explicitly or nodes won't discover each
   other (field-verified split-DDS failure).
-- THREE mutually exclusive arm stacks exist on this machine: this repo via
-  ros2_kortex, Demo-Software's `arm_driver` (Kortex API direct), and the
-  custom C++ driver in `~/atdev/kinova-gen3-driver`. One at a time, ever.
+- Mutually exclusive arm stacks on this machine: this repo via
+  kinova_arm_node, the RETIRED-for-us ros2_kortex bringup (RAMMP-Kinova
+  ws), and Demo-Software's `arm_driver` (Kortex API direct). One at a
+  time, ever.
 
 ## Invariants (hard-won in RAMMP-Kinova; verified still true here)
 
@@ -55,8 +68,9 @@ has it) — don't reintroduce it casually.
 - `ee_link` is `tool_frame`: 0.120 m beyond the wrist flange (≈ fingertip
   midpoint). Tool corrections (spin 90°, tip 21 mm) are sim-measured and
   ship DISABLED in gen3.yaml until re-measured on the real arm.
-- Sim starts at q=0 (not home). Both sim and real expose the SAME
-  controller names; never run both bringups (shared /controller_manager).
+- The driver sim starts at q=0 (not home) and NEVER moves (static
+  transport stub). Sim and real expose the same
+  /execute_joint_trajectory action; one arm stack at a time, ever.
 
 ## Safety (do not weaken)
 

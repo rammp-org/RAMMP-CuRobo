@@ -3,7 +3,7 @@
 
 DRY-RUN IS THE DEFAULT: without --execute this plans and prints the
 trajectory, and nothing can move. Real motion needs ALL of:
-  1. an arm-side bringup (MuJoCo sim, or ros2_kortex on the real Gen3),
+  1. the arm driver (kinova_arm_node: --sim stub, or --ip on the real Gen3),
   2. the planner node launched with execute:=true,
   3. this script run with --execute,
   4. typing exactly 'yes' at the confirmation prompt.
@@ -31,6 +31,7 @@ import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
 
 from rammp_curobo_interfaces.action import ExecuteTrajectory, PlanToJoints, PlanToPose
@@ -85,7 +86,10 @@ def read_joint_state(node, executor, timeout_s=5.0):
     names = JOINT_NAMES
     slot = {}
     sub = node.create_subscription(
-        JointState, "/joint_states", lambda m: slot.update(msg=m), 10
+        JointState,
+        "/joint_states",
+        lambda m: slot.update(msg=m),
+        qos_profile_sensor_data,  # kinova_arm_node streams best-effort
     )
     t0 = time.monotonic()
     while "msg" not in slot:
