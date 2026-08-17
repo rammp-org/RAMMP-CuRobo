@@ -33,7 +33,7 @@ from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
 
 from rammp_curobo_interfaces.action import ExecuteTrajectory, PlanToJoints, PlanToPose
-from rammp_curobo_interfaces.srv import SetWorld
+from rammp_curobo_interfaces.srv import SetWorld, UpdateWorldBoxes
 from rammp_curobo_ros.conversions import trajectory_to_msg
 from rammp_curobo_ros.executor import (
     TrajectoryExecutor,
@@ -186,6 +186,12 @@ class RammpCuroboNode(Node):
         self.create_service(
             SetWorld, "~/set_world", self._set_world_cb, callback_group=self._cb
         )
+        self.create_service(
+            UpdateWorldBoxes,
+            "~/update_world_boxes",
+            self._update_world_boxes_cb,
+            callback_group=self._cb,
+        )
         if self.gripper_enabled:
             self.create_service(
                 Trigger,
@@ -294,7 +300,9 @@ class RammpCuroboNode(Node):
         The EXECUTION gate still checks every trajectory against the live
         arm, so a pre-planned segment can only run once the arm is there.
         """
-        if not self._plan_lock.acquire(blocking=False):
+        # A 2 Hz world updater briefly holds this lock; wait a beat instead
+        # of bouncing the plan (concurrent PLANS still refuse — one at a time).
+        if not self._plan_lock.acquire(timeout=0.5):
             return None
         try:
             if start_override is not None:
@@ -461,6 +469,36 @@ class RammpCuroboNode(Node):
                 self.planner.update_world(request.world)
                 response.success = True
                 response.message = "world set to %s" % request.world
+            except Exception as exc:
+                response.success = False
+                response.message = str(exc)
+        return response
+
+    def _update_world_boxes_cb(self, request, response):
+        n = len(request.names)
+        if len(request.centers) != n or len(request.dims) != n:
+            response.success = False
+            response.message = "names/centers/dims length mismatch"
+            return response
+        boxes = [
+            {
+                "name": request.names[i],
+                "position": [
+                    request.centers[i].x,
+                    request.centers[i].y,
+                    request.centers[i].z,
+                ],
+                "dims": [request.dims[i].x, request.dims[i].y, request.dims[i].z],
+            }
+            for i in range(n)
+        ]
+        with self._plan_lock:
+            try:
+                self.planner.update_world_boxes(
+                    boxes, baseline=request.baseline or None
+                )
+                response.success = True
+                response.message = "world: baseline + %d perceived boxes" % n
             except Exception as exc:
                 response.success = False
                 response.message = str(exc)
