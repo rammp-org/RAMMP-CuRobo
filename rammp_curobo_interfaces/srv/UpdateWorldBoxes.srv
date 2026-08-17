@@ -1,0 +1,13 @@
+# Replace the planner's PERCEIVED obstacles with these axis-aligned boxes
+# (base_link). They are merged on top of the static baseline world, so an
+# empty list is legal (v0.7.8's empty-world trap never triggers). Boxes
+# REPLACE the previous perceived set — they never accumulate.
+string[] names                # stable IDs from the perception tracker
+geometry_msgs/Point[] centers # box centers, base_link (m)
+geometry_msgs/Vector3[] dims  # full extents (m)
+# Baseline world YAML (name or path) to merge under. "" = keep current
+# baseline (initial world at node start, or the last non-empty value).
+string baseline
+---
+bool success
+string message                # includes box count vs the obb cache cap

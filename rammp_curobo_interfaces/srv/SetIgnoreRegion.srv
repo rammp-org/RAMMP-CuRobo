@@ -1,0 +1,8 @@
+# Axis-aligned box in base_link: depth points inside it are dropped before
+# clustering (the manipulation target must not become an obstacle).
+# All-zero dims clears the region.
+geometry_msgs/Point center
+geometry_msgs/Vector3 dims
+---
+bool success
+string message

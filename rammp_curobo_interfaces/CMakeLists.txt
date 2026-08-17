@@ -16,6 +16,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/PlanToJoints.action"
   "action/ExecuteTrajectory.action"
   "srv/SetWorld.srv"
+  "srv/UpdateWorldBoxes.srv"
+  "srv/SetIgnoreRegion.srv"
   DEPENDENCIES geometry_msgs sensor_msgs trajectory_msgs
 )
 
