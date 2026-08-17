@@ -144,6 +144,32 @@ Without `--execute`, `tour_demo` pre-plans and prints the tour dry.
 `scripts/sim_execution_checks.py` additionally verifies the refusal gates
 and mid-motion cancel against the live sim.
 
+## Perceived world (cameras)
+
+The `cameras` node gives the planner live spatial awareness: depth from
+the bench Orbbec (Gemini 336L; wrist D405 fusion is staged next) is
+deprojected to base_link, the arm is erased by a capsule self-filter, a
+voxel accumulator with hysteresis kills flicker, and the surviving
+clusters become named cuboid obstacles pushed to the planner at ~2 Hz —
+merged on top of the static `world_real_bench.yaml` baseline, so the
+table never disappears and updates are never empty. Planning-only: the
+node never commands motion.
+
+```bash
+# one-time (attended): Orbbec extrinsics via an ArUco tag on the gripper
+ros2 launch orbbec_camera gemini_330_series.launch.py depth_registration:=true
+python3 scripts/calibrate_camera_extrinsics.py --marker-size 0.05   # then rebuild
+
+# every session
+ros2 run rammp_curobo_ros cameras
+```
+
+Watch `/cameras/world_markers` in RViz — a box placed on the bench should
+appear within ~2 s and fade ~3 s after removal. Do not trust plans near
+clutter until RViz agrees with reality. `scripts/cameras_checks.py`
+verifies the service loop live; `/cameras/set_ignore_region` masks the
+object you're about to grasp (see INTEGRATION.md).
+
 ## Safety model (execution gates)
 
 Every `ExecuteTrajectory` goal must pass, in order: node `execute`

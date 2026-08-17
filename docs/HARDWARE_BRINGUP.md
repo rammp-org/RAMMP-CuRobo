@@ -172,3 +172,41 @@ for before the e-stop; prove it works while the motion is trivial.
 - After any e-stop or fault, RE-RUN the dry-run step before arming again
   (the arm may have been moved by hand; stale plans are refused, but check
   the world still matches reality too).
+
+## 6. Perceived world, stage 1 — Orbbec (attended)
+
+Prereqs: steps 1-5 clean; the Orbbec Gemini 336L aimed at the bench with
+an unobstructed view of the arm's workspace; an ArUco tag (DICT_4X4_50
+id 0, side measured with calipers) mounted RIGIDLY on the gripper.
+
+1. **Calibrate (one-time, redo if the camera moves):**
+   ```bash
+   # terminal 1: kortex bringup (step 2 above).  terminal 2:
+   export ROS_LOCALHOST_ONLY=1
+   ros2 launch orbbec_camera gemini_330_series.launch.py depth_registration:=true
+   # terminal 3 (repo root, sourced):
+   python3 scripts/calibrate_camera_extrinsics.py --marker-id 0 --marker-size <measured m>
+   ```
+   YOU jog the arm between recordings (~10 poses spread across the view,
+   varying the wrist rotation axis — tilt AND twist). The script refuses
+   to write above 1 cm RMS residual. Then rebuild:
+   `colcon build --symlink-install --packages-select rammp_curobo_ros`.
+   If the driver's topic names differ from the defaults, fix the
+   `depth_topic`/`info_topic` fields in the written
+   `rammp_curobo_ros/config/camera_orbbec_bench.yaml` (check with
+   `ros2 topic list | grep camera`).
+2. **RViz acceptance (no arm motion):** planner up, then
+   `ros2 run rammp_curobo_ros cameras`; RViz displaying
+   `/cameras/world_markers`. Place a box on the bench → a marker appears
+   within ~2 s, within ±3 cm of reality; remove it → gone within ~3 s.
+   Wave a hand through the view → NO persistent marker. With the arm
+   bringup running, the ARM must not appear (self-filter); if it does,
+   fix the mount calibration before proceeding.
+3. **Service loop:** `python3 scripts/cameras_checks.py` — all three
+   checks green (box round-trip, markers, plan-under-churn).
+4. **First plan around a real obstacle:** put an object between home and
+   a target; plan (dry-run) and eyeball the trajectory clearing the
+   marker in RViz; only then execute at ≤0.25 speed, e-stop in hand.
+   Known v1 limitation: an obstacle the arm OCCLUDES decays out of the
+   world after a few seconds — keep the baseline world honest and don't
+   rely on perception for objects the arm is hiding.

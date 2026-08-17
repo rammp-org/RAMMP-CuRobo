@@ -2,15 +2,18 @@
 
 Standalone cuRobo planning for the RAMMP Kinova Gen3 7-DoF (+ Robotiq
 2F-85): a planning SERVICE — end position in, collision-free joint
-trajectory out — plus one showcase (`tour_demo`) and a safety-gated
-executor for this bench. Parts: `core/` (pip `rammp-curobo`, pure Python,
-NO ROS imports — keep it that way), `rammp_curobo_interfaces/` (rosidl,
-dependency-free by policy), `rammp_curobo_ros/` (ament_python node),
-`docker/` (the service containerized for other RAMMP codebases). This
-repo deliberately contains and launches NO arm driver — bringup is the
-RAMMP-Kinova workspace's, execution ownership is the caller's. The
-camera-scanning and palm-demo code was removed 2026-08-14 (git history
-has it) — don't reintroduce it casually.
+trajectory out — plus one showcase (`tour_demo`), a safety-gated
+executor for this bench, and live spatial awareness (the `cameras` node:
+bench Orbbec depth → cuboid obstacles → planner world at ~2 Hz). Parts:
+`core/` (pip `rammp-curobo`, pure Python, NO ROS imports — keep it that
+way; perception.py is the pure pipeline), `rammp_curobo_interfaces/`
+(rosidl, dependency-free by policy), `rammp_curobo_ros/` (ament_python:
+planner_node + cameras), `docker/` (the service containerized for other
+RAMMP codebases). This repo deliberately contains and launches NO arm
+driver — bringup is the RAMMP-Kinova workspace's, execution ownership is
+the caller's. The 2026-08-14 cleanup removed the scan/palm demos; the
+scan pipeline was deliberately REVIVED 2026-08-17 as `perception.py` +
+`cameras` (the palm demo remains history-only).
 
 ## Environment (this lab's Jetson AGX Orin, 192.168.1.11)
 
@@ -57,6 +60,13 @@ has it) — don't reintroduce it casually.
   ship DISABLED in gen3.yaml until re-measured on the real arm.
 - Sim starts at q=0 (not home). Both sim and real expose the SAME
   controller names; never run both bringups (shared /controller_manager).
+- Perceived world: UpdateWorldBoxes REPLACES the perceived set every call
+  (never accumulates), always merged on a sticky baseline world — so
+  updates are never empty and the table survives. Ignore region lives in
+  the cameras node, not the planner. No free-space raycasting: occluded
+  obstacles decay (~2-3 s) — keep the baseline honest. Orbbec extrinsics
+  come ONLY from scripts/calibrate_camera_extrinsics.py (residual-gated
+  hand-eye); never hand-edit camera_orbbec_bench.yaml mounts.
 
 ## Safety (do not weaken)
 

@@ -61,6 +61,30 @@ start-state match) and refuses anything stale — plan again if the arm moved.
 `/rammp_curobo/set_world` swaps the collision world;
 `/rammp_curobo/open_gripper` / `close_gripper` are `std_srvs/Trigger`.
 
+### Perceived obstacles (live cameras)
+
+With the `cameras` node running (`ros2 run rammp_curobo_ros cameras` —
+calibrate the Orbbec first, see the README), the planner's world tracks
+what the bench cameras see, so plans route around real clutter with no
+client work at all. Two services matter to integrators:
+
+- `/rammp_curobo/update_world_boxes`
+  (`rammp_curobo_interfaces/srv/UpdateWorldBoxes`): parallel arrays of
+  `names` / `centers` (`Point`) / `dims` (`Vector3`), axis-aligned boxes
+  in base_link. Each call REPLACES the whole perceived set (they never
+  accumulate) and merges it on top of the static `baseline` world YAML
+  ("" keeps the current baseline) — so an empty call clears perceived
+  obstacles but the table always survives. Normally only the cameras
+  node calls this; a client may too (e.g. injecting a known obstacle).
+- `/cameras/set_ignore_region`
+  (`rammp_curobo_interfaces/srv/SetIgnoreRegion`): one axis-aligned box
+  in base_link whose depth points are discarded before clustering. Set
+  it around the object you are about to touch — the manipulation target
+  must not be avoided as an obstacle. All-zero dims clears it.
+
+`/cameras/world_markers` (`visualization_msgs/MarkerArray`) shows the
+perceived boxes in RViz — check it before trusting a plan near clutter.
+
 ## Adopting into Demo-Software
 
 - Clone this repo into the workspace `src/` (or add as a submodule under
