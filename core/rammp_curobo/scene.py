@@ -144,3 +144,19 @@ def scene_from_obstacles(entries, base_frame="base_link"):
         targets=[],
         objects=[SceneObject(dict(e)) for e in entries],
     )
+
+
+def merged_scene(baseline, boxes):
+    """The baseline scene with its props REPLACED by perceived boxes.
+
+    `boxes`: dicts with name + position + dims (axis-aligned, base frame).
+    The baseline's obstacles/targets pass through untouched; perceived
+    boxes never accumulate across calls because they land in `objects`
+    wholesale each time.
+    """
+    return Scene(
+        base_frame=baseline.base_frame,
+        obstacles=baseline.obstacles,
+        targets=baseline.targets,
+        objects=[SceneObject(dict(b)) for b in boxes],
+    )

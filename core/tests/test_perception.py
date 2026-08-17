@@ -126,6 +126,28 @@ def test_boxes_changed_thresholds():
     assert boxes_changed(a, {}, tol=0.01)
 
 
+def test_merged_scene_keeps_baseline_and_replaces_objects():
+    from rammp_curobo.scene import Obstacle, Scene, merged_scene
+
+    base = Scene(
+        base_frame="base_link",
+        obstacles=[
+            Obstacle(
+                {"name": "table", "position": [0.5, 0, -0.04], "dims": [1, 1, 0.08]}
+            )
+        ],
+        targets=[],
+        objects=[],
+    )
+    boxes = [{"name": "obs_1", "position": [0.5, 0.2, 0.1], "dims": [0.1, 0.1, 0.2]}]
+    m1 = merged_scene(base, boxes)
+    assert [o.name for o in m1.obstacles] == ["table"]
+    assert [o.name for o in m1.objects] == ["obs_1"]
+    # a second merge REPLACES the perceived set — no accumulation
+    m2 = merged_scene(base, [])
+    assert m2.objects == [] and [o.name for o in m2.obstacles] == ["table"]
+
+
 def test_in_box_mask_with_inflation():
     pts = np.array([[0.0, 0.0, 0.0], [0.06, 0.0, 0.0], [0.2, 0.0, 0.0]])
     inside = in_box_mask(pts, center=[0, 0, 0], dims=[0.1, 0.1, 0.1])

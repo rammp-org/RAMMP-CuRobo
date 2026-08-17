@@ -34,7 +34,7 @@ import numpy as np
 from rammp_curobo import geometry
 from rammp_curobo.config import load_planner_config, resolve_config
 from rammp_curobo.robot_config import load_robot_config
-from rammp_curobo.scene import Scene, load_scene, scene_from_obstacles
+from rammp_curobo.scene import Scene, load_scene, merged_scene, scene_from_obstacles
 from rammp_curobo.types import PlanResult, Trajectory
 from rammp_curobo.validate import validate_trajectory
 from rammp_curobo.world import make_world_config
@@ -300,6 +300,24 @@ class CuRoboPlanner:
             len(wc.cuboid),
             " (ignoring: %s)" % ", ".join(sorted(ignore)) if ignore else "",
         )
+
+    def update_world_boxes(self, boxes, baseline=None):
+        """Continuous-perception entry: merge perceived AABBs onto the
+        static baseline and swap the collision world.
+
+        boxes: dicts with name + position + dims (base frame, metres).
+        baseline: world YAML name/path to (re)load as the static scene;
+        None keeps the current one (the initial world until a baseline is
+        ever named). Callers serialize with planning themselves (the ROS
+        node holds its plan lock around this).
+        """
+        if baseline:
+            self._baseline_scene = load_scene(
+                resolve_config(baseline, relative_to=self._config_dir)
+            )
+        if getattr(self, "_baseline_scene", None) is None:
+            self._baseline_scene = self._scene
+        self.update_world(merged_scene(self._baseline_scene, boxes))
 
     # ----------------------------------------------------------------- queries
     @property
