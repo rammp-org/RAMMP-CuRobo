@@ -25,6 +25,7 @@ import time
 import rclpy
 from control_msgs.action import GripperCommand
 from rclpy.action import ActionClient, ActionServer, CancelResponse
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -99,11 +100,20 @@ class RammpCuroboNode(Node):
         self._joint_msg = None
         self._joint_msg_time = None
 
+        # BEST-EFFORT, not the default reliable depth-10. Joint state is sensor
+        # data: kinova_arm_ros2 publishes /joint_states with SensorDataQoS
+        # (best-effort), and a RELIABLE subscriber is QoS-incompatible with a
+        # BEST_EFFORT publisher, so it receives nothing at all:
+        #   New publisher discovered on topic '/joint_states', offering
+        #   incompatible QoS. Last incompatible policy: RELIABILITY
+        # The visible symptom is every plan failing with
+        #   'no fresh joint state on /joint_states'
+        # even though the driver is plainly publishing it.
         self.create_subscription(
             JointState,
             self.joint_states_topic,
             self._joint_state_cb,
-            10,
+            qos_profile_sensor_data,
             callback_group=self._cb,
         )
 
