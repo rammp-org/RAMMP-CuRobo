@@ -148,6 +148,79 @@ def test_merged_scene_keeps_baseline_and_replaces_objects():
     assert m2.objects == [] and [o.name for o in m2.obstacles] == ["table"]
 
 
+def test_eye_to_hand_solver_recovers_known_extrinsic():
+    import importlib.util
+    import os
+
+    spec = importlib.util.spec_from_file_location(
+        "calib",
+        os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "..",
+            "scripts",
+            "calibrate_camera_extrinsics.py",
+        ),
+    )
+    calib = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(calib)
+
+    rng = np.random.default_rng(7)
+
+    def rand_rot():
+        # Tsai's method needs pose pairs whose relative rotation axes span
+        # 3D — rotations about only 1-2 axes make the system degenerate
+        # (found the hard way writing this test; the script tells the
+        # operator to vary the wrist for the same reason).
+        q = rng.normal(size=4)
+        q /= np.linalg.norm(q)
+        return quat_to_mat(*q)
+
+    # ground truth: camera ~1.2 m out, arbitrary attitude
+    R_bc = rand_rot()
+    t_bc = np.array([1.2, 0.1, 0.6])
+    R_tt = rand_rot()  # tag-in-tool, arbitrary rigid offset
+    t_tt = np.array([0.0, 0.03, 0.05])
+    base_T_tool, cam_T_tag = [], []
+    for _ in range(10):
+        R_bt = rand_rot()
+        t_bt = np.array([0.45, 0.0, 0.35]) + rng.uniform(-0.15, 0.15, 3)
+        base_T_tool.append((R_bt, t_bt))
+        # cam_T_tag = cam_T_base @ base_T_tool @ tool_T_tag
+        R_ct = R_bc.T @ R_bt @ R_tt
+        t_ct = R_bc.T @ (R_bt @ t_tt + t_bt - t_bc)
+        cam_T_tag.append((R_ct, t_ct))
+    R, t, rms = calib.solve_eye_to_hand(base_T_tool, cam_T_tag)
+    assert rms < 1e-6
+    assert np.allclose(R, R_bc, atol=1e-6) and np.allclose(t, t_bc, atol=1e-6)
+
+
+def test_mat_to_quat_round_trip():
+    import importlib.util
+    import os
+
+    spec = importlib.util.spec_from_file_location(
+        "calib",
+        os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "..",
+            "scripts",
+            "calibrate_camera_extrinsics.py",
+        ),
+    )
+    calib = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(calib)
+    for q in ([0, 0, 0, 1], [0.5, 0.5, 0.5, 0.5], [0, 1, 0, 0], [0.7, 0, 0.7, 0.14]):
+        q = np.asarray(q, dtype=float)
+        q = q / np.linalg.norm(q)
+        r = quat_to_mat(*q)
+        q2 = np.asarray(calib.mat_to_quat_xyzw(r))
+        if q2 @ q < 0:
+            q2 = -q2  # q and -q are the same rotation
+        assert np.allclose(q, q2, atol=1e-9)
+
+
 def test_in_box_mask_with_inflation():
     pts = np.array([[0.0, 0.0, 0.0], [0.06, 0.0, 0.0], [0.2, 0.0, 0.0]])
     inside = in_box_mask(pts, center=[0, 0, 0], dims=[0.1, 0.1, 0.1])
