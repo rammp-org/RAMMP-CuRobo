@@ -13,6 +13,7 @@ setup(
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
         (os.path.join("share", package_name, "launch"), glob("launch/*.launch.py")),
+        (os.path.join("share", package_name, "config"), glob("config/*.yaml")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -25,6 +26,7 @@ setup(
         "console_scripts": [
             "planner_node = rammp_curobo_ros.planner_node:main",
             "tour_demo = rammp_curobo_ros.tour_demo:main",
+            "cameras = rammp_curobo_ros.cameras:main",
         ],
     },
 )

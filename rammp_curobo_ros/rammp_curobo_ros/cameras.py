@@ -1,0 +1,414 @@
+"""cameras — continuous perceived-obstacle world for the planner.
+
+Subscribes depth + camera_info for each configured camera (sensor-data
+QoS), runs the pure perception pipeline (rammp_curobo.perception) at
+`rate_hz`, and replaces the planner's perceived boxes via
+/rammp_curobo/update_world_boxes. Publishes ~/world_markers so RViz shows
+exactly what the planner believes. Never commands motion.
+
+    ros2 run rammp_curobo_ros cameras
+    ros2 run rammp_curobo_ros cameras --ros-args -p "cameras:=['camera_orbbec_bench.yaml']"
+
+Camera YAML schema (same as the 2026-08 scan pipeline): depth_topic,
+info_topic, min_range, max_range, and EITHER tf_frame (optical frame in
+TF) OR parent_frame + mount_xyz + mount_quat_xyzw (fixed mount; the
+calibration script writes this form for the Orbbec).
+"""
+
+import os
+import sys
+import time
+
+import numpy as np
+import rclpy
+import yaml
+from geometry_msgs.msg import Point, Vector3
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import CameraInfo, Image
+from tf2_ros import Buffer, TransformListener
+from visualization_msgs.msg import Marker, MarkerArray
+
+from rammp_curobo.config import resolve_config
+from rammp_curobo.perception import (
+    BoxTracker,
+    VoxelAccumulator,
+    boxes_changed,
+    cluster_cells,
+    depth_to_points,
+    in_box_mask,
+    quat_to_mat,
+    robot_mask,
+    transform_points,
+    workspace_crop,
+)
+from rammp_curobo.scene import load_scene
+from rammp_curobo_interfaces.srv import SetIgnoreRegion, UpdateWorldBoxes
+
+ARM_CHAIN = [
+    "base_link",
+    "shoulder_link",
+    "half_arm_1_link",
+    "half_arm_2_link",
+    "forearm_link",
+    "spherical_wrist_1_link",
+    "spherical_wrist_2_link",
+    "bracelet_link",
+    "end_effector_link",
+]
+
+
+def load_camera_config(name_or_path):
+    """Resolve a camera YAML by path or packaged name (config/ dir)."""
+    candidates = [os.path.expanduser(name_or_path)]
+    try:
+        from ament_index_python.packages import get_package_share_directory
+
+        share = get_package_share_directory("rammp_curobo_ros")
+        candidates.append(os.path.join(share, "config", name_or_path))
+    except Exception:
+        pass
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates.append(os.path.join(here, "config", name_or_path))
+    for c in candidates:
+        if os.path.isfile(c):
+            with open(c) as f:
+                return yaml.safe_load(f)
+    sys.exit(
+        "camera config %r not found (tried: %s). The Orbbec config is "
+        "WRITTEN BY scripts/calibrate_camera_extrinsics.py — run the "
+        "calibration first." % (name_or_path, candidates)
+    )
+
+
+def process_camera_points(
+    depth,
+    intr,
+    rot,
+    trans,
+    stride,
+    min_range,
+    max_range,
+    xy_extent,
+    min_z,
+    max_z,
+    link_pts,
+    self_radius,
+    ignore_region,
+    baseline_boxes,
+):
+    """One camera frame -> filtered base_link points. Pure (testable)."""
+    pts = depth_to_points(
+        depth,
+        intr["fx"],
+        intr["fy"],
+        intr["cx"],
+        intr["cy"],
+        stride=stride,
+        min_range=min_range,
+        max_range=max_range,
+    )
+    pts = transform_points(pts, rot, trans)
+    pts = workspace_crop(pts, xy_extent=xy_extent, min_z=min_z, max_z=max_z)
+    if len(pts) and link_pts is not None:
+        pts = pts[robot_mask(pts, link_pts, self_radius)]
+    if len(pts) and ignore_region is not None:
+        pts = pts[~in_box_mask(pts, ignore_region["center"], ignore_region["dims"])]
+    for box in baseline_boxes:
+        if not len(pts):
+            break
+        pts = pts[~in_box_mask(pts, box["position"], box["dims"], inflate=0.01)]
+    return pts
+
+
+class _CameraInput:
+    """Latest depth frame + intrinsics for one configured camera."""
+
+    def __init__(self, node, cfg):
+        self.cfg = cfg
+        self.depth = None
+        self.stamp = None
+        self.info = None
+        node.create_subscription(
+            CameraInfo,
+            cfg["info_topic"],
+            self._info_cb,
+            qos_profile_sensor_data,
+            callback_group=node.cb_group,
+        )
+        node.create_subscription(
+            Image,
+            cfg["depth_topic"],
+            self._depth_cb,
+            qos_profile_sensor_data,
+            callback_group=node.cb_group,
+        )
+
+    def _info_cb(self, msg):
+        k = np.array(msg.k).reshape(3, 3)
+        self.info = dict(fx=k[0, 0], fy=k[1, 1], cx=k[0, 2], cy=k[1, 2])
+
+    def _depth_cb(self, msg):
+        if msg.encoding == "16UC1":
+            d = (
+                np.frombuffer(msg.data, dtype=np.uint16)
+                .reshape(msg.height, msg.width)
+                .astype(np.float32)
+                / 1000.0
+            )
+        elif msg.encoding == "32FC1":
+            d = (
+                np.frombuffer(msg.data, dtype=np.float32)
+                .reshape(msg.height, msg.width)
+                .copy()
+            )
+        else:
+            return
+        self.depth = d
+        self.stamp = time.monotonic()
+
+    def fresh(self, max_age):
+        return (
+            self.depth is not None
+            and self.info is not None
+            and time.monotonic() - self.stamp < max_age
+        )
+
+
+class CamerasNode(Node):
+    def __init__(self):
+        super().__init__("cameras")
+        self.cb_group = ReentrantCallbackGroup()
+        p = self.declare_parameter
+        self.rate_hz = float(p("rate_hz", 2.0).value)
+        self.baseline = str(p("baseline", "world_real_bench.yaml").value)
+        self.voxel = float(p("voxel", 0.03).value)
+        self.self_radius = float(p("self_radius", 0.11).value)
+        self.max_boxes = int(p("max_boxes", 20).value)
+        self.min_voxels = int(p("min_voxels", 8).value)
+        self.stride = int(p("stride", 4).value)
+        self.xy_extent = float(p("xy_extent", 1.2).value)
+        self.min_z = float(p("min_z", 0.03).value)
+        self.max_z = float(p("max_z", 1.3).value)
+        cam_names = list(p("cameras", ["camera_orbbec_bench.yaml"]).value)
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.cams = [_CameraInput(self, load_camera_config(n)) for n in cam_names]
+        self.acc = VoxelAccumulator(voxel=self.voxel)
+        self.tracker = BoxTracker()
+        self.ignore_region = None
+        self._last_sent = None
+        self._pending = None
+        self._warned = set()
+
+        scene = load_scene(resolve_config(self.baseline))
+        self.baseline_boxes = [
+            {"position": o.position, "dims": o.dims} for o in scene.obstacles
+        ]
+        self.get_logger().info(
+            "baseline %s: %d obstacle(s) stripped from depth"
+            % (self.baseline, len(self.baseline_boxes))
+        )
+
+        self.world_client = self.create_client(
+            UpdateWorldBoxes,
+            "/rammp_curobo/update_world_boxes",
+            callback_group=self.cb_group,
+        )
+        self.create_service(
+            SetIgnoreRegion,
+            "~/set_ignore_region",
+            self._set_ignore_cb,
+            callback_group=self.cb_group,
+        )
+        self.markers_pub = self.create_publisher(MarkerArray, "~/world_markers", 1)
+        self.create_timer(1.0 / self.rate_hz, self._tick, callback_group=self.cb_group)
+        self.get_logger().info(
+            "cameras up: %s @ %.1f Hz, voxel %.0f mm"
+            % (cam_names, self.rate_hz, self.voxel * 1000)
+        )
+
+    # ------------------------------------------------------------------ TF
+    def _base_from(self, frame):
+        try:
+            tr = self.tf_buffer.lookup_transform("base_link", frame, rclpy.time.Time())
+        except Exception:
+            return None
+        q, t = tr.transform.rotation, tr.transform.translation
+        return quat_to_mat(q.x, q.y, q.z, q.w), np.array([t.x, t.y, t.z])
+
+    def _camera_pose(self, cfg):
+        """(R, t) base_T_optical, or None while TF is incomplete."""
+        if cfg.get("tf_frame"):
+            return self._base_from(cfg["tf_frame"])
+        parent = self._base_from(cfg["parent_frame"])
+        if parent is None and cfg["parent_frame"] == "base_link":
+            parent = (np.eye(3), np.zeros(3))  # fixed camera needs no TF
+        if parent is None:
+            return None
+        r_p, t_p = parent
+        mx = np.asarray(cfg["mount_xyz"], dtype=float)
+        qx, qy, qz, qw = cfg["mount_quat_xyzw"]
+        return r_p @ quat_to_mat(qx, qy, qz, qw), r_p @ mx + t_p
+
+    def _link_points(self):
+        pts = []
+        for name in ARM_CHAIN:
+            got = self._base_from(name)
+            if got is None:
+                return None  # no bringup running — skip self-filtering
+            pts.append(got[1])
+        r_ee, t_ee = self._base_from("end_effector_link")
+        pts.append(t_ee + r_ee @ np.array([0.0, 0.0, 0.18]))  # gripper capsule
+        return pts
+
+    # ---------------------------------------------------------------- tick
+    def _tick(self):
+        all_pts, saw_frame = [], False
+        link_pts = self._link_points()
+        if link_pts is None and "tf" not in self._warned:
+            self._warned.add("tf")
+            self.get_logger().warn(
+                "no arm TF — self-filter OFF (fine without a bringup; the "
+                "arm will cluster as an obstacle if one IS running)"
+            )
+        for cam in self.cams:
+            if not cam.fresh(max_age=2.0 / self.rate_hz):
+                continue
+            pose = self._camera_pose(cam.cfg)
+            if pose is None:
+                continue
+            saw_frame = True
+            all_pts.append(
+                process_camera_points(
+                    cam.depth,
+                    cam.info,
+                    pose[0],
+                    pose[1],
+                    stride=self.stride,
+                    min_range=float(cam.cfg.get("min_range", 0.12)),
+                    max_range=float(cam.cfg.get("max_range", 1.2)),
+                    xy_extent=self.xy_extent,
+                    min_z=self.min_z,
+                    max_z=self.max_z,
+                    link_pts=link_pts,
+                    self_radius=self.self_radius,
+                    ignore_region=self.ignore_region,
+                    baseline_boxes=self.baseline_boxes,
+                )
+            )
+        if not saw_frame:
+            if "frames" not in self._warned:
+                self._warned.add("frames")
+                self.get_logger().warn(
+                    "no fresh depth frames — is the camera driver running?"
+                )
+            return
+        self._warned.discard("frames")
+        pts = np.vstack(all_pts) if all_pts else np.empty((0, 3))
+        self.acc.update(pts)
+        boxes, total = cluster_cells(
+            self.acc.occupied_cells(),
+            self.voxel,
+            min_voxels=self.min_voxels,
+            max_boxes=self.max_boxes,
+        )
+        if total > len(boxes):
+            self.get_logger().warn(
+                "%d clusters found, capped to nearest %d" % (total, len(boxes))
+            )
+        named = self.tracker.assign(boxes)
+        self._publish_markers(named)
+        if self._last_sent is not None and not boxes_changed(named, self._last_sent):
+            return
+        self._send_world(named)
+
+    def _send_world(self, named):
+        if self._pending is not None and not self._pending.done():
+            return  # previous update still in flight — next tick retries
+        if not self.world_client.service_is_ready():
+            if "planner" not in self._warned:
+                self._warned.add("planner")
+                self.get_logger().warn("planner update_world_boxes not available yet")
+            return
+        self._warned.discard("planner")
+        req = UpdateWorldBoxes.Request()
+        req.baseline = self.baseline
+        for name, b in sorted(named.items()):
+            req.names.append(name)
+            req.centers.append(
+                Point(x=b["center"][0], y=b["center"][1], z=b["center"][2])
+            )
+            req.dims.append(Vector3(x=b["dims"][0], y=b["dims"][1], z=b["dims"][2]))
+        snapshot = {k: dict(v) for k, v in named.items()}
+
+        def _done(fut):
+            res = fut.result() if fut.exception() is None else None
+            if res is not None and res.success:
+                self._last_sent = snapshot
+                self.get_logger().info(res.message)
+            else:
+                msg = res.message if res is not None else str(fut.exception())
+                self.get_logger().error("world update failed: %s" % msg)
+
+        self._pending = self.world_client.call_async(req)
+        self._pending.add_done_callback(_done)
+
+    def _publish_markers(self, named):
+        arr = MarkerArray()
+        wipe = Marker()
+        wipe.action = Marker.DELETEALL
+        arr.markers.append(wipe)
+        for i, (name, b) in enumerate(sorted(named.items())):
+            m = Marker()
+            m.header.frame_id = "base_link"
+            m.header.stamp = self.get_clock().now().to_msg()
+            m.ns, m.id, m.type, m.action = "perceived", i, Marker.CUBE, Marker.ADD
+            m.pose.position.x, m.pose.position.y, m.pose.position.z = b["center"]
+            m.pose.orientation.w = 1.0
+            m.scale.x, m.scale.y, m.scale.z = b["dims"]
+            m.color.r, m.color.g, m.color.b, m.color.a = 0.9, 0.3, 0.1, 0.55
+            m.text = name
+            arr.markers.append(m)
+        self.markers_pub.publish(arr)
+
+    # ------------------------------------------------------------- services
+    def _set_ignore_cb(self, request, response):
+        d = [request.dims.x, request.dims.y, request.dims.z]
+        if not any(d):
+            self.ignore_region = None
+            response.message = "ignore region cleared"
+        else:
+            self.ignore_region = {
+                "center": [request.center.x, request.center.y, request.center.z],
+                "dims": d,
+            }
+            response.message = "ignoring %.2f x %.2f x %.2f m at (%.2f, %.2f, %.2f)" % (
+                d[0],
+                d[1],
+                d[2],
+                request.center.x,
+                request.center.y,
+                request.center.z,
+            )
+        response.success = True
+        self.get_logger().info(response.message)
+        return response
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = CamerasNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
+
+
+if __name__ == "__main__":
+    main()
