@@ -24,8 +24,10 @@ import rclpy
 import yaml
 from geometry_msgs.msg import Point, Vector3
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image
 from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
@@ -41,6 +43,7 @@ from rammp_curobo.perception import (
     quat_to_mat,
     robot_mask,
     transform_points,
+    visible_free_cells,
     workspace_crop,
 )
 from rammp_curobo.scene import load_scene
@@ -122,6 +125,31 @@ def process_camera_points(
     return pts
 
 
+def decayable_cells(cells, voxel, frames):
+    """Union of every camera's provably-empty voxel set this tick.
+
+    frames: (rot, trans, depth, intr, min_range, max_range) per processed
+    camera frame. An empty frame list decays NOTHING — a wrist camera
+    that saw no usable frame this tick must not erode the world.
+    """
+    out = set()
+    for rot, trans, depth, intr, min_range, max_range in frames:
+        out |= visible_free_cells(
+            cells,
+            voxel,
+            rot,
+            trans,
+            depth,
+            intr["fx"],
+            intr["fy"],
+            intr["cx"],
+            intr["cy"],
+            min_range=min_range,
+            max_range=max_range,
+        )
+    return out
+
+
 class _CameraInput:
     """Latest depth frame + intrinsics for one configured camera."""
 
@@ -129,6 +157,7 @@ class _CameraInput:
         self.cfg = cfg
         self.depth = None
         self.stamp = None
+        self.ros_stamp = None
         self.info = None
         node.create_subscription(
             CameraInfo,
@@ -167,6 +196,7 @@ class _CameraInput:
             return
         self.depth = d
         self.stamp = time.monotonic()
+        self.ros_stamp = msg.header.stamp
 
     def fresh(self, max_age):
         return (
@@ -191,7 +221,10 @@ class CamerasNode(Node):
         self.xy_extent = float(p("xy_extent", 1.2).value)
         self.min_z = float(p("min_z", 0.03).value)
         self.max_z = float(p("max_z", 1.3).value)
-        cam_names = list(p("cameras", ["camera_orbbec_bench.yaml"]).value)
+        self.max_motion_mm = float(p("max_motion_mm", 3.0).value)
+        self._moving_skips = 0
+        self._tick_count = 0
+        cam_names = list(p("cameras", ["camera_d405_wrist.yaml"]).value)
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -231,19 +264,34 @@ class CamerasNode(Node):
         )
 
     # ------------------------------------------------------------------ TF
-    def _base_from(self, frame):
-        try:
-            tr = self.tf_buffer.lookup_transform("base_link", frame, rclpy.time.Time())
-        except Exception:
-            return None
-        q, t = tr.transform.rotation, tr.transform.translation
-        return quat_to_mat(q.x, q.y, q.z, q.w), np.array([t.x, t.y, t.z])
+    def _base_from(self, frame, stamp=None, strict=False):
+        """base_T_frame at `stamp` (a builtin_interfaces Time msg) or latest.
 
-    def _camera_pose(self, cfg):
+        The stamp matters for a WRIST camera: pairing a depth frame with
+        'latest' TF smears points whenever the arm moves (same time-skew
+        class as the calibration Accept-time bug). Non-strict lookups fall
+        back to latest when the buffer can't serve the stamp; strict ones
+        return None instead — the stillness check NEEDS the true stamped
+        pose (a latest-fallback would compare latest-vs-latest and call a
+        moving camera still).
+        """
+        whens = [Time.from_msg(stamp)] if stamp is not None else []
+        if not strict:
+            whens.append(rclpy.time.Time())
+        for when in whens:
+            try:
+                tr = self.tf_buffer.lookup_transform("base_link", frame, when)
+            except Exception:
+                continue
+            q, t = tr.transform.rotation, tr.transform.translation
+            return quat_to_mat(q.x, q.y, q.z, q.w), np.array([t.x, t.y, t.z])
+        return None
+
+    def _camera_pose(self, cfg, stamp=None, strict=False):
         """(R, t) base_T_optical, or None while TF is incomplete."""
         if cfg.get("tf_frame"):
-            return self._base_from(cfg["tf_frame"])
-        parent = self._base_from(cfg["parent_frame"])
+            return self._base_from(cfg["tf_frame"], stamp=stamp, strict=strict)
+        parent = self._base_from(cfg["parent_frame"], stamp=stamp, strict=strict)
         if parent is None and cfg["parent_frame"] == "base_link":
             parent = (np.eye(3), np.zeros(3))  # fixed camera needs no TF
         if parent is None:
@@ -252,6 +300,27 @@ class CamerasNode(Node):
         mx = np.asarray(cfg["mount_xyz"], dtype=float)
         qx, qy, qz, qw = cfg["mount_quat_xyzw"]
         return r_p @ quat_to_mat(qx, qy, qz, qw), r_p @ mx + t_p
+
+    def _camera_still(self, cam):
+        """False while the camera was moving around the frame's stamp.
+
+        A frame captured mid-motion places obstacles at smeared positions
+        even with stamped TF (rolling shutter + median-of-frames). Compare
+        the camera pose at the stamp vs 0.15 s earlier; more than
+        max_motion_mm of travel skips the frame.
+        """
+        if cam.cfg.get("parent_frame") == "base_link" or cam.ros_stamp is None:
+            return True  # fixed camera: always still
+        pose = self._camera_pose(cam.cfg, stamp=cam.ros_stamp, strict=True)
+        earlier = Time.from_msg(cam.ros_stamp) - Duration(seconds=0.15)
+        prev = self._camera_pose(cam.cfg, stamp=earlier.to_msg(), strict=True)
+        if pose is None or prev is None:
+            return False  # can't prove stillness -> don't trust the frame
+        drift = float(np.linalg.norm(pose[1] - prev[1]))
+        if drift > self.max_motion_mm / 1000.0:
+            self._moving_skips += 1
+            return False
+        return True
 
     def _link_points(self):
         pts = []
@@ -266,7 +335,7 @@ class CamerasNode(Node):
 
     # ---------------------------------------------------------------- tick
     def _tick(self):
-        all_pts, saw_frame = [], False
+        all_pts, frames_used, saw_frame = [], [], False
         link_pts = self._link_points()
         if link_pts is None and "tf" not in self._warned:
             self._warned.add("tf")
@@ -277,10 +346,22 @@ class CamerasNode(Node):
         for cam in self.cams:
             if not cam.fresh(max_age=2.0 / self.rate_hz):
                 continue
-            pose = self._camera_pose(cam.cfg)
+            if not self._camera_still(cam):
+                continue
+            pose = self._camera_pose(cam.cfg, stamp=cam.ros_stamp)
             if pose is None:
                 continue
             saw_frame = True
+            frames_used.append(
+                (
+                    pose[0],
+                    pose[1],
+                    cam.depth,
+                    cam.info,
+                    float(cam.cfg.get("min_range", 0.12)),
+                    float(cam.cfg.get("max_range", 1.2)),
+                )
+            )
             all_pts.append(
                 process_camera_points(
                     cam.depth,
@@ -308,7 +389,16 @@ class CamerasNode(Node):
             return
         self._warned.discard("frames")
         pts = np.vstack(all_pts) if all_pts else np.empty((0, 3))
-        self.acc.update(pts)
+        # decay is scoped to what THIS tick's frames can prove empty — a
+        # wrist camera looking away must not erode the remembered world
+        decay = decayable_cells(self.acc.known_cells(), self.voxel, frames_used)
+        self.acc.update(pts, decay_cells=decay)
+        self._tick_count += 1
+        if self._moving_skips and self._tick_count % 100 == 0:
+            self.get_logger().info(
+                "%d frames skipped while the camera was moving (normal "
+                "during arm motion)" % self._moving_skips
+            )
         boxes, total = cluster_cells(
             self.acc.occupied_cells(),
             self.voxel,

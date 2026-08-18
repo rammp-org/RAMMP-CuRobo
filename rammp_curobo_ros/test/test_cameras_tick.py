@@ -38,6 +38,18 @@ def test_process_filters_ignore_region_and_baseline():
     assert len(pts) == 0  # the ignore region swallowed it
 
 
+def test_decayable_cells_unions_cameras_and_keeps_unseen():
+    from rammp_curobo_ros.cameras import decayable_cells
+
+    depth = np.full((10, 10), 0.8, dtype=np.float32)
+    intr = dict(fx=10.0, fy=10.0, cx=5.0, cy=5.0)
+    cells = np.array([[0, 0, 4], [30, 0, 4]])  # one in view, one far out
+    frames = [(np.eye(3), np.zeros(3), depth, intr, 0.07, 0.9)]
+    out = decayable_cells(cells, 0.1, frames)
+    assert out == {(0, 0, 4)}
+    assert decayable_cells(cells, 0.1, []) == set()  # no frames -> keep all
+
+
 def test_process_self_filter_uses_link_points():
     depth = np.full((10, 10), 0.5, dtype=np.float32)
     intr = dict(fx=20.0, fy=20.0, cx=5.0, cy=5.0)
