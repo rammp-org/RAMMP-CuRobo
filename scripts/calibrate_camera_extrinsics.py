@@ -13,8 +13,12 @@ under --max-residual (default 0.02 m).
     export ROS_LOCALHOST_ONLY=1
     # terminal 1: arm bringup (kortex).  terminal 2:
     ros2 launch orbbec_camera gemini_330_series.launch.py depth_registration:=true
-    # terminal 3 (needs a display for the click window):
+    # terminal 3 (no display needed — clicking happens in a browser):
     python3 scripts/calibrate_camera_extrinsics.py --poses 8
+
+The script serves the frozen frame at http://<jetson>:8765 — open that in
+a browser on any machine on the lab network, click the fingertip on the
+photo, hit Accept (or Skip). This Jetson is headless, hence no cv2 window.
 
 Depth sees the fingertip SURFACE, not its center — the click point is
 pushed --surface-bias (default 1 cm) further along the viewing ray.
@@ -22,8 +26,6 @@ Writes rammp_curobo_ros/config/camera_orbbec_bench.yaml (depth aligned to
 the color frame by depth_registration, so the color extrinsic IS the
 depth extrinsic). Rebuild rammp_curobo_ros afterwards so the share/ copy
 updates.
-
-Window keys after clicking: y = accept, r = re-click, s = skip this pose.
 """
 
 import argparse
@@ -74,6 +76,153 @@ def spread_check(base_pts):
     return None
 
 
+_PAGE = """<!doctype html><html><head><title>calibrate</title><style>
+body{font-family:sans-serif;background:#111;color:#eee;margin:12px}
+#wrap{position:relative;display:inline-block}
+#im{max-width:100%%;display:block}
+#mark{position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;
+  border:2px solid red;border-radius:50%%;pointer-events:none;display:none}
+button{font-size:1.1em;margin:8px 8px 0 0;padding:6px 18px}
+#msg{margin-top:8px}
+</style></head><body>
+<h3 id="head">calibration — waiting for a pose (press ENTER in the terminal)</h3>
+<div id="wrap"><img id="im"><div id="mark"></div></div><br>
+<button id="ok" disabled>Accept click</button>
+<button id="skip" disabled>Skip pose</button>
+<div id="msg">Click the point where the CLOSED fingertips meet.</div>
+<script>
+let pose=-1, uv=null;
+const im=document.getElementById('im'), mark=document.getElementById('mark');
+im.onclick=e=>{
+  const r=im.getBoundingClientRect();
+  const sx=im.naturalWidth/r.width, sy=im.naturalHeight/r.height;
+  uv=[Math.round((e.clientX-r.left)*sx), Math.round((e.clientY-r.top)*sy)];
+  mark.style.left=(e.clientX-r.left)+'px'; mark.style.top=(e.clientY-r.top)+'px';
+  mark.style.display='block'; document.getElementById('ok').disabled=false;
+};
+function decide(body){
+  fetch('/decide',{method:'POST',body:JSON.stringify(body)});
+  document.getElementById('ok').disabled=true;
+  document.getElementById('skip').disabled=true;
+  mark.style.display='none'; uv=null;
+  document.getElementById('head').textContent=
+    'recorded — move the arm, then ENTER in the terminal';
+}
+document.getElementById('ok').onclick=()=>{ if(uv) decide({u:uv[0],v:uv[1]}); };
+document.getElementById('skip').onclick=()=>decide({skip:true});
+setInterval(async()=>{
+  try{
+    const s=await (await fetch('/status')).json();
+    if(s.armed && s.pose!==pose){
+      pose=s.pose; im.src='/frame.jpg?p='+pose;
+      document.getElementById('head').textContent='pose '+pose+' — click the fingertip';
+      document.getElementById('skip').disabled=false;
+      document.getElementById('ok').disabled=true;
+      mark.style.display='none'; uv=null;
+    }
+  }catch(e){}
+},700);
+</script></body></html>"""
+
+
+class BrowserClickUI:
+    """Serves the frozen frame over HTTP; the human clicks in a browser.
+
+    No display needed on this machine — built after the bench Jetson
+    turned out to be headless (X window attempt core-dumped on GDM auth).
+    """
+
+    def __init__(self, port):
+        import http.server
+        import json
+        import threading
+
+        self._lock = threading.Lock()
+        self._event = threading.Event()
+        self._state = {"jpeg": None, "pose": 0, "armed": False, "decision": None}
+        state, lock, event = self._state, self._lock, self._event
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_a):
+                pass
+
+            def _send(self, code, body, ctype="text/html"):
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                if self.path.startswith("/frame.jpg"):
+                    with lock:
+                        jpeg = state["jpeg"]
+                    if jpeg is None:
+                        self._send(404, b"no frame yet", "text/plain")
+                    else:
+                        self._send(200, jpeg, "image/jpeg")
+                elif self.path.startswith("/status"):
+                    import json as _json
+
+                    with lock:
+                        body = _json.dumps(
+                            {"pose": state["pose"], "armed": state["armed"]}
+                        ).encode()
+                    self._send(200, body, "application/json")
+                else:
+                    self._send(200, _PAGE.encode())
+
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length", 0))
+                try:
+                    data = json.loads(self.rfile.read(n) or b"{}")
+                except ValueError:
+                    data = {}
+                with lock:
+                    if not state["armed"]:
+                        self._send(409, b"not armed", "text/plain")
+                        return
+                    if data.get("skip"):
+                        state["decision"] = None
+                    elif "u" in data and "v" in data:
+                        state["decision"] = (int(data["u"]), int(data["v"]))
+                    else:
+                        self._send(400, b"bad body", "text/plain")
+                        return
+                    state["armed"] = False
+                event.set()
+                self._send(200, b"ok", "text/plain")
+
+        self._srv = http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler)
+        threading.Thread(target=self._srv.serve_forever, daemon=True).start()
+
+    def get_click(self, jpeg_bytes):
+        """Arm the page with a frame; block until Accept/Skip. (u, v) or None."""
+        with self._lock:
+            self._state["jpeg"] = jpeg_bytes
+            self._state["pose"] += 1
+            self._state["armed"] = True
+            self._state["decision"] = None
+        self._event.clear()
+        while not self._event.wait(timeout=0.5):
+            pass  # loop keeps Ctrl-C responsive
+        with self._lock:
+            return self._state["decision"]
+
+
+def _lan_ip():
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return socket.gethostname()
+    finally:
+        s.close()
+
+
 def mat_to_quat_xyzw(R):
     """3x3 rotation matrix -> xyzw quaternion (Shepperd's method)."""
     w = np.sqrt(max(0.0, 1.0 + R[0, 0] + R[1, 1] + R[2, 2])) / 2.0
@@ -112,6 +261,9 @@ def main():
         "surface, tool_frame is its center)",
     )
     ap.add_argument("--out", default=OUT_DEFAULT)
+    ap.add_argument(
+        "--port", type=int, default=8765, help="HTTP port for the click page"
+    )
     args = ap.parse_args()
 
     import cv2
@@ -195,56 +347,41 @@ def main():
             t = tr.transform.translation
             return np.array([t.x, t.y, t.z])
 
+    ui = BrowserClickUI(args.port)
+
     def click_point(img, depth, k):
-        """Show the frozen frame; return the deprojected click or None."""
+        """Serve the frozen frame to the browser; deprojected click or None."""
         fx, fy, cx, cy = k[0, 0], k[1, 1], k[0, 2], k[1, 2]
-        state = {"uv": None}
-
-        def on_mouse(event, x, y, _flags, _param):
-            if event == cv2.EVENT_LBUTTONDOWN:
-                state["uv"] = (x, y)
-
-        win = "calibrate: click the CLOSED fingertip midpoint (y/r/s)"
-        cv2.namedWindow(win)
-        cv2.setMouseCallback(win, on_mouse)
+        ok, jpeg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        if not ok:
+            sys.exit("JPEG encode failed")
         while True:
-            frame = img.copy()
-            if state["uv"] is not None:
-                u, v = state["uv"]
-                cv2.drawMarker(frame, (u, v), (0, 0, 255), cv2.MARKER_CROSS, 20, 2)
-            cv2.imshow(win, frame)
-            key = cv2.waitKey(30) & 0xFF
-            if key == ord("s"):
-                cv2.destroyWindow(win)
+            uv = ui.get_click(jpeg.tobytes())
+            if uv is None:
                 return None
-            if key == ord("r"):
-                state["uv"] = None
-            if key == ord("y") and state["uv"] is not None:
-                u, v = state["uv"]
-                patch = depth[
-                    max(0, v - 2) : v + 3, max(0, u - 2) : u + 3
-                ]
-                patch = patch[(patch > 0.05) & np.isfinite(patch)]
-                if not len(patch):
-                    print("  no valid depth at the click — re-click ('r')")
-                    state["uv"] = None
-                    continue
-                z = float(np.median(patch))
-                p = np.array([(u - cx) / fx * z, (v - cy) / fy * z, z])
-                # push from the fingertip SURFACE to its center, along the ray
-                p *= (np.linalg.norm(p) + args.surface_bias) / np.linalg.norm(p)
-                cv2.destroyWindow(win)
-                return p
+            u, v = uv
+            patch = depth[max(0, v - 2) : v + 3, max(0, u - 2) : u + 3]
+            patch = patch[(patch > 0.05) & np.isfinite(patch)]
+            if not len(patch):
+                print("  no valid depth at that click — click again in the browser")
+                continue
+            z = float(np.median(patch))
+            p = np.array([(u - cx) / fx * z, (v - cy) / fy * z, z])
+            # push from the fingertip SURFACE to its center, along the ray
+            p *= (np.linalg.norm(p) + args.surface_bias) / np.linalg.norm(p)
+            return p
 
     rclpy.init()
     node = Grab()
     print(
         "CLOSE the gripper first (fingertips together = tool_frame). "
         "%d poses, spread across the view AND in height (coplanar pose "
-        "sets weaken the solve). Per pose: move the arm, ENTER here, then "
-        "click the fingertip midpoint in the window (y accept / r re-click "
-        "/ s skip). 'done' after >=5 solves early, Ctrl-C aborts."
-        % args.poses
+        "sets weaken the solve).\n\n"
+        "  >>> open  http://%s:%d  in a browser on your laptop <<<\n\n"
+        "Per pose: move the arm, ENTER here, then click the fingertip "
+        "midpoint on the photo in the browser and hit Accept (or Skip). "
+        "'done' after >=5 solves early, Ctrl-C aborts."
+        % (args.poses, _lan_ip(), args.port)
     )
     base_pts, cam_pts = [], []
     while len(base_pts) < args.poses:
