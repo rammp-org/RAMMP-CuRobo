@@ -27,6 +27,7 @@ setup(
             "planner_node = rammp_curobo_ros.planner_node:main",
             "tour_demo = rammp_curobo_ros.tour_demo:main",
             "dance_demo = rammp_curobo_ros.dance_demo:main",
+            "seek_demo = rammp_curobo_ros.seek_demo:main",
             "cameras = rammp_curobo_ros.cameras:main",
         ],
     },
