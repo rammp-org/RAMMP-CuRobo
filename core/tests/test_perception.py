@@ -130,17 +130,17 @@ def test_visible_free_cells_sees_through_only_in_frustum():
     from rammp_curobo.perception import visible_free_cells
 
     # camera at origin looking along base +z (identity extrinsic),
-    # 10x10 frame, wall at 0.8 m everywhere
+    # 10x10 frame, wall at 0.8 m everywhere. voxel 0.1 -> clearance =
+    # half-diagonal 0.0866 + margin 0.015 = 0.1016: free needs z < 0.698.
     depth = np.full((10, 10), 0.8, dtype=np.float32)
     intr = dict(fx=10.0, fy=10.0, cx=5.0, cy=5.0)
     voxel = 0.1
-    # voxel centers: in front of the wall (free), AT the wall (occupied),
-    # behind the wall (occluded), and far outside the FOV (unseen)
-    free = (0, 0, 4)  # center (0.05, 0.05, 0.45) -> z 0.45 < 0.75
-    at_wall = (0, 0, 7)  # center z 0.75 = 0.8 - margin -> NOT free
-    behind = (0, 0, 9)  # center z 0.95 > wall -> occluded, kept
-    outside = (30, 0, 4)  # center x 3.05 -> projects far off-frame
-    cells = np.array([free, at_wall, behind, outside])
+    free = (0, 0, 4)  # center z 0.45 << 0.698 -> provably empty
+    near_wall = (0, 0, 7)  # center z 0.75, within clearance -> kept
+    occluded = (0, 0, 8)  # center z 0.85: in range, BEHIND the wall -> kept
+    beyond = (0, 0, 9)  # center z 0.95 > max_range -> kept
+    outside = (30, 0, 4)  # projects far off-frame -> kept
+    cells = np.array([free, near_wall, occluded, beyond, outside])
     out = visible_free_cells(
         cells,
         voxel,
@@ -150,9 +150,53 @@ def test_visible_free_cells_sees_through_only_in_frustum():
         **intr,
         min_range=0.07,
         max_range=0.9,
-        margin=0.05,
     )
     assert out == {free}
+
+
+def test_removed_object_bottom_layer_is_decayable_top_down():
+    """Audit regression: with a flat 5 cm margin, the lowest voxel layer
+    of a removed tabletop object (centers ~4.5 cm above the table) could
+    never be proven empty under a top-down look-back — a permanent
+    phantom slab at every vacated grasp spot. Far-edge clearance fixes
+    it: voxel 0.03 -> clearance 0.041 < the 0.455-of-0.5 gap."""
+    from rammp_curobo.perception import visible_free_cells
+
+    # camera 0.5 m above the table looking straight down:
+    # camera z = -base z (R = diag(1, -1, -1)), table depth 0.5 everywhere
+    rot = np.diag([1.0, -1.0, -1.0])
+    trans = np.array([0.05, 0.05, 0.5])
+    depth = np.full((10, 10), 0.5, dtype=np.float32)
+    bottom_layer_cell = (1, 1, 1)  # center (0.045, 0.045, 0.045)
+    out = visible_free_cells(
+        np.array([bottom_layer_cell]),
+        0.03,
+        rot,
+        trans,
+        depth,
+        fx=100.0,
+        fy=100.0,
+        cx=5.0,
+        cy=5.0,
+    )
+    assert out == {bottom_layer_cell}
+
+
+def test_clear_box_purges_scores_and_reset_forgets_all():
+    from rammp_curobo.perception import VoxelAccumulator
+
+    acc = VoxelAccumulator(voxel=0.05, occupied_at=3)
+    inside = _cube_points([0.5, 0.0, 0.1], 0.08, seed=1)
+    outside = _cube_points([0.2, 0.3, 0.3], 0.08, seed=2)
+    for _ in range(3):
+        acc.update(np.vstack([inside, outside]))
+    assert len(acc.occupied_cells()) > 0
+    n = acc.clear_box([0.5, 0.0, 0.1], [0.12, 0.12, 0.12], inflate=0.02)
+    assert n > 0
+    remaining = acc.occupied_cells() * 0.05  # cell corners, close enough
+    assert np.all(np.linalg.norm(remaining - [0.5, 0.0, 0.1], axis=1) > 0.08)
+    assert acc.reset() > 0
+    assert len(acc.known_cells()) == 0
 
 
 def test_visible_free_cells_invalid_depth_is_unknown_not_free():

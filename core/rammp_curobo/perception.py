@@ -8,6 +8,8 @@ tracker are new for continuous operation. scipy is imported lazily inside
 the one function that needs it, keeping core import-light.
 """
 
+import math
+
 import numpy as np
 
 
@@ -72,11 +74,14 @@ class VoxelAccumulator:
     """Temporal hysteresis over a voxel grid.
 
     Each tick: voxels holding >= min_points_per_voxel points gain a point
-    of score (capped), every other known voxel loses one. A voxel is an
-    obstacle at score >= occupied_at. At 2 Hz with the defaults an object
-    appears after ~1.5 s and fades ~2-3 s after it leaves — transients
-    (a passing hand) never confirm. Known v1 limitation (spec): no
-    free-space raycasting, so an occluded obstacle also decays.
+    of score (capped), decaying voxels lose one. A voxel is an obstacle
+    at score >= occupied_at. At 2 Hz with the defaults an object appears
+    after ~1.5 s and fades ~2-3 s once provably gone — transients (a
+    passing hand) never confirm. Which voxels MAY decay is the caller's
+    choice via update(decay_cells=...): pass visible_free_cells() output
+    to scope forgetting to what the camera saw through (wrist-camera
+    mode — occluded/out-of-view voxels are REMEMBERED), or None to decay
+    everything unseen each tick.
     """
 
     def __init__(self, voxel=0.03, occupied_at=3, max_score=6):
@@ -110,6 +115,34 @@ class VoxelAccumulator:
         the candidate set for visibility-scoped decay."""
         return np.asarray(list(self._scores.keys()), dtype=np.int64).reshape(-1, 3)
 
+    def clear_box(self, center, dims, inflate=0.0):
+        """Drop all confidence inside an axis-aligned box (base frame).
+
+        Needed because frustum-scoped decay can NEVER erase an object that
+        is still physically present — the ignore region must purge the
+        grasp target's already-accumulated voxels, not just mask new hits.
+        Returns the number of voxels cleared.
+        """
+        half = np.asarray(dims, dtype=float) / 2.0 + float(inflate)
+        c = np.asarray(center, dtype=float)
+        gone = [
+            cell
+            for cell in self._scores
+            if np.all(np.abs((np.asarray(cell) + 0.5) * self.voxel - c) <= half)
+        ]
+        for cell in gone:
+            del self._scores[cell]
+        return len(gone)
+
+    def reset(self):
+        """Forget everything (e.g. when the arm self-filter first arms —
+        voxels accumulated from the unfiltered arm can otherwise never
+        decay: the arm still occupies them, so no camera can ever see
+        through their location)."""
+        n = len(self._scores)
+        self._scores.clear()
+        return n
+
     def occupied_cells(self):
         cells = [c for c, s in self._scores.items() if s >= self.occupied_at]
         return np.asarray(cells, dtype=np.int64).reshape(-1, 3)
@@ -127,20 +160,26 @@ def visible_free_cells(
     cy,
     min_range=0.07,
     max_range=0.9,
-    margin=0.05,
+    margin=0.015,
 ):
     """Voxel cells this camera frame proves EMPTY (safe to decay).
 
-    A cell is decayable only when the camera saw THROUGH its center: it
-    projects inside the frame, its camera-frame depth is within sensor
-    range, the measured pixel is valid, and the measured surface lies at
-    least `margin` BEHIND the cell. Occluded, out-of-view, out-of-range,
-    and depth-hole cells are all 'unknown' — never decayed. rot/trans are
+    A cell is decayable only when the camera saw THROUGH it: it projects
+    inside the frame, its camera-frame depth is within sensor range, the
+    measured pixel is valid, and the measured surface lies BEHIND the
+    cell's FAR EDGE (center + the voxel's half-diagonal) by at least
+    `margin` of sensor noise. Testing the far edge — not a fat fixed
+    margin on the center — is what lets the bottom voxel layer of a
+    removed tabletop object be proven empty under a top-down look-back
+    (audit 2026-08-18: a flat 5 cm margin left a permanent phantom slab
+    at every vacated spot). Occluded, out-of-view, out-of-range, and
+    depth-hole cells are all 'unknown' — never decayed. rot/trans are
     base_T_camera (the same convention transform_points uses).
     """
     cells = np.asarray(cells, dtype=np.int64).reshape(-1, 3)
     if not len(cells):
         return set()
+    clearance = 0.5 * math.sqrt(3.0) * float(voxel) + float(margin)
     centers = (cells + 0.5) * float(voxel)
     r = np.asarray(rot, dtype=float)
     p_cam = (centers - np.asarray(trans, dtype=float)) @ r  # R.T @ (p - t)
@@ -163,7 +202,7 @@ def visible_free_cells(
     if in_view.any():
         d = depth[vi[in_view], ui[in_view]]
         valid = (d > 0.05) & np.isfinite(d)
-        free_in_view = valid & (z[in_view] < d - float(margin))
+        free_in_view = valid & (z[in_view] < d - clearance)
         free[np.flatnonzero(in_view)[free_in_view]] = True
     return set(map(tuple, cells[free]))
 
