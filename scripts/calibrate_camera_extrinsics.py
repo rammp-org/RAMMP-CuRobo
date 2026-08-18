@@ -462,7 +462,30 @@ def main():
             prompt = "[%d/%d] > " % (len(base_pts) + 1, args.poses)
             if input(prompt).strip() == "done":
                 break
-            img, depth = node.grab()
+            # The robot position MUST come from the same instant as the
+            # photo. Field failure (2026-08-18, run 2): TF was read at
+            # Accept-click time, seconds after the frame — pressing ENTER
+            # while the arm was still settling paired a mid-motion photo
+            # with the settled position (26-188 mm skew, 7.6 cm RMS solve).
+            # Bracket the frame grab with two TF reads and refuse the pose
+            # if the arm moved between them.
+            try:
+                p_before = node.tool_position()
+                img, depth = node.grab()
+                p_base = node.tool_position()
+            except Exception as exc:
+                print(
+                    "  no TF base_link->%s (%s) — is the bringup up?"
+                    % (args.tool_frame, exc)
+                )
+                continue
+            if np.linalg.norm(p_base - p_before) > 0.003:
+                print(
+                    "  ARM STILL MOVING (fingertip drifted %.0f mm during the "
+                    "capture) — let it settle, then ENTER again"
+                    % (np.linalg.norm(p_base - p_before) * 1000)
+                )
+                continue
             if depth.shape != img.shape[:2]:
                 sys.exit(
                     "depth %s and color %s sizes differ — run the driver with "
@@ -472,14 +495,6 @@ def main():
             p_cam = click_point(img, depth, k)
             if p_cam is None:
                 print("  skipped")
-                continue
-            try:
-                p_base = node.tool_position()
-            except Exception as exc:
-                print(
-                    "  no TF base_link->%s (%s) — is the bringup up?"
-                    % (args.tool_frame, exc)
-                )
                 continue
             cam_pts.append(p_cam)
             base_pts.append(p_base)
