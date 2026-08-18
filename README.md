@@ -153,6 +153,18 @@ and gates as the tour: safe-box waypoints, chained pre-planning, ONE
 merged trajectory per round, Ctrl+C = hold. First run:
 `--rounds 1 --moves 4 --speed 0.25`, workspace clear, hand on the e-stop.
 
+## Seek ("go to the bottle")
+
+`ros2 run rammp_curobo_ros seek_demo --text "go to the bottle" --execute`
+— the arm scans the bench with auto-generated glance poses, finds the
+named object with YOLO on the wrist D405 (vocabulary: the 80 COCO
+classes + common synonyms; weights `~/yolo11s-seg.pt`, nothing
+downloaded), masks it as the manipulation target via the ignore region,
+and plans a standoff approach through the perceived world — dodging the
+clutter, not the target. Typed `seek` gates the scan, typed `go` gates
+the approach, ≤0.25 speed. The D405 driver needs
+`align_depth.enable:=true` for this demo.
+
 ## Perceived world (cameras)
 
 The `cameras` node gives the planner live spatial awareness from the

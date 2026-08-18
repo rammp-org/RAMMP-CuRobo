@@ -231,3 +231,25 @@ returns; it writes `camera_orbbec_bench.yaml` and the node takes it via
 the `cameras` parameter list. Note it now shares the frustum-scoped
 decay: unlike the original Orbbec build, a removed object backed by a
 depth hole or occlusion persists until provably seen through.)
+
+## 7. Seek demo — "go to the bottle" (attended)
+
+Prereqs: §6 acceptance passed. The D405 driver must run with aligned
+depth for this demo:
+`ros2 launch realsense2_camera rs_launch.py camera_namespace:=d405
+camera_name:=d405 align_depth.enable:=true` (the cameras node is
+unaffected — it keeps using the depth-frame topic).
+
+1. First run: ONE bottle alone on the bench, ~0.4-0.6 m in front of the
+   arm. `ros2 run rammp_curobo_ros seek_demo --text "go to the bottle"
+   --execute` → typed `seek` → the arm glances (skip-on-unplannable),
+   prints each sighting with its base_link position (sanity: tape
+   measure), then shows the approach plan → typed `go` → approach at
+   ≤0.25, e-stop in hand. It should end ~18 cm from the bottle, facing
+   it.
+2. Second run: add clutter (a box) between home and the bottle, let §6's
+   world map it (markers), re-run — the approach must bow around the
+   box's cuboid while still reaching the bottle (which the ignore region
+   exempts).
+3. If sightings disagree >10 cm the demo refuses — that's the two-frame
+   consistency gate, not a bug; a moving bottle or bad depth does that.
