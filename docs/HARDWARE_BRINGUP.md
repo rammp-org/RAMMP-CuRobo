@@ -240,16 +240,21 @@ depth for this demo:
 camera_name:=d405 align_depth.enable:=true` (the cameras node is
 unaffected — it keeps using the depth-frame topic).
 
-1. First run: ONE bottle alone on the bench, ~0.4-0.6 m in front of the
-   arm. `ros2 run rammp_curobo_ros seek_demo --text "go to the bottle"
-   --execute` → typed `seek` → the arm glances (skip-on-unplannable),
-   prints each sighting with its base_link position (sanity: tape
-   measure), then shows the approach plan → typed `go` → approach at
-   ≤0.25, e-stop in hand. It should end ~18 cm from the bottle, facing
-   it.
+1. First run: ONE bottle alone on the bench, **0.45-0.65 m** in front of
+   the arm (that band is what the glance poses actually paint; nearer
+   than ~0.38 m the demo refuses the approach as unsafe).
+   `ros2 run rammp_curobo_ros seek_demo --text "go to the bottle"
+   --execute` → camera/TF preflight (fails fast if align_depth is
+   missing, before anything moves) → typed `seek` → the arm glances
+   (skip-on-unplannable), needs sightings from TWO different viewpoints
+   (prints each with its base_link position — sanity: tape measure),
+   then shows the approach plan **with the actual gap it will leave**
+   (0.08-0.18 m depending on distance) → typed `go` → approach at
+   ≤0.25, e-stop in hand.
 2. Second run: add clutter (a box) between home and the bottle, let §6's
    world map it (markers), re-run — the approach must bow around the
-   box's cuboid while still reaching the bottle (which the ignore region
-   exempts).
-3. If sightings disagree >10 cm the demo refuses — that's the two-frame
-   consistency gate, not a bug; a moving bottle or bad depth does that.
+   box's cuboid while still reaching the bottle (whose voxels the ignore
+   region purges; the region is cleared again on every exit, so the
+   world keeps watching that spot afterwards).
+3. If the two viewpoints disagree >10 cm the demo refuses — moving
+   bottle, bad depth, or a bumped camera bracket does that.
