@@ -144,6 +144,15 @@ Without `--execute`, `tour_demo` pre-plans and prints the tour dry.
 `scripts/sim_execution_checks.py` additionally verifies the refusal gates
 and mid-motion cancel against the live sim.
 
+## Easter egg: dance
+
+`ros2 run rammp_curobo_ros dance_demo` choreographs randomized rounds of
+bobs, sways, circles, wrist twists and shimmies (dry-run by default;
+`--execute` + typed `dance` to move, default 40% speed). Same skeleton
+and gates as the tour: safe-box waypoints, chained pre-planning, ONE
+merged trajectory per round, Ctrl+C = hold. First run:
+`--rounds 1 --moves 4 --speed 0.25`, workspace clear, hand on the e-stop.
+
 ## Perceived world (cameras)
 
 The `cameras` node gives the planner live spatial awareness: depth from

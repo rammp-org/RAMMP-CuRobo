@@ -2,7 +2,8 @@
 
 Standalone cuRobo planning for the RAMMP Kinova Gen3 7-DoF (+ Robotiq
 2F-85): a planning SERVICE — end position in, collision-free joint
-trajectory out — plus one showcase (`tour_demo`), a safety-gated
+trajectory out — plus showcases (`tour_demo`, and the `dance_demo`
+easter egg — same gates, safe-box choreography), a safety-gated
 executor for this bench, and live spatial awareness (the `cameras` node:
 bench Orbbec depth → cuboid obstacles → planner world at ~2 Hz). Parts:
 `core/` (pip `rammp-curobo`, pure Python, NO ROS imports — keep it that
