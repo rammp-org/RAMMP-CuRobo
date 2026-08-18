@@ -156,9 +156,10 @@ table never disappears and updates are never empty. Planning-only: the
 node never commands motion.
 
 ```bash
-# one-time (attended): Orbbec extrinsics via an ArUco tag on the gripper
+# one-time (attended, no fiducials): Orbbec extrinsics by clicking the
+# closed gripper's fingertip in ~8 arm poses (needs a display)
 ros2 launch orbbec_camera gemini_330_series.launch.py depth_registration:=true
-python3 scripts/calibrate_camera_extrinsics.py --marker-size 0.05   # then rebuild
+python3 scripts/calibrate_camera_extrinsics.py --poses 8   # then rebuild
 
 # every session
 ros2 run rammp_curobo_ros cameras

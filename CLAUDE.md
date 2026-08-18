@@ -65,8 +65,9 @@ scan pipeline was deliberately REVIVED 2026-08-17 as `perception.py` +
   updates are never empty and the table survives. Ignore region lives in
   the cameras node, not the planner. No free-space raycasting: occluded
   obstacles decay (~2-3 s) — keep the baseline honest. Orbbec extrinsics
-  come ONLY from scripts/calibrate_camera_extrinsics.py (residual-gated
-  hand-eye); never hand-edit camera_orbbec_bench.yaml mounts.
+  come ONLY from scripts/calibrate_camera_extrinsics.py (fingertip-click
+  Kabsch, residual + pose-spread gated; NO fiducials — user's explicit
+  preference); never hand-edit camera_orbbec_bench.yaml mounts.
 
 ## Safety (do not weaken)
 

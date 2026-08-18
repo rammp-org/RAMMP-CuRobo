@@ -148,7 +148,7 @@ def test_merged_scene_keeps_baseline_and_replaces_objects():
     assert m2.objects == [] and [o.name for o in m2.obstacles] == ["table"]
 
 
-def test_eye_to_hand_solver_recovers_known_extrinsic():
+def _load_calib_module():
     import importlib.util
     import os
 
@@ -164,53 +164,42 @@ def test_eye_to_hand_solver_recovers_known_extrinsic():
     )
     calib = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(calib)
+    return calib
 
+
+def test_rigid_solver_recovers_known_extrinsic():
+    calib = _load_calib_module()
     rng = np.random.default_rng(7)
-
-    def rand_rot():
-        # Tsai's method needs pose pairs whose relative rotation axes span
-        # 3D — rotations about only 1-2 axes make the system degenerate
-        # (found the hard way writing this test; the script tells the
-        # operator to vary the wrist for the same reason).
-        q = rng.normal(size=4)
-        q /= np.linalg.norm(q)
-        return quat_to_mat(*q)
-
-    # ground truth: camera ~1.2 m out, arbitrary attitude
-    R_bc = rand_rot()
+    q = rng.normal(size=4)
+    q /= np.linalg.norm(q)
+    R_bc = quat_to_mat(*q)  # ground truth base_T_camera
     t_bc = np.array([1.2, 0.1, 0.6])
-    R_tt = rand_rot()  # tag-in-tool, arbitrary rigid offset
-    t_tt = np.array([0.0, 0.03, 0.05])
-    base_T_tool, cam_T_tag = [], []
-    for _ in range(10):
-        R_bt = rand_rot()
-        t_bt = np.array([0.45, 0.0, 0.35]) + rng.uniform(-0.15, 0.15, 3)
-        base_T_tool.append((R_bt, t_bt))
-        # cam_T_tag = cam_T_base @ base_T_tool @ tool_T_tag
-        R_ct = R_bc.T @ R_bt @ R_tt
-        t_ct = R_bc.T @ (R_bt @ t_tt + t_bt - t_bc)
-        cam_T_tag.append((R_ct, t_ct))
-    R, t, rms = calib.solve_eye_to_hand(base_T_tool, cam_T_tag)
-    assert rms < 1e-6
-    assert np.allclose(R, R_bc, atol=1e-6) and np.allclose(t, t_bc, atol=1e-6)
+    base_pts = np.array([0.45, 0.0, 0.35]) + rng.uniform(-0.25, 0.25, (8, 3))
+    cam_pts = (base_pts - t_bc) @ R_bc  # cam = R^T (base - t)
+    R, t, rms = calib.solve_rigid(base_pts, cam_pts)
+    assert rms < 1e-9
+    assert np.allclose(R, R_bc, atol=1e-9) and np.allclose(t, t_bc, atol=1e-9)
+    # noisy clicks: still close, honest residual
+    noisy = cam_pts + rng.normal(scale=0.004, size=cam_pts.shape)
+    R, t, rms = calib.solve_rigid(base_pts, noisy)
+    assert rms < 0.02 and np.abs(t - t_bc).max() < 0.02
+
+
+def test_spread_check_flags_degenerate_pose_sets():
+    calib = _load_calib_module()
+    rng = np.random.default_rng(1)
+    line = np.array([0.4, 0.0, 0.3]) + np.outer(rng.uniform(-0.3, 0.3, 8), [1, 0, 0])
+    assert "COLLINEAR" in calib.spread_check(line)
+    plane = np.array([0.4, 0.0, 0.3]) + np.concatenate(
+        [rng.uniform(-0.3, 0.3, (8, 2)), np.zeros((8, 1))], axis=1
+    )
+    assert "COPLANAR" in calib.spread_check(plane)
+    volume = np.array([0.4, 0.0, 0.3]) + rng.uniform(-0.25, 0.25, (8, 3))
+    assert calib.spread_check(volume) is None
 
 
 def test_mat_to_quat_round_trip():
-    import importlib.util
-    import os
-
-    spec = importlib.util.spec_from_file_location(
-        "calib",
-        os.path.join(
-            os.path.dirname(__file__),
-            "..",
-            "..",
-            "scripts",
-            "calibrate_camera_extrinsics.py",
-        ),
-    )
-    calib = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(calib)
+    calib = _load_calib_module()
     for q in ([0, 0, 0, 1], [0.5, 0.5, 0.5, 0.5], [0, 1, 0, 0], [0.7, 0, 0.7, 0.14]):
         q = np.asarray(q, dtype=float)
         q = q / np.linalg.norm(q)

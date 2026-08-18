@@ -176,20 +176,23 @@ for before the e-stop; prove it works while the motion is trivial.
 ## 6. Perceived world, stage 1 — Orbbec (attended)
 
 Prereqs: steps 1-5 clean; the Orbbec Gemini 336L aimed at the bench with
-an unobstructed view of the arm's workspace; an ArUco tag (DICT_4X4_50
-id 0, side measured with calipers) mounted RIGIDLY on the gripper.
+an unobstructed view of the arm's workspace; a display for the click
+window. No fiducials — the calibration target is the arm's own fingertip.
 
 1. **Calibrate (one-time, redo if the camera moves):**
    ```bash
    # terminal 1: kortex bringup (step 2 above).  terminal 2:
    export ROS_LOCALHOST_ONLY=1
    ros2 launch orbbec_camera gemini_330_series.launch.py depth_registration:=true
-   # terminal 3 (repo root, sourced):
-   python3 scripts/calibrate_camera_extrinsics.py --marker-id 0 --marker-size <measured m>
+   # terminal 3 (repo root, sourced, display attached):
+   python3 scripts/calibrate_camera_extrinsics.py --poses 8
    ```
-   YOU jog the arm between recordings (~10 poses spread across the view,
-   varying the wrist rotation axis — tilt AND twist). The script refuses
-   to write above 1 cm RMS residual. Then rebuild:
+   CLOSE the gripper (fingertips together = tool_frame), then per pose:
+   YOU move the arm, press ENTER, click the fingertip midpoint in the
+   frozen frame (y accept / r re-click / s skip). Spread the ~8 poses
+   across the view AND IN HEIGHT — the script refuses collinear/coplanar
+   pose sets and any solve above 2 cm RMS residual, and prints the solved
+   camera position for a tape-measure sanity check. Then rebuild:
    `colcon build --symlink-install --packages-select rammp_curobo_ros`.
    If the driver's topic names differ from the defaults, fix the
    `depth_topic`/`info_topic` fields in the written
