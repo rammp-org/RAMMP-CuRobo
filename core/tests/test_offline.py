@@ -224,3 +224,27 @@ def test_wrap_aware_start_match():
     current[2] = -3.1416  # same physical angle, wrapped report
     ok, err = start_state_matches(traj, current, tol_rad=0.05)
     assert ok and err < 0.01
+
+
+def test_rot_about_world_y_pitches_the_home_tool_down():
+    import numpy as np
+
+    from rammp_curobo.geometry import rot_about_world_y, yaw_about_world_z
+
+    home = [0.5, 0.5, 0.5, 0.5]  # tool z along world +x
+
+    def tool_z(q):
+        x, y, z, w = q
+        return np.array(
+            [2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y)]
+        )
+
+    assert np.allclose(tool_z(home), [1, 0, 0], atol=1e-9)
+    pitched = rot_about_world_y(home, np.radians(40))
+    d = tool_z(pitched)
+    assert np.isclose(d[2], -np.sin(np.radians(40)), atol=1e-9)  # tips DOWN
+    assert np.isclose(d[0], np.cos(np.radians(40)), atol=1e-9)
+    both = yaw_about_world_z(pitched, np.radians(30))
+    d2 = tool_z(both)
+    assert np.isclose(d2[2], d[2], atol=1e-9)  # yaw keeps the pitch
+    assert np.isclose(np.arctan2(d2[1], d2[0]), np.radians(30), atol=1e-9)

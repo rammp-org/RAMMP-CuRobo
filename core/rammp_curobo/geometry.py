@@ -61,6 +61,18 @@ def yaw_about_world_z(xyzw, rad):
     )
 
 
+def rot_about_world_y(xyzw, rad):
+    """Ry(rad) ⊗ q — pitch an attitude about the WORLD y axis.
+
+    Positive rad tips the home tool direction (+x) DOWNWARD — the seek
+    demo's glance poses use this to aim the wrist camera at the bench.
+    """
+    half = rad / 2.0
+    c, s = math.cos(half), math.sin(half)
+    x, y, z, w = (float(v) for v in xyzw)
+    return (c * x + s * z, c * y + s * w, c * z - s * x, c * w - s * y)
+
+
 def spin_about_tool(wxyz, deg):
     """q ⊗ Rz(deg): spin an orientation about its own tool (z) axis. wxyz."""
     half = math.radians(deg) / 2.0
