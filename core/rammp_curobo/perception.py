@@ -85,7 +85,7 @@ class VoxelAccumulator:
         self.max_score = int(max_score)
         self._scores = {}
 
-    def update(self, points, min_points_per_voxel=2):
+    def update(self, points, min_points_per_voxel=2, decay_cells=None):
         hit = set()
         if len(points):
             idx = np.floor(np.asarray(points) / self.voxel).astype(np.int64)
@@ -93,16 +93,79 @@ class VoxelAccumulator:
             hit = set(map(tuple, uniq[counts >= int(min_points_per_voxel)]))
         for c in hit:
             self._scores[c] = min(self._scores.get(c, 0) + 1, self.max_score)
+        # decay_cells scopes forgetting for narrow-FOV / moving cameras:
+        # only voxels the camera PROVABLY saw through may lose confidence
+        # (None = legacy fixed-camera behavior: decay everything unseen).
         for c in [c for c in self._scores if c not in hit]:
+            if decay_cells is not None and c not in decay_cells:
+                continue
             s = self._scores[c] - 1
             if s <= 0:
                 del self._scores[c]
             else:
                 self._scores[c] = s
 
+    def known_cells(self):
+        """Every voxel with ANY confidence (not just confirmed obstacles) —
+        the candidate set for visibility-scoped decay."""
+        return np.asarray(list(self._scores.keys()), dtype=np.int64).reshape(-1, 3)
+
     def occupied_cells(self):
         cells = [c for c, s in self._scores.items() if s >= self.occupied_at]
         return np.asarray(cells, dtype=np.int64).reshape(-1, 3)
+
+
+def visible_free_cells(
+    cells,
+    voxel,
+    rot,
+    trans,
+    depth,
+    fx,
+    fy,
+    cx,
+    cy,
+    min_range=0.07,
+    max_range=0.9,
+    margin=0.05,
+):
+    """Voxel cells this camera frame proves EMPTY (safe to decay).
+
+    A cell is decayable only when the camera saw THROUGH its center: it
+    projects inside the frame, its camera-frame depth is within sensor
+    range, the measured pixel is valid, and the measured surface lies at
+    least `margin` BEHIND the cell. Occluded, out-of-view, out-of-range,
+    and depth-hole cells are all 'unknown' — never decayed. rot/trans are
+    base_T_camera (the same convention transform_points uses).
+    """
+    cells = np.asarray(cells, dtype=np.int64).reshape(-1, 3)
+    if not len(cells):
+        return set()
+    centers = (cells + 0.5) * float(voxel)
+    r = np.asarray(rot, dtype=float)
+    p_cam = (centers - np.asarray(trans, dtype=float)) @ r  # R.T @ (p - t)
+    z = p_cam[:, 2]
+    h, w = depth.shape
+    with np.errstate(divide="ignore", invalid="ignore"):
+        u = np.where(z > 0, fx * p_cam[:, 0] / np.where(z > 0, z, 1.0) + cx, -1.0)
+        v = np.where(z > 0, fy * p_cam[:, 1] / np.where(z > 0, z, 1.0) + cy, -1.0)
+    ui = np.round(u).astype(np.int64)
+    vi = np.round(v).astype(np.int64)
+    in_view = (
+        (z > float(min_range))
+        & (z < float(max_range))
+        & (ui >= 0)
+        & (ui < w)
+        & (vi >= 0)
+        & (vi < h)
+    )
+    free = np.zeros(len(cells), dtype=bool)
+    if in_view.any():
+        d = depth[vi[in_view], ui[in_view]]
+        valid = (d > 0.05) & np.isfinite(d)
+        free_in_view = valid & (z[in_view] < d - float(margin))
+        free[np.flatnonzero(in_view)[free_in_view]] = True
+    return set(map(tuple, cells[free]))
 
 
 def _split_cells(cells, min_fill, min_span):

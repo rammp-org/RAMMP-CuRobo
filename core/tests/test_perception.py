@@ -126,6 +126,73 @@ def test_boxes_changed_thresholds():
     assert boxes_changed(a, {}, tol=0.01)
 
 
+def test_visible_free_cells_sees_through_only_in_frustum():
+    from rammp_curobo.perception import visible_free_cells
+
+    # camera at origin looking along base +z (identity extrinsic),
+    # 10x10 frame, wall at 0.8 m everywhere
+    depth = np.full((10, 10), 0.8, dtype=np.float32)
+    intr = dict(fx=10.0, fy=10.0, cx=5.0, cy=5.0)
+    voxel = 0.1
+    # voxel centers: in front of the wall (free), AT the wall (occupied),
+    # behind the wall (occluded), and far outside the FOV (unseen)
+    free = (0, 0, 4)  # center (0.05, 0.05, 0.45) -> z 0.45 < 0.75
+    at_wall = (0, 0, 7)  # center z 0.75 = 0.8 - margin -> NOT free
+    behind = (0, 0, 9)  # center z 0.95 > wall -> occluded, kept
+    outside = (30, 0, 4)  # center x 3.05 -> projects far off-frame
+    cells = np.array([free, at_wall, behind, outside])
+    out = visible_free_cells(
+        cells,
+        voxel,
+        np.eye(3),
+        np.zeros(3),
+        depth,
+        **intr,
+        min_range=0.07,
+        max_range=0.9,
+        margin=0.05,
+    )
+    assert out == {free}
+
+
+def test_visible_free_cells_invalid_depth_is_unknown_not_free():
+    from rammp_curobo.perception import visible_free_cells
+
+    depth = np.zeros((10, 10), dtype=np.float32)  # depth hole everywhere
+    cells = np.array([[0, 0, 4]])
+    out = visible_free_cells(
+        cells,
+        0.1,
+        np.eye(3),
+        np.zeros(3),
+        depth,
+        fx=10.0,
+        fy=10.0,
+        cx=5.0,
+        cy=5.0,
+    )
+    assert out == set()  # cannot prove empty -> keep
+
+
+def test_accumulator_decay_cells_scopes_forgetting():
+    from rammp_curobo.perception import VoxelAccumulator
+
+    acc = VoxelAccumulator(voxel=0.05, occupied_at=3, max_score=6)
+    pts = _cube_points([0.5, 0.0, 0.1], 0.1)
+    for _ in range(3):
+        acc.update(pts)
+    occupied = set(map(tuple, acc.occupied_cells()))
+    assert occupied
+    # camera looked AWAY: nothing decayable -> world must persist
+    for _ in range(10):
+        acc.update(np.empty((0, 3)), decay_cells=set())
+    assert set(map(tuple, acc.occupied_cells())) == occupied
+    # camera sees through them -> they fade as before
+    for _ in range(6):
+        acc.update(np.empty((0, 3)), decay_cells=occupied)
+    assert len(acc.occupied_cells()) == 0
+
+
 def test_merged_scene_keeps_baseline_and_replaces_objects():
     from rammp_curobo.scene import Obstacle, Scene, merged_scene
 
