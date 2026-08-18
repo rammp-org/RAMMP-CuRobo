@@ -305,21 +305,38 @@ class CamerasNode(Node):
         """False while the camera was moving around the frame's stamp.
 
         A frame captured mid-motion places obstacles at smeared positions
-        even with stamped TF (rolling shutter + median-of-frames). Compare
-        the camera pose at the stamp vs 0.15 s earlier; more than
-        max_motion_mm of travel skips the frame.
+        even with stamped TF (rolling shutter + median-of-frames). Checks
+        the pose at the stamp and at two lookbacks (0.075 s / 0.15 s) —
+        the midpoint catches direction reversals whose NET displacement is
+        near zero — and folds rotation in as its worst-case point sweep at
+        max_range: this bracket's optical center sits only ~7.5 cm off the
+        tool axis, so a pure wrist twist moves the camera origin 8x slower
+        than it sweeps the scene (audit 2026-08-18).
         """
         if cam.cfg.get("parent_frame") == "base_link" or cam.ros_stamp is None:
             return True  # fixed camera: always still
-        pose = self._camera_pose(cam.cfg, stamp=cam.ros_stamp, strict=True)
-        earlier = Time.from_msg(cam.ros_stamp) - Duration(seconds=0.15)
-        prev = self._camera_pose(cam.cfg, stamp=earlier.to_msg(), strict=True)
-        if pose is None or prev is None:
-            return False  # can't prove stillness -> don't trust the frame
-        drift = float(np.linalg.norm(pose[1] - prev[1]))
-        if drift > self.max_motion_mm / 1000.0:
-            self._moving_skips += 1
+        stamp_t = Time.from_msg(cam.ros_stamp)
+        if stamp_t.nanoseconds < int(0.2e9):
+            # zero/near-epoch stamps: the driver isn't stamping (tf2 would
+            # read Time(0) as 'latest'), and the lookback would underflow —
+            # distrust the frame rather than crash (audit 2026-08-18).
             return False
+        poses = []
+        for dt in (0.0, 0.075, 0.15):
+            when = (stamp_t - Duration(seconds=dt)).to_msg()
+            got = self._camera_pose(cam.cfg, stamp=when, strict=True)
+            if got is None:
+                return False  # can't prove stillness -> don't trust it
+            poses.append(got)
+        limit = self.max_motion_mm / 1000.0
+        reach = float(cam.cfg.get("max_range", 1.2))
+        for (r1, t1), (r0, t0) in zip(poses[:-1], poses[1:]):
+            drift = float(np.linalg.norm(t1 - t0))
+            cosang = (np.trace(r0.T @ r1) - 1.0) / 2.0
+            ang = float(np.arccos(np.clip(cosang, -1.0, 1.0)))
+            if drift + ang * reach > limit:
+                self._moving_skips += 1
+                return False
         return True
 
     def _link_points(self):
@@ -335,7 +352,7 @@ class CamerasNode(Node):
 
     # ---------------------------------------------------------------- tick
     def _tick(self):
-        all_pts, frames_used, saw_frame = [], [], False
+        all_pts, frames_used, saw_frame, had_fresh = [], [], False, False
         link_pts = self._link_points()
         if link_pts is None and "tf" not in self._warned:
             self._warned.add("tf")
@@ -343,9 +360,21 @@ class CamerasNode(Node):
                 "no arm TF — self-filter OFF (fine without a bringup; the "
                 "arm will cluster as an obstacle if one IS running)"
             )
+        if link_pts is not None and "tf" in self._warned:
+            # self-filter just armed: voxels accumulated from the
+            # UNFILTERED arm can never decay (the arm still occupies them,
+            # no camera can see through) — start the world over clean.
+            self._warned.discard("tf")
+            n = self.acc.reset()
+            self.tracker = BoxTracker()
+            self.get_logger().info(
+                "arm TF appeared — self-filter ON, %d unfiltered voxels "
+                "dropped, world restarts clean" % n
+            )
         for cam in self.cams:
             if not cam.fresh(max_age=2.0 / self.rate_hz):
                 continue
+            had_fresh = True
             if not self._camera_still(cam):
                 continue
             pose = self._camera_pose(cam.cfg, stamp=cam.ros_stamp)
@@ -381,24 +410,32 @@ class CamerasNode(Node):
                 )
             )
         if not saw_frame:
-            if "frames" not in self._warned:
+            if had_fresh:
+                # frames ARE arriving; they were gated (camera moving, or
+                # stamped TF unavailable) — say so instead of blaming the
+                # driver (audit 2026-08-18: the old message misdiagnosed
+                # every arm-motion episode)
+                if "gated" not in self._warned:
+                    self._warned.add("gated")
+                    self.get_logger().info(
+                        "depth frames gated (camera moving / stamped TF "
+                        "unavailable) — world holds until the camera is "
+                        "still (%d gated so far)" % self._moving_skips
+                    )
+            elif "frames" not in self._warned:
                 self._warned.add("frames")
                 self.get_logger().warn(
                     "no fresh depth frames — is the camera driver running?"
                 )
             return
         self._warned.discard("frames")
+        self._warned.discard("gated")
         pts = np.vstack(all_pts) if all_pts else np.empty((0, 3))
         # decay is scoped to what THIS tick's frames can prove empty — a
         # wrist camera looking away must not erode the remembered world
         decay = decayable_cells(self.acc.known_cells(), self.voxel, frames_used)
         self.acc.update(pts, decay_cells=decay)
         self._tick_count += 1
-        if self._moving_skips and self._tick_count % 100 == 0:
-            self.get_logger().info(
-                "%d frames skipped while the camera was moving (normal "
-                "during arm motion)" % self._moving_skips
-            )
         boxes, total = cluster_cells(
             self.acc.occupied_cells(),
             self.voxel,
@@ -475,13 +512,25 @@ class CamerasNode(Node):
                 "center": [request.center.x, request.center.y, request.center.z],
                 "dims": d,
             }
-            response.message = "ignoring %.2f x %.2f x %.2f m at (%.2f, %.2f, %.2f)" % (
-                d[0],
-                d[1],
-                d[2],
-                request.center.x,
-                request.center.y,
-                request.center.z,
+            # purge what's ALREADY mapped there: frustum-scoped decay can
+            # never erase a still-present object (it blocks its own
+            # see-through), so masking future hits alone would leave the
+            # grasp target's cuboid standing forever (audit 2026-08-18)
+            purged = self.acc.clear_box(
+                self.ignore_region["center"], d, inflate=self.voxel
+            )
+            response.message = (
+                "ignoring %.2f x %.2f x %.2f m at (%.2f, %.2f, %.2f); "
+                "%d mapped voxels purged"
+                % (
+                    d[0],
+                    d[1],
+                    d[2],
+                    request.center.x,
+                    request.center.y,
+                    request.center.z,
+                    purged,
+                )
             )
         response.success = True
         self.get_logger().info(response.message)

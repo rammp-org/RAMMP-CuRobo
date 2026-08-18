@@ -79,9 +79,13 @@ at all. Two services matter to integrators:
   node calls this; a client may too (e.g. injecting a known obstacle).
 - `/cameras/set_ignore_region`
   (`rammp_curobo_interfaces/srv/SetIgnoreRegion`): one axis-aligned box
-  in base_link whose depth points are discarded before clustering. Set
-  it around the object you are about to touch — the manipulation target
-  must not be avoided as an obstacle. All-zero dims clears it.
+  in base_link whose depth points are discarded before clustering — AND
+  whose already-mapped voxels are purged on the spot (a still-present
+  object blocks its own see-through, so masking alone could never clear
+  it). Set it around the object you are about to touch — the
+  manipulation target must not be avoided as an obstacle. All-zero dims
+  clears the region (the purge is not undone; the object remaps only if
+  the camera sees it again outside an active region).
 
 `/cameras/world_markers` (`visualization_msgs/MarkerArray`) shows the
 perceived boxes in RViz — check it before trusting a plan near clutter.

@@ -216,10 +216,18 @@ Honest limits: the wrist camera only maps where it has looked — plans
 through never-seen space rely on the baseline world (keep
 `world_real_bench.yaml` honest); range is 0.9 m, so the map builds up
 close-in, which matches manipulation. Frames captured while the wrist
-moves are dropped by design (the "frames skipped while the camera was
-moving" log line is normal during motion).
+moves (or rotates — rotation sweeps points far faster than it moves the
+lens) are dropped by design: the "depth frames gated" log line is normal
+during motion. Thin objects (cables, rods) near the silhouette can
+flicker — pad them in the baseline if they matter. A mapped obstacle
+whose location the camera can no longer see through (blocked, depth
+hole) persists by design: clear it by looking at the spot, setting an
+ignore region over it (which also purges what's already mapped there),
+or restarting the node.
 
 (The retired fixed-Orbbec path — browser-click fingertip calibration via
 `scripts/calibrate_camera_extrinsics.py` — still works if a bench camera
 returns; it writes `camera_orbbec_bench.yaml` and the node takes it via
-the `cameras` parameter list.)
+the `cameras` parameter list. Note it now shares the frustum-scoped
+decay: unlike the original Orbbec build, a removed object backed by a
+depth hole or occlusion persists until provably seen through.)
