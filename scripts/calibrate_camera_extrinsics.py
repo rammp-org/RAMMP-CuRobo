@@ -29,6 +29,7 @@ updates.
 """
 
 import argparse
+import json
 import os
 import sys
 
@@ -56,6 +57,34 @@ def solve_rigid(base_pts, cam_pts):
     t = cb - rot @ cc
     rms = float(np.sqrt(np.mean(np.sum((base - (cam @ rot.T + t)) ** 2, axis=1))))
     return rot, t, rms
+
+
+def solve_rigid_robust(base_pts, cam_pts, min_keep=5):
+    """solve_rigid with iterative outlier trimming.
+
+    A click that lands on the silhouette edge can sample the BACKGROUND
+    depth and put that 'fingertip' half a metre off — one such pair ruins
+    a plain least-squares fit. Solve, drop the worst pair while its
+    residual exceeds max(3 cm, 3x the median), re-solve; never go below
+    min_keep pairs. Returns (R, t, rms, residuals, dropped) where
+    residuals covers ALL input pairs (in input order) against the final
+    fit and dropped lists the rejected indices.
+    """
+    base = np.asarray(base_pts, dtype=float)
+    cam = np.asarray(cam_pts, dtype=float)
+    kept = list(range(len(base)))
+    dropped = []
+    while True:
+        rot, t, _ = solve_rigid(base[kept], cam[kept])
+        res_kept = np.linalg.norm(base[kept] - (cam[kept] @ rot.T + t), axis=1)
+        worst = int(np.argmax(res_kept))
+        limit = max(0.03, 3.0 * float(np.median(res_kept)))
+        if res_kept[worst] > limit and len(kept) > min_keep:
+            dropped.append(kept.pop(worst))
+            continue
+        rms = float(np.sqrt(np.mean(res_kept**2)))
+        residuals = np.linalg.norm(base - (cam @ rot.T + t), axis=1)
+        return rot, t, rms, residuals, sorted(dropped)
 
 
 def spread_check(base_pts):
@@ -277,6 +306,17 @@ def main():
     ap.add_argument(
         "--port", type=int, default=8765, help="HTTP port for the click page"
     )
+    ap.add_argument(
+        "--pairs-file",
+        default=os.path.expanduser("~/.ros/rammp_curobo/calib_pairs.json"),
+        help="recorded point pairs are saved here after every accept",
+    )
+    ap.add_argument(
+        "--resolve-from",
+        default=None,
+        metavar="JSON",
+        help="skip collection; re-solve from a saved pairs file",
+    )
     args = ap.parse_args()
 
     import cv2
@@ -363,7 +403,7 @@ def main():
                 args.tip_offset, dtype=float
             )
 
-    ui = BrowserClickUI(args.port)
+    ui = None  # created only when collecting (binds the HTTP port)
 
     def click_point(img, depth, k):
         """Serve the frozen frame to the browser; deprojected click or None."""
@@ -376,75 +416,116 @@ def main():
             if uv is None:
                 return None
             u, v = uv
-            patch = depth[max(0, v - 2) : v + 3, max(0, u - 2) : u + 3]
+            patch = depth[max(0, v - 3) : v + 4, max(0, u - 3) : u + 4]
             patch = patch[(patch > 0.05) & np.isfinite(patch)]
             if not len(patch):
                 print("  no valid depth at that click — click again in the browser")
                 continue
-            z = float(np.median(patch))
+            # A click near the finger's silhouette mixes finger and
+            # BACKGROUND depths; the plain median can pick the wall behind
+            # and place the "fingertip" half a metre off (field, 2026-08-18:
+            # one such pair blew an 8-pose solve to 15 cm RMS). Keep only
+            # the nearest cluster — the finger is always the foreground.
+            near = patch[patch < patch.min() + 0.03]
+            z = float(np.median(near))
             p = np.array([(u - cx) / fx * z, (v - cy) / fy * z, z])
             # push from the fingertip SURFACE to its center, along the ray
             p *= (np.linalg.norm(p) + args.surface_bias) / np.linalg.norm(p)
             return p
 
-    rclpy.init()
-    node = Grab()
-    print(
-        "CLOSE the gripper first (fingertips together = tool_frame). "
-        "%d poses, spread across the view AND in height (coplanar pose "
-        "sets weaken the solve).\n\n"
-        "  >>> open  http://%s:%d  in a browser on your laptop <<<\n\n"
-        "Per pose: move the arm, ENTER here, then click the fingertip "
-        "midpoint on the photo in the browser and hit Accept (or Skip). "
-        "'done' after >=5 solves early, Ctrl-C aborts."
-        % (args.poses, _lan_ip(), args.port)
-    )
-    base_pts, cam_pts = [], []
-    while len(base_pts) < args.poses:
-        if input("[%d/%d] > " % (len(base_pts) + 1, args.poses)).strip() == "done":
-            break
-        img, depth = node.grab()
-        if depth.shape != img.shape[:2]:
-            sys.exit(
-                "depth %s and color %s sizes differ — run the driver with "
-                "depth_registration:=true" % (depth.shape, img.shape[:2])
-            )
-        k = np.array(node.info.k).reshape(3, 3)
-        p_cam = click_point(img, depth, k)
-        if p_cam is None:
-            print("  skipped")
-            continue
-        try:
-            p_base = node.tool_position()
-        except Exception as exc:
-            print(
-                "  no TF base_link->%s (%s) — is the bringup up?"
-                % (args.tool_frame, exc)
-            )
-            continue
-        cam_pts.append(p_cam)
-        base_pts.append(p_base)
+    node = None
+    if args.resolve_from:
+        with open(args.resolve_from) as f:
+            d = json.load(f)
+        base_pts = [np.asarray(p, dtype=float) for p in d["base"]]
+        cam_pts = [np.asarray(p, dtype=float) for p in d["cam"]]
         print(
-            "  recorded (fingertip %.2f m from camera, %.2f m from base)"
-            % (float(np.linalg.norm(p_cam)), float(np.linalg.norm(p_base)))
+            "re-solving from %d saved pairs (%s) — no camera/arm needed"
+            % (len(base_pts), args.resolve_from)
         )
+    else:
+        rclpy.init()
+        node = Grab()
+        ui = BrowserClickUI(args.port)
+        print(
+            "CLOSE the gripper first (fingertips together = tool_frame). "
+            "%d poses, spread across the view AND in height (coplanar pose "
+            "sets weaken the solve).\n\n"
+            "  >>> open  http://%s:%d  in a browser on your laptop <<<\n\n"
+            "Per pose: move the arm, ENTER here, then click the fingertip "
+            "midpoint on the photo in the browser and hit Accept (or Skip). "
+            "'done' after >=5 solves early, Ctrl-C aborts."
+            % (args.poses, _lan_ip(), args.port)
+        )
+        base_pts, cam_pts = [], []
+        while len(base_pts) < args.poses:
+            prompt = "[%d/%d] > " % (len(base_pts) + 1, args.poses)
+            if input(prompt).strip() == "done":
+                break
+            img, depth = node.grab()
+            if depth.shape != img.shape[:2]:
+                sys.exit(
+                    "depth %s and color %s sizes differ — run the driver with "
+                    "depth_registration:=true" % (depth.shape, img.shape[:2])
+                )
+            k = np.array(node.info.k).reshape(3, 3)
+            p_cam = click_point(img, depth, k)
+            if p_cam is None:
+                print("  skipped")
+                continue
+            try:
+                p_base = node.tool_position()
+            except Exception as exc:
+                print(
+                    "  no TF base_link->%s (%s) — is the bringup up?"
+                    % (args.tool_frame, exc)
+                )
+                continue
+            cam_pts.append(p_cam)
+            base_pts.append(p_base)
+            print(
+                "  recorded (fingertip %.2f m from camera, %.2f m from base)"
+                % (float(np.linalg.norm(p_cam)), float(np.linalg.norm(p_base)))
+            )
+            os.makedirs(os.path.dirname(args.pairs_file), exist_ok=True)
+            with open(args.pairs_file, "w") as f:
+                json.dump(
+                    {
+                        "base": [list(map(float, p)) for p in base_pts],
+                        "cam": [list(map(float, p)) for p in cam_pts],
+                    },
+                    f,
+                )
     if len(base_pts) < 5:
         sys.exit("only %d poses — need at least 5" % len(base_pts))
     complaint = spread_check(base_pts)
     if complaint:
         sys.exit("BAD POSE SPREAD: %s. Re-run with better spread." % complaint)
-    rot, t, rms = solve_rigid(base_pts, cam_pts)
+    rot, t, rms, residuals, dropped = solve_rigid_robust(base_pts, cam_pts)
+    for i, r in enumerate(residuals):
+        print(
+            "  pose %d: residual %4.0f mm%s"
+            % (i + 1, r * 1000, "  << DROPPED (outlier)" if i in dropped else "")
+        )
+    kept = len(base_pts) - len(dropped)
     print(
-        "base_T_camera t = [%.4f, %.4f, %.4f], RMS residual %.4f m over %d poses"
-        % (t[0], t[1], t[2], rms, len(base_pts))
+        "base_T_camera t = [%.4f, %.4f, %.4f], RMS residual %.4f m "
+        "over %d poses (%d dropped)" % (t[0], t[1], t[2], rms, kept, len(dropped))
     )
     print("sanity: tape-measure the camera against those numbers (base frame).")
+    if not args.resolve_from:
+        print(
+            "(pairs saved to %s — re-solve without re-clicking via "
+            "--resolve-from)" % args.pairs_file
+        )
     if rms > args.max_residual:
         sys.exit(
             "RESIDUAL %.4f m > %.3f m — NOT writing. Click more carefully, "
             "keep the gripper fully closed, spread the poses wider."
             % (rms, args.max_residual)
         )
+    if kept < 5:
+        sys.exit("only %d poses survived outlier trimming — collect more" % kept)
     cfg = {
         "depth_topic": args.depth_topic,
         "info_topic": args.depth_info_topic,
@@ -453,8 +534,8 @@ def main():
         "mount_quat_xyzw": mat_to_quat_xyzw(rot),
         "min_range": 0.25,
         "max_range": 1.5,
-        "calibrated": "fingertip-click Kabsch, RMS %.4f m, %d poses"
-        % (rms, len(base_pts)),
+        "calibrated": "fingertip-click Kabsch, RMS %.4f m, %d poses (%d dropped)"
+        % (rms, kept, len(dropped)),
     }
     with open(args.out, "w") as f:
         yaml.safe_dump(cfg, f, sort_keys=False)
@@ -462,8 +543,9 @@ def main():
     # quat_to_mat imported for parity with the node's YAML consumption —
     # keep the round-trip honest if conventions ever drift
     assert np.allclose(quat_to_mat(*cfg["mount_quat_xyzw"]), rot, atol=1e-6)
-    node.destroy_node()
-    rclpy.shutdown()
+    if node is not None:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":

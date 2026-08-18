@@ -185,6 +185,27 @@ def test_rigid_solver_recovers_known_extrinsic():
     assert rms < 0.02 and np.abs(t - t_bc).max() < 0.02
 
 
+def test_robust_solver_drops_background_depth_outlier():
+    """One click-through-the-silhouette pair (background depth, ~0.5 m off)
+    must be identified and dropped, recovering the true transform — the
+    exact failure that blew the first bench run to 15 cm RMS."""
+    calib = _load_calib_module()
+    rng = np.random.default_rng(3)
+    q = rng.normal(size=4)
+    q /= np.linalg.norm(q)
+    R_bc = quat_to_mat(*q)
+    t_bc = np.array([0.03, 0.41, 0.52])
+    base = np.array([0.45, 0.0, 0.35]) + rng.uniform(-0.25, 0.25, (8, 3))
+    cam = (base - t_bc) @ R_bc
+    cam += rng.normal(scale=0.003, size=cam.shape)  # honest click noise
+    cam[4] *= (np.linalg.norm(cam[4]) + 0.5) / np.linalg.norm(cam[4])  # wall behind
+    R, t, rms, residuals, dropped = calib.solve_rigid_robust(base, cam)
+    assert dropped == [4]
+    assert rms < 0.02
+    assert np.abs(t - t_bc).max() < 0.02
+    assert residuals[4] > 0.3  # reported against the final fit
+
+
 def test_spread_check_flags_degenerate_pose_sets():
     calib = _load_calib_module()
     rng = np.random.default_rng(1)
