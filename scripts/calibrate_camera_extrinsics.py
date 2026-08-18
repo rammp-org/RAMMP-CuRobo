@@ -251,7 +251,20 @@ def main():
     ap.add_argument("--info-topic", default="/camera/color/camera_info")
     ap.add_argument("--depth-topic", default="/camera/depth/image_raw")
     ap.add_argument("--depth-info-topic", default="/camera/depth/camera_info")
-    ap.add_argument("--tool-frame", default="tool_frame")
+    # tool_frame (the fingertip midpoint) exists only in the PLANNER's
+    # kinematics — the ROS URDF/TF ends at end_effector_link (wrist
+    # flange), so look that up and add the fixed flange->fingertip offset
+    # (cuRobo kinova_gen3_7dof.urdf: tool_frame = end_effector_link +
+    # [0, 0, 0.120], no rotation).
+    ap.add_argument("--tool-frame", default="end_effector_link")
+    ap.add_argument(
+        "--tip-offset",
+        nargs=3,
+        type=float,
+        default=[0.0, 0.0, 0.120],
+        metavar=("X", "Y", "Z"),
+        help="fingertip midpoint in the tool frame's local axes (m)",
+    )
     ap.add_argument("--max-residual", type=float, default=0.02)
     ap.add_argument(
         "--surface-bias",
@@ -344,8 +357,11 @@ def main():
             tr = self.tf_buffer.lookup_transform(
                 "base_link", args.tool_frame, rclpy.time.Time()
             )
-            t = tr.transform.translation
-            return np.array([t.x, t.y, t.z])
+            q, t = tr.transform.rotation, tr.transform.translation
+            rot = quat_to_mat(q.x, q.y, q.z, q.w)
+            return np.array([t.x, t.y, t.z]) + rot @ np.asarray(
+                args.tip_offset, dtype=float
+            )
 
     ui = BrowserClickUI(args.port)
 
