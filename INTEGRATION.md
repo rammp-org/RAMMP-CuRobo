@@ -64,9 +64,10 @@ start-state match) and refuses anything stale — plan again if the arm moved.
 ### Perceived obstacles (live cameras)
 
 With the `cameras` node running (`ros2 run rammp_curobo_ros cameras` —
-calibrate the Orbbec first, see the README), the planner's world tracks
-what the bench cameras see, so plans route around real clutter with no
-client work at all. Two services matter to integrators:
+wrist D405 by default, extrinsics from TF, no calibration), the planner's
+world tracks what the camera has seen — mapped obstacles persist when the
+wrist looks away — so plans route around real clutter with no client work
+at all. Two services matter to integrators:
 
 - `/rammp_curobo/update_world_boxes`
   (`rammp_curobo_interfaces/srv/UpdateWorldBoxes`): parallel arrays of

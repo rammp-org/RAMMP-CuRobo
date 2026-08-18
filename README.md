@@ -155,30 +155,34 @@ merged trajectory per round, Ctrl+C = hold. First run:
 
 ## Perceived world (cameras)
 
-The `cameras` node gives the planner live spatial awareness: depth from
-the bench Orbbec (Gemini 336L; wrist D405 fusion is staged next) is
-deprojected to base_link, the arm is erased by a capsule self-filter, a
-voxel accumulator with hysteresis kills flicker, and the surviving
-clusters become named cuboid obstacles pushed to the planner at ~2 Hz —
-merged on top of the static `world_real_bench.yaml` baseline, so the
-table never disappears and updates are never empty. Planning-only: the
-node never commands motion.
+The `cameras` node gives the planner live spatial awareness from the
+**wrist-mounted D405**: depth is deprojected to base_link using TF *at
+each frame's timestamp* (no extrinsic calibration — the camera rides the
+arm; frames captured mid-motion are dropped), the arm erases itself via a
+capsule self-filter, a voxel accumulator with hysteresis kills flicker,
+and surviving clusters become named cuboid obstacles pushed to the
+planner at ~2 Hz — merged on top of the static `world_real_bench.yaml`
+baseline. Decay is **frustum-scoped**: a voxel is only forgotten when the
+camera provably sees through its location, so the world the wrist has
+mapped survives when it looks away. Planning-only: the node never
+commands motion.
 
 ```bash
-# one-time (attended, no fiducials): Orbbec extrinsics by clicking the
-# closed gripper's fingertip in ~8 arm poses (needs a display)
-ros2 launch orbbec_camera gemini_330_series.launch.py depth_registration:=true
-python3 scripts/calibrate_camera_extrinsics.py --poses 8   # then rebuild
-
-# every session
+# terminal A — the camera driver
+ros2 launch realsense2_camera rs_launch.py camera_namespace:=d405 camera_name:=d405
+# terminal B — perception (defaults to the wrist config)
 ros2 run rammp_curobo_ros cameras
 ```
 
-Watch `/cameras/world_markers` in RViz — a box placed on the bench should
-appear within ~2 s and fade ~3 s after removal. Do not trust plans near
-clutter until RViz agrees with reality. `scripts/cameras_checks.py`
-verifies the service loop live; `/cameras/set_ignore_region` masks the
-object you're about to grasp (see INTEGRATION.md).
+Watch `/cameras/world_markers` in RViz — a box placed in front of the
+gripper appears within ~2 s (±3 cm validates the bracket mount), survives
+the wrist looking away, and fades ~3 s after the camera sees its spot
+empty. The wrist only maps where it has looked: plans through never-seen
+space rely on the baseline world. `scripts/cameras_checks.py` verifies
+the service loop live; `/cameras/set_ignore_region` masks the object
+you're about to grasp (see INTEGRATION.md). A fixed bench camera can be
+added via the `cameras` param after running
+`scripts/calibrate_camera_extrinsics.py` (browser-click, no fiducials).
 
 ## Safety model (execution gates)
 

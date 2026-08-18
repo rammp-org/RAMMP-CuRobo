@@ -173,43 +173,53 @@ for before the e-stop; prove it works while the motion is trivial.
   (the arm may have been moved by hand; stale plans are refused, but check
   the world still matches reality too).
 
-## 6. Perceived world, stage 1 — Orbbec (attended)
+## 6. Perceived world — wrist D405 (attended)
 
-Prereqs: steps 1-5 clean; the Orbbec Gemini 336L aimed at the bench with
-an unobstructed view of the arm's workspace; a display for the click
-window. No fiducials — the calibration target is the arm's own fingertip.
+Prereqs: steps 1-5 clean; the D405 plugged into the Jetson on its wrist
+bracket. NO extrinsic calibration exists or is needed — the camera rides
+the arm's TF; its bracket mount lives in
+`rammp_curobo_ros/config/camera_d405_wrist.yaml` (photo-estimated; step 3
+below validates it against reality).
 
-1. **Calibrate (one-time, redo if the camera moves):**
+1. **Drivers up** (every terminal: `export ROS_LOCALHOST_ONLY=1`):
    ```bash
    # terminal 1: kortex bringup (step 2 above).  terminal 2:
-   export ROS_LOCALHOST_ONLY=1
-   ros2 launch orbbec_camera gemini_330_series.launch.py depth_registration:=true
-   # terminal 3 (repo root, sourced, display attached):
-   python3 scripts/calibrate_camera_extrinsics.py --poses 8
+   ros2 launch realsense2_camera rs_launch.py camera_namespace:=d405 camera_name:=d405
+   # terminal 3: planner.  terminal 4:
+   ros2 run rammp_curobo_ros cameras
    ```
-   CLOSE the gripper (fingertips together = tool_frame), then per pose:
-   YOU move the arm, press ENTER, click the fingertip midpoint in the
-   frozen frame (y accept / r re-click / s skip). Spread the ~8 poses
-   across the view AND IN HEIGHT — the script refuses collinear/coplanar
-   pose sets and any solve above 2 cm RMS residual, and prints the solved
-   camera position for a tape-measure sanity check. Then rebuild:
-   `colcon build --symlink-install --packages-select rammp_curobo_ros`.
-   If the driver's topic names differ from the defaults, fix the
-   `depth_topic`/`info_topic` fields in the written
-   `rammp_curobo_ros/config/camera_orbbec_bench.yaml` (check with
-   `ros2 topic list | grep camera`).
-2. **RViz acceptance (no arm motion):** planner up, then
-   `ros2 run rammp_curobo_ros cameras`; RViz displaying
-   `/cameras/world_markers`. Place a box on the bench → a marker appears
-   within ~2 s, within ±3 cm of reality; remove it → gone within ~3 s.
-   Wave a hand through the view → NO persistent marker. With the arm
-   bringup running, the ARM must not appear (self-filter); if it does,
-   fix the mount calibration before proceeding.
-3. **Service loop:** `python3 scripts/cameras_checks.py` — all three
+   The cameras node defaults to the wrist config. Sanity: its log shows
+   the baseline obstacle count and NO "no fresh depth frames" warning.
+2. **See what it sees:** RViz with the robot model +
+   `/cameras/world_markers`. The bench in front of the gripper (0.07-0.9 m
+   from the camera) populates as the wrist looks at it; the table itself
+   is stripped by the baseline; the ARM must not appear (self-filter).
+3. **Mount validation via acceptance:** place a box on the bench in
+   front of the gripper → marker within ~2 s, within ±3 cm of the real
+   box (tape measure). More than 3 cm off in a consistent direction =
+   the bracket moved since the photos — re-measure the mount offsets in
+   the YAML before trusting anything.
+4. **Look-away memory (the wrist-camera contract):** with the box's
+   marker up, move the arm so the camera points elsewhere — the marker
+   MUST SURVIVE indefinitely (frustum-scoped decay: out of view is
+   remembered, not forgotten). Remove the box, look back at the empty
+   spot — the marker fades within ~3 s. Wave a hand through the view —
+   no persistent marker.
+5. **Service loop:** `python3 scripts/cameras_checks.py` — all three
    checks green (box round-trip, markers, plan-under-churn).
-4. **First plan around a real obstacle:** put an object between home and
-   a target; plan (dry-run) and eyeball the trajectory clearing the
-   marker in RViz; only then execute at ≤0.25 speed, e-stop in hand.
-   Known v1 limitation: an obstacle the arm OCCLUDES decays out of the
-   world after a few seconds — keep the baseline world honest and don't
-   rely on perception for objects the arm is hiding.
+6. **First plan around a real obstacle:** put an object between home and
+   a target, let the wrist SEE it (markers confirm), plan (dry-run) and
+   eyeball the trajectory clearing the marker in RViz; only then execute
+   at ≤0.25 speed, e-stop in hand.
+
+Honest limits: the wrist camera only maps where it has looked — plans
+through never-seen space rely on the baseline world (keep
+`world_real_bench.yaml` honest); range is 0.9 m, so the map builds up
+close-in, which matches manipulation. Frames captured while the wrist
+moves are dropped by design (the "frames skipped while the camera was
+moving" log line is normal during motion).
+
+(The retired fixed-Orbbec path — browser-click fingertip calibration via
+`scripts/calibrate_camera_extrinsics.py` — still works if a bench camera
+returns; it writes `camera_orbbec_bench.yaml` and the node takes it via
+the `cameras` parameter list.)

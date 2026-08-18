@@ -5,7 +5,8 @@ Standalone cuRobo planning for the RAMMP Kinova Gen3 7-DoF (+ Robotiq
 trajectory out — plus showcases (`tour_demo`, and the `dance_demo`
 easter egg — same gates, safe-box choreography), a safety-gated
 executor for this bench, and live spatial awareness (the `cameras` node:
-bench Orbbec depth → cuboid obstacles → planner world at ~2 Hz). Parts:
+wrist-D405 depth → cuboid obstacles → planner world at ~2 Hz; TF
+extrinsics, no calibration). Parts:
 `core/` (pip `rammp-curobo`, pure Python, NO ROS imports — keep it that
 way; perception.py is the pure pipeline), `rammp_curobo_interfaces/`
 (rosidl, dependency-free by policy), `rammp_curobo_ros/` (ament_python:
@@ -64,11 +65,17 @@ scan pipeline was deliberately REVIVED 2026-08-17 as `perception.py` +
 - Perceived world: UpdateWorldBoxes REPLACES the perceived set every call
   (never accumulates), always merged on a sticky baseline world — so
   updates are never empty and the table survives. Ignore region lives in
-  the cameras node, not the planner. No free-space raycasting: occluded
-  obstacles decay (~2-3 s) — keep the baseline honest. Orbbec extrinsics
-  come ONLY from scripts/calibrate_camera_extrinsics.py (fingertip-click
-  Kabsch, residual + pose-spread gated; NO fiducials — user's explicit
-  preference); never hand-edit camera_orbbec_bench.yaml mounts.
+  the cameras node, not the planner. Wrist-camera decay is
+  FRUSTUM-SCOPED — a voxel is forgotten only when the camera provably
+  sees through it; out-of-view voxels are remembered. Don't "fix" the
+  accumulator back to global decay (a narrow-FOV wrist camera would
+  evaporate the world every time it looks away). Depth frames pair with
+  TF at THEIR stamp and are dropped while the camera moves — never
+  "latest" TF (field-verified time-skew class). Primary camera = wrist
+  D405 (TF extrinsics, no calibration; mount YAML is photo-estimated,
+  validated by the §6 acceptance). A fixed camera needs
+  scripts/calibrate_camera_extrinsics.py (fingertip-click Kabsch, NO
+  fiducials — user's explicit preference); never hand-edit mounts.
 
 ## Safety (do not weaken)
 
