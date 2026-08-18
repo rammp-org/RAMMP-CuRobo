@@ -113,6 +113,35 @@ def test_check_state_valid(planner):
     assert not ok
 
 
+def test_update_world_boxes_reaches_the_live_checker(planner):
+    """Perceived boxes must actually land in the GPU collision world.
+
+    Proof by blocking: a goal INSIDE a perceived box must fail, and the
+    identical goal must succeed once the perceived set is emptied (the
+    sticky baseline surviving the empty update, per the v0.7.8 empty-world
+    guard)."""
+    pos, quat = planner.fk(planner.home_pose)
+    pos = list(pos)
+    pos[2] -= 0.10
+    try:
+        planner.update_world_boxes(
+            [{"name": "blocker", "position": pos, "dims": [0.25, 0.25, 0.25]}],
+            baseline="world_sim_kitchen.yaml",
+        )
+        assert [o.name for o in planner.scene.objects] == ["blocker"]
+        res = planner.plan_to_pose(pos, quat)
+        assert not res.success  # the goal sits inside the perceived box
+
+        planner.update_world_boxes([])  # empty perceived set, baseline kept
+        assert planner.scene.objects == []
+        assert len(planner.scene.obstacles) > 0
+        res = planner.plan_to_pose(pos, quat)
+        assert res.success, res.error  # same goal, box gone -> reachable
+    finally:
+        planner._baseline_scene = None  # don't leak baseline into other tests
+        planner.update_world("world_sim_kitchen.yaml")
+
+
 def test_update_world_guards_and_round_trip(planner):
     with pytest.raises(ValueError, match="empty"):
         planner.update_world([])
