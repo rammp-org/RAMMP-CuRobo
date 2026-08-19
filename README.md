@@ -161,8 +161,11 @@ named object with YOLO on the wrist D405 (vocabulary: the 80 COCO
 classes + common synonyms; weights `~/yolo11s-seg.pt`, nothing
 downloaded), masks it as the manipulation target via the ignore region,
 and plans a standoff approach through the perceived world — dodging the
-clutter, not the target. Typed `seek` gates the scan, typed `go` gates
-the approach, ≤0.25 speed. The D405 driver needs
+clutter, not the target. Every sighting from every glance is clustered
+in 3D; only a location confirmed from two different viewpoints is
+trusted (a look-alike seen once loses the vote; two confirmed
+locations refuse with a listing unless `--pick nearest`). Typed `seek`
+gates the scan, typed `go` gates the approach, ≤0.25 speed. The D405 driver needs
 `align_depth.enable:=true` for this demo.
 
 ## Perceived world (cameras)

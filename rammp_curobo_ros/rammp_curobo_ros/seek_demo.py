@@ -4,12 +4,16 @@
     ros2 run rammp_curobo_ros seek_demo --text "go to the bottle"            # dry logic
     ros2 run rammp_curobo_ros seek_demo --text "go to the bottle" --execute  # the real thing
 
-Flow (attended, every gate intact): typed 'seek' -> auto-generated glance
-poses until YOLO (wrist D405) sees the object twice -> 3-D localization
-via aligned depth + TF -> ignore region set around the target (purges
-its mapped voxels; the thing you approach must not be dodged) ->
-standoff pose planned through the perceived world -> plan shown -> typed
-'go' -> execute at <=0.25 speed.
+Flow (attended, every gate intact): typed 'seek' -> ALL auto-generated
+glance poses are visited; every YOLO instance (wrist D405) in each
+glance's frame is 3-D-localized via aligned depth + TF and clustered
+across viewpoints -> only a location confirmed from TWO different
+glances is trusted (a look-alike seen once loses the vote; two
+confirmed locations refuse with a listing unless --pick nearest) ->
+ignore region set around the target (purges its mapped voxels; the
+thing you approach must not be dodged) -> standoff pose planned through
+the perceived world -> plan shown -> typed 'go' -> execute at <=0.25
+speed.
 
 Needs: planner (execute:=true), cameras node, arm bringup, and the D405
 driver WITH ALIGNED DEPTH:
@@ -278,14 +282,18 @@ def load_detector(weights):
     return YOLO(path)
 
 
-def detect(model, frame_bgr, target, conf):
-    """Best (xyxy, conf, mask|None) for `target` in the frame, or None."""
+def detect_all(model, frame_bgr, target, conf):
+    """Every (xyxy, conf, mask|None) of `target` in the frame, best-first.
+
+    ALL instances, not just the best: a second bottle-shaped object in
+    view must surface as a competing sighting the cross-viewpoint
+    clustering can out-vote — under best-per-frame it silently replaced
+    the real target and vetoed two scans (field 2026-08-19, decoy at
+    y=+0.6)."""
     res = model(frame_bgr, verbose=False)[0]
-    best = None
+    out = []
     for i, b in enumerate(res.boxes):
         if res.names[int(b.cls)] != target or float(b.conf) < conf:
-            continue
-        if best is not None and float(b.conf) <= best[1]:
             continue
         m = None
         if res.masks is not None:
@@ -295,8 +303,90 @@ def detect(model, frame_bgr, target, conf):
             m = (
                 cv2.resize(m, (frame_bgr.shape[1], frame_bgr.shape[0])) > 0.5
             )
-        best = ([float(v) for v in b.xyxy[0]], float(b.conf), m)
-    return best
+        out.append(([float(v) for v in b.xyxy[0]], float(b.conf), m))
+    out.sort(key=lambda t: t[1], reverse=True)
+    return out
+
+
+def detect(model, frame_bgr, target, conf):
+    """Best (xyxy, conf, mask|None) for `target` in the frame, or None."""
+    hits = detect_all(model, frame_bgr, target, conf)
+    return hits[0] if hits else None
+
+
+def cluster_sightings(sightings, radius=0.10):
+    """3D clustering of (glance_idx, center, extent, conf) tuples.
+
+    Complete linkage: a sighting joins a cluster only when it is within
+    `radius` of EVERY member, so a drifting weighted center can never
+    chain distant sightings into one "object" (the pairwise 10 cm
+    consistency gate survives the rework, audit 2026-08-19); among
+    eligible clusters the NEAREST center wins, so a sighting between
+    two objects joins the closer one instead of the first-created.
+    Returns clusters sorted most-credible-first (distinct viewpoints,
+    then summed confidence), each a dict with center (confidence-
+    weighted mean), extent (elementwise max), glances (set of glance
+    indices), conf (summed), n (sightings), members (raw centers).
+    Only a cluster seen from >= 2 DISTINCT glances triangulates a real
+    object — same-glance repeats share every systematic error and add
+    no independence (audit 2026-08-18). Multi-instance scenes are
+    first-class: a decoy seen from one viewpoint loses the vote instead
+    of vetoing the scan (field 2026-08-19)."""
+    clusters = []
+    for gi, center, extent, conf in sightings:
+        center = np.asarray(center, dtype=float)
+        extent = np.asarray(extent, dtype=float)
+        best = None
+        for c in clusters:
+            if all(np.linalg.norm(center - m) <= radius for m in c["members"]):
+                d = float(np.linalg.norm(center - c["center"]))
+                if best is None or d < best[1]:
+                    best = (c, d)
+        if best is None:
+            clusters.append(
+                {
+                    "center": center.copy(),
+                    "extent": extent.copy(),
+                    "glances": {gi},
+                    "conf": float(conf),
+                    "n": 1,
+                    "members": [center.copy()],
+                }
+            )
+            continue
+        home = best[0]
+        w = home["conf"] + float(conf)
+        home["center"] = (home["center"] * home["conf"] + center * float(conf)) / w
+        home["extent"] = np.maximum(home["extent"], extent)
+        home["glances"].add(gi)
+        home["conf"] = w
+        home["n"] += 1
+        home["members"].append(center.copy())
+    clusters.sort(key=lambda c: (len(c["glances"]), c["conf"]), reverse=True)
+    return clusters
+
+
+def decide(clusters, pick="refuse"):
+    """The scan's verdict from cluster_sightings output.
+
+    Returns (status, ranked):
+      ("unseen", [])            nothing was localized at all
+      ("unconfirmed", clusters) sightings exist, none from 2+ viewpoints
+      ("ambiguous", confirmed)  2+ confirmed locations and pick=refuse
+      ("ok", confirmed)         approach ranked[0]; nearest-first when
+                                pick="nearest" resolved a multi-instance
+                                scene
+    Lives outside main() so the decision that vetoed the field scans is
+    testable on its own (audit 2026-08-19)."""
+    if not clusters:
+        return "unseen", []
+    confirmed = [c for c in clusters if len(c["glances"]) >= 2]
+    if not confirmed:
+        return "unconfirmed", clusters
+    if len(confirmed) > 1 and pick != "nearest":
+        return "ambiguous", confirmed
+    confirmed.sort(key=lambda c: float(np.hypot(c["center"][0], c["center"][1])))
+    return "ok", confirmed
 
 
 def main():
@@ -309,6 +399,13 @@ def main():
     ap.add_argument("--standoff", type=float, default=0.18)
     ap.add_argument("--conf", type=float, default=0.4)
     ap.add_argument("--weights", default="~/yolo11s-seg.pt")
+    ap.add_argument(
+        "--pick",
+        choices=["refuse", "nearest"],
+        default="refuse",
+        help="when 2+ locations are each confirmed from 2+ viewpoints: "
+        "refuse (default, lists them) or approach the nearest",
+    )
     args = ap.parse_args()
     scale = min(max(args.speed, 0.1), 0.25)
 
@@ -363,10 +460,14 @@ def main():
         sys.exit("aborted — nothing moved")
 
     model = load_detector(args.weights)
-    found = []  # (center_base, extent), AT MOST ONE PER GLANCE —
-    # two sightings from the same viewpoint share every systematic error,
-    # so the consistency gate below would only measure frame noise
-    # (audit 2026-08-18); cross-glance sightings actually triangulate
+    sightings = []  # (glance_idx, center_base, extent, conf) — ONE frame
+    # per viewpoint (same-frame repeats share every systematic error;
+    # audit 2026-08-18 gate rationale) but EVERY instance in that frame,
+    # and ALL glances are always visited: the decision needs the whole
+    # scene, not the first two sightings (field 2026-08-19: an early
+    # exit on a decoy vetoed two scans)
+    visited = 0
+    unlocalized = 0
     for i, (bearing, pitch) in enumerate(GLANCES):
         pos, quat = glance_pose(bearing, pitch)
         plan = demo.plan_pose_from(pos, quat, None)
@@ -378,43 +479,93 @@ def main():
         )
         if not demo.run(plan.trajectory, scale):
             sys.exit("glance motion failed — arm holds; see planner log")
+        visited += 1
         time.sleep(1.0)  # settle; frames while moving are useless anyway
+        seen_but_lost = 0
         for _ in range(4):
             shot = grab.shot()
             if shot is None:
                 continue
             frame, depth, intr, rot, trans = shot
-            hit = detect(model, frame, target, args.conf)
-            if hit is None:
-                continue
-            loc = box_to_center(hit[0], depth, mask=hit[2], **intr)
-            if loc is None:
-                continue
-            center_cam, extent = loc
-            center_base = rot @ center_cam + trans
-            found.append((center_base, extent))
-            print(
-                "  saw %s (conf %.2f) at [%.2f, %.2f, %.2f]"
-                % (target, hit[1], center_base[0], center_base[1], center_base[2])
-            )
-            break  # one sighting per viewpoint
-        if len(found) >= 2:
-            break
+            hits = detect_all(model, frame, target, args.conf)
+            got = []
+            for xyxy, cf, mask in hits:
+                loc = box_to_center(xyxy, depth, mask=mask, **intr)
+                if loc is None:
+                    continue
+                center_cam, extent = loc
+                center_base = rot @ center_cam + trans
+                got.append((i, center_base, extent, cf))
+                print(
+                    "  saw %s (conf %.2f) at [%.2f, %.2f, %.2f]"
+                    % (target, cf, center_base[0], center_base[1], center_base[2])
+                )
+            if got:
+                sightings.extend(got)
+                break  # one frame per viewpoint
+            seen_but_lost += len(hits)
+        else:
+            if seen_but_lost:
+                # detection without localization must be VISIBLE — the
+                # High Accuracy preset makes depth sparse on low texture,
+                # and "did not see it" would misdirect the operator to
+                # repositioning (audit 2026-08-19)
+                unlocalized += seen_but_lost
+                print(
+                    "  %s detected %d time(s) but never depth-localized "
+                    "(sparse depth on a low-texture/translucent target?)"
+                    % (target, seen_but_lost)
+                )
     del model  # free the GPU for cuRobo
-    if len(found) < 2:
+    if visited < 2:
         sys.exit(
-            "did not see a %s from two viewpoints — reposition it "
-            "0.45-0.65 m in front of the arm and re-run" % target
+            "only %d of %d glance poses could be planned and executed — "
+            "confirmation needs two viewpoints; clear the space around "
+            "the arm or check the planner" % (visited, len(GLANCES))
         )
-    centers = np.array([f[0] for f in found])
-    if np.linalg.norm(centers[0] - centers[1]) > 0.10:
+    status, ranked = decide(cluster_sightings(sightings), pick=args.pick)
+    if status == "unseen":
+        extra = (
+            " (YOLO detected it %d time(s) but depth never localized it "
+            "— low-texture/translucent target?)" % unlocalized
+            if unlocalized
+            else ""
+        )
         sys.exit(
-            "sightings from two viewpoints disagree by %.0f mm — moving "
-            "object or bad depth/mount; re-run"
-            % (np.linalg.norm(centers[0] - centers[1]) * 1000)
+            "did not localize a %s from any viewpoint%s — reposition it "
+            "0.45-0.65 m in front of the arm and re-run" % (target, extra)
         )
-    obj = centers.mean(axis=0)
-    extent = np.max([f[1] for f in found], axis=0)
+    if status == "unconfirmed":
+        lone = "; ".join("[%.2f, %.2f, %.2f]" % tuple(c["center"]) for c in ranked)
+        sys.exit(
+            "no %s location was confirmed from two viewpoints (single-"
+            "viewpoint sightings at: %s) — moving object, bad depth, or "
+            "visible from only one glance; re-run" % (target, lone)
+        )
+    listing = "; ".join(
+        "[%.2f, %.2f, %.2f] (%d viewpoints, conf %.2f)"
+        % (c["center"][0], c["center"][1], c["center"][2],
+           len(c["glances"]), c["conf"])
+        for c in ranked
+    )
+    if status == "ambiguous":
+        sys.exit(
+            "%d distinct %s locations each confirmed from 2+ viewpoints: "
+            "%s — ambiguous scene. Remove the extras or re-run with "
+            "--pick nearest." % (len(ranked), target, listing)
+        )
+    if len(ranked) > 1:
+        print(
+            "%d confirmed %s locations: %s — approaching the NEAREST "
+            "(--pick nearest)" % (len(ranked), target, listing)
+        )
+    chosen = ranked[0]
+    obj = chosen["center"]
+    extent = chosen["extent"]
+    print(
+        "%s fixed at [%.2f, %.2f, %.2f] — %d sighting(s) from %d viewpoints"
+        % (target, obj[0], obj[1], obj[2], chosen["n"], len(chosen["glances"]))
+    )
     dims = [float(max(extent[0], 0.05)) + 0.04] * 2 + [
         float(max(extent[1], 0.05)) + 0.04
     ]

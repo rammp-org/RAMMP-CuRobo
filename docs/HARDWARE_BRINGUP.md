@@ -268,5 +268,13 @@ unaffected — it keeps using the depth-frame topic).
    box's cuboid while still reaching the bottle (whose voxels the ignore
    region purges; the region is cleared again on every exit, so the
    world keeps watching that spot afterwards).
-3. If the two viewpoints disagree >10 cm the demo refuses — moving
-   bottle, bad depth, or a bumped camera bracket does that.
+3. The scan visits ALL glances and clusters every sighting in 3D: only
+   a location seen from TWO different viewpoints (within 10 cm) is
+   trusted. A second bottle-shaped object visible from one glance
+   merely loses the vote (field 2026-08-19: a decoy at y≈+0.6 used to
+   veto the whole scan); if two locations are BOTH confirmed from 2+
+   viewpoints the demo refuses and lists them — remove the extra, or
+   re-run with `--pick nearest`.
+4. If nothing is confirmed from two viewpoints the demo refuses with
+   the single-viewpoint sightings listed — moving bottle, bad depth, or
+   a bumped camera bracket does that.

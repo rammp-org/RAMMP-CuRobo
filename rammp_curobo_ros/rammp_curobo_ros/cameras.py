@@ -77,7 +77,22 @@ def load_camera_config(name_or_path):
     for c in candidates:
         if os.path.isfile(c):
             with open(c) as f:
-                return yaml.safe_load(f)
+                cfg = yaml.safe_load(f)
+            spec = cfg.get("sensor_params")
+            if spec is not None and (
+                not isinstance(spec, dict)
+                or not isinstance(spec.get("node"), str)
+                or not isinstance(spec.get("params"), dict)
+                or not spec["params"]
+            ):
+                # validate HERE, with the filename — a malformed block
+                # would otherwise KeyError inside the node's timer and
+                # kill the whole perceived world (audit 2026-08-19)
+                sys.exit(
+                    "sensor_params in %s must be "
+                    "{node: <str>, params: {<name>: <value>, ...}}" % c
+                )
+            return cfg
     sys.exit(
         "camera config %r not found (tried: %s). The Orbbec config is "
         "WRITTEN BY scripts/calibrate_camera_extrinsics.py — run the "
@@ -232,6 +247,7 @@ class _CameraInput:
         self.sp_done = not cfg.get("sensor_params")
         self.sp_future = None
         self.sp_client = None
+        self.sp_sent_at = 0.0
         node.create_subscription(
             CameraInfo,
             cfg["info_topic"],
@@ -380,17 +396,44 @@ class CamerasNode(Node):
         The blocking helper (ensure_sensor_params) can't run inside a
         spinning node, and 'driver starts after us' must work too — so
         this fires the SetParameters call when the driver's service shows
-        up and harvests the result on a later tick. Success is sticky; a
-        refusal or vanished driver retries until it lands.
+        up and harvests the result on a later tick. Success is sticky
+        only while the driver stays up: parameters live in the DRIVER
+        process, so when its set_parameters service drops off the
+        contract re-arms and a restarted driver (back on permissive
+        defaults) gets the preset re-pushed (audit 2026-08-19). A call
+        in flight times out after 5 s — a driver that died mid-call
+        never answers its future, and without the deadline enforcement
+        would wedge forever (audit 2026-08-19).
         """
         from rcl_interfaces.srv import SetParameters
 
-        if cam.sp_done:
+        spec = cam.cfg.get("sensor_params")
+        if not spec:
             return
-        spec = cam.cfg["sensor_params"]
-        key = "sp:%s" % spec["node"]
+        unreach_key = "sp-unreach:%s" % spec["node"]
+        refused_key = "sp-refused:%s" % spec["node"]
+        if cam.sp_done:
+            if cam.sp_client is not None and not cam.sp_client.service_is_ready():
+                cam.sp_done = False
+                self.get_logger().warn(
+                    "sensor_params: %s went away — will re-assert %s when "
+                    "it returns (a restarted driver reverts to defaults)"
+                    % (spec["node"], spec["params"])
+                )
+            return
         if cam.sp_future is not None:
             if not cam.sp_future.done():
+                if time.monotonic() - cam.sp_sent_at > 5.0:
+                    # a dead server never answers; a restarted one can't
+                    # answer the OLD request — drop future AND client
+                    cam.sp_future.cancel()
+                    cam.sp_future = None
+                    self.destroy_client(cam.sp_client)
+                    cam.sp_client = None
+                    self.get_logger().warn(
+                        "sensor_params: %s call timed out — retrying"
+                        % spec["node"]
+                    )
                 return
             res = cam.sp_future.result()
             cam.sp_future = None
@@ -398,12 +441,13 @@ class CamerasNode(Node):
                 r.successful for r in res.results
             ):
                 cam.sp_done = True
-                self._warned.discard(key)
+                self._warned.discard(unreach_key)
+                self._warned.discard(refused_key)
                 self.get_logger().info(
                     "sensor_params: %s <- %s" % (spec["node"], spec["params"])
                 )
-            elif key not in self._warned:
-                self._warned.add(key)
+            elif refused_key not in self._warned:
+                self._warned.add(refused_key)
                 self.get_logger().warn(
                     "sensor_params: %s refused %s — retrying"
                     % (spec["node"], spec["params"])
@@ -416,14 +460,15 @@ class CamerasNode(Node):
                 callback_group=self.cb_group,
             )
         if not cam.sp_client.service_is_ready():
-            if key not in self._warned:
-                self._warned.add(key)
+            if unreach_key not in self._warned:
+                self._warned.add(unreach_key)
                 self.get_logger().warn(
                     "sensor_params: %s not reachable yet — will keep trying "
                     "(depth quality contract unenforced until then)"
                     % spec["node"]
                 )
             return
+        cam.sp_sent_at = time.monotonic()
         cam.sp_future = cam.sp_client.call_async(_sensor_param_request(spec))
 
     def _camera_still(self, cam):

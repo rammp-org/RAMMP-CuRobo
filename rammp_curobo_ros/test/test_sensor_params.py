@@ -31,6 +31,22 @@ def test_request_builder_maps_python_types_to_parameter_types():
     assert by["s"].type == 4 and by["s"].string_value == "hi"
 
 
+def test_malformed_sensor_params_fails_fast_with_the_filename(tmp_path):
+    # audit 2026-08-19: a hand-edit typo ('param:' for 'params:') must
+    # die at config load with a clear message, not KeyError inside the
+    # node's timer and kill the perceived world
+    import pytest
+
+    bad = tmp_path / "cam.yaml"
+    bad.write_text(
+        "depth_topic: /x/depth/image\ninfo_topic: /x/depth/info\n"
+        "parent_frame: base_link\nsensor_params:\n  node: /x\n  param: {a: 1}\n"
+    )
+    with pytest.raises(SystemExit) as e:
+        load_camera_config(str(bad))
+    assert "sensor_params" in str(e.value) and "cam.yaml" in str(e.value)
+
+
 def test_ensure_is_noop_without_spec_and_soft_fails_unreachable():
     rclpy.init()
     try:

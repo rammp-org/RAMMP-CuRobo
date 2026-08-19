@@ -5,6 +5,8 @@ import numpy as np
 from rammp_curobo_ros.seek_demo import (
     COCO_CLASSES,
     box_to_center,
+    cluster_sightings,
+    decide,
     glance_pose,
     parse_target,
     standoff_pose,
@@ -93,6 +95,92 @@ def test_standoff_pose_reports_reduced_gap_and_refuses_too_close():
     # far object: outer clamp grows the gap, reported honestly
     _, _, far_gap = standoff_pose([1.0, 0.0, 0.2], standoff=0.18)
     assert np.isclose(far_gap, 0.28, atol=1e-9)
+
+
+EXT = (0.06, 0.20)
+
+
+def test_decide_confirms_across_viewpoints():
+    s = [
+        (0, [0.60, -0.15, 0.02], EXT, 0.9),
+        (1, [0.62, -0.13, 0.03], EXT, 0.8),
+    ]
+    status, ranked = decide(cluster_sightings(s))
+    assert status == "ok" and len(ranked) == 1
+    c = ranked[0]
+    assert c["glances"] == {0, 1} and c["n"] == 2
+    assert np.allclose(c["center"], [0.609, -0.141, 0.025], atol=0.005)
+
+
+def test_decide_decoy_from_one_viewpoint_loses_the_vote():
+    # field regression 2026-08-19: a second bottle-shaped object seen
+    # from ONE glance must not veto the target confirmed from two
+    s = [
+        (0, [0.60, -0.15, 0.02], EXT, 0.9),
+        (1, [0.35, 0.62, 0.04], EXT, 0.83),  # decoy, single viewpoint
+        (2, [0.61, -0.14, 0.02], EXT, 0.7),
+    ]
+    status, ranked = decide(cluster_sightings(s))
+    assert status == "ok" and len(ranked) == 1
+    assert np.linalg.norm(ranked[0]["center"] - [0.6, -0.15, 0.02]) < 0.05
+
+
+def test_decide_same_glance_repeats_do_not_confirm():
+    # two sightings from the SAME viewpoint share systematics — one
+    # distinct glance, never confirmed (audit 2026-08-18 rationale)
+    s = [
+        (0, [0.60, -0.15, 0.02], EXT, 0.9),
+        (0, [0.61, -0.14, 0.02], EXT, 0.8),
+    ]
+    status, ranked = decide(cluster_sightings(s))
+    assert status == "unconfirmed"
+    assert ranked[0]["glances"] == {0} and ranked[0]["n"] == 2
+    assert decide([]) == ("unseen", [])
+
+
+def test_decide_two_real_objects_ambiguous_unless_pick_nearest():
+    s = [
+        (0, [0.60, -0.15, 0.02], EXT, 0.9),
+        (0, [0.40, 0.30, 0.03], EXT, 0.9),
+        (1, [0.61, -0.14, 0.02], EXT, 0.8),
+        (1, [0.41, 0.31, 0.03], EXT, 0.8),
+    ]
+    status, ranked = decide(cluster_sightings(s))
+    assert status == "ambiguous" and len(ranked) == 2  # surfaced, not swallowed
+    status, ranked = decide(cluster_sightings(s), pick="nearest")
+    assert status == "ok"
+    # hypot(0.40, 0.30) = 0.50 < hypot(0.60, -0.15) — nearest first
+    assert np.isclose(ranked[0]["center"][0], 0.405, atol=0.01)
+
+
+def test_cluster_sightings_never_chains_beyond_the_radius():
+    # audit 2026-08-19: complete linkage — the drifting weighted center
+    # must not bridge sightings whose PAIRWISE spread exceeds 10 cm
+    s = [
+        (0, [0.60, 0.0, 0.0], EXT, 0.5),
+        (1, [0.69, 0.0, 0.0], EXT, 0.95),
+        (2, [0.755, 0.0, 0.0], EXT, 0.9),  # 15.5 cm from the first
+    ]
+    clusters = cluster_sightings(s)
+    assert len(clusters) == 2
+    for c in clusters:
+        m = np.array(c["members"])
+        assert np.linalg.norm(m[:, None] - m[None, :], axis=2).max() <= 0.10
+
+
+def test_cluster_sightings_between_two_objects_joins_the_nearest():
+    # audit 2026-08-19: a sighting eligible for two clusters must join
+    # the NEAREST, not the first-created (which stole confirmations)
+    s = [
+        (0, [0.5, 0.00, 0.0], EXT, 0.9),
+        (0, [0.5, 0.15, 0.0], EXT, 0.9),
+        (1, [0.5, 0.08, 0.0], EXT, 0.8),  # 8 cm from A, 7 cm from B
+    ]
+    confirmed = [c for c in cluster_sightings(s) if len(c["glances"]) >= 2]
+    assert len(confirmed) == 1
+    assert np.isclose(
+        confirmed[0]["center"][1], (0.15 * 0.9 + 0.08 * 0.8) / 1.7, atol=1e-6
+    )
 
 
 def test_glance_pose_points_camera_down_at_the_bench():
