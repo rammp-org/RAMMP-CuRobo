@@ -8,9 +8,11 @@ from rammp_curobo_ros.seek_demo import (
     cluster_sightings,
     decide,
     glance_pose,
+    joint_travel,
     parse_target,
     reconfirmed,
     standoff_pose,
+    track_update,
 )
 
 
@@ -194,6 +196,34 @@ def test_reconfirmed_needs_a_second_frame_within_tolerance():
     assert not reconfirmed(first, far)
     assert not reconfirmed(first, [])  # no re-detection -> no shortcut
     assert reconfirmed(first, far + near)  # any agreeing sighting counts
+
+
+def test_track_update_follows_the_nearest_and_ignores_noise_and_decoys():
+    cur = [0.60, -0.15, 0.02]
+    moved = [(0, [0.60, 0.05, 0.02], EXT, 0.8)]  # 20 cm hop
+    assert np.allclose(track_update(cur, moved), [0.60, 0.05, 0.02])
+    noise = [(0, [0.61, -0.14, 0.02], EXT, 0.8)]  # <5 cm -> no replan
+    assert track_update(cur, noise) is None
+    decoy = [(0, [0.20, 0.60, 0.02], EXT, 0.9)]  # >35 cm leash -> ignored
+    assert track_update(cur, decoy) is None
+    both = decoy + moved  # decoy plus the real move: nearest wins
+    assert np.allclose(track_update(cur, both), [0.60, 0.05, 0.02])
+    assert track_update(cur, []) is None
+
+
+def test_joint_travel_exposes_winding_a_net_check_would_miss():
+    from builtin_interfaces.msg import Duration
+    from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+
+    traj = JointTrajectory()
+    traj.joint_names = ["joint_1", "joint_7"]
+    # joint_7 winds out pi and back (net 0, travel 2*pi); joint_1 moves 0.3
+    for j1, j7 in [(0.0, 0.0), (0.1, 1.6), (0.2, 3.14), (0.3, 1.6), (0.3, 0.0)]:
+        p = JointTrajectoryPoint(positions=[j1, j7], time_from_start=Duration())
+        traj.points.append(p)
+    t = joint_travel(traj)
+    assert np.isclose(t["joint_1"], 0.3, atol=1e-6)
+    assert t["joint_7"] > 6.0  # the flip a net end-start check would call 0
 
 
 def test_glance_pose_points_camera_down_at_the_bench():

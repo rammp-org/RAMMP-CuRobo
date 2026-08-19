@@ -284,3 +284,16 @@ unaffected — it keeps using the depth-frame topic).
 4. If nothing is confirmed from two viewpoints the demo refuses with
    the single-viewpoint sightings listed — moving bottle, bad depth, or
    a bumped camera bracket does that.
+5. The approach plan prints its largest joint travel and WARNS above
+   3.5 rad — that's a joint-family flip (the arm winds through a big
+   sweeping reconfiguration to reach the same tool pose). Don't type
+   `go` on a warned plan unless you want to watch it; re-running
+   usually draws a sane one.
+6. `--follow`: after arrival, typed `follow` keeps tracking — the wrist
+   camera re-detects the target and the arm replans whenever it moves
+   (5 cm dead-band, 35 cm max step, two agreeing frames required,
+   winding replans skipped). Reaction is ~1-2 s per hop (replan loop,
+   NOT servoing) — move the object slowly and stay on the e-stop; the
+   arm moves without further per-segment confirmation until Ctrl+C.
+   The old position's mapped box fades once the camera sees through
+   it; it may linger while out of view (by design).

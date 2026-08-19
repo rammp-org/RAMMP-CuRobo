@@ -15,8 +15,12 @@ two confirmed locations refuse with a listing unless --pick nearest;
 --sure-conf 1.1 disables the confident shortcut and always requires
 two viewpoints) -> ignore region set around the target (purges its
 mapped voxels; the thing you approach must not be dodged) -> standoff
-pose planned through the perceived world -> plan shown -> typed 'go' ->
-execute at <=0.25 speed.
+pose planned through the perceived world -> plan shown (with the
+largest joint travel — a wind-up warning precedes any joint-family
+flip) -> typed 'go' -> execute at <=0.25 speed. With --follow, typed
+'follow' then keeps tracking: the wrist camera re-detects the target
+and the arm replans to it whenever it moves (~1-2 s reaction — a
+replan loop, not millisecond servoing), until Ctrl+C.
 
 Needs: planner (execute:=true), cameras node, arm bringup, and the D405
 driver WITH ALIGNED DEPTH:
@@ -386,6 +390,36 @@ def reconfirmed(first_center, second_sightings, tol=0.05):
     )
 
 
+def track_update(current, sightings, max_jump=0.35, min_move=0.05):
+    """Next believed target position while following, or None.
+
+    Picks the sighting NEAREST the current belief — a decoy elsewhere in
+    the frame must not yank the arm (35 cm leash; a real object can't
+    teleport between ~1 s replans) — and reports it only when it moved
+    at least min_move, so localization noise doesn't trigger replans."""
+    best = None
+    for _, c, _, _ in sightings:
+        c = np.asarray(c, dtype=float)
+        d = float(np.linalg.norm(c - np.asarray(current, dtype=float)))
+        if d <= max_jump and (best is None or d < best[1]):
+            best = (c, d)
+    if best is None or best[1] < min_move:
+        return None
+    return best[0]
+
+
+def joint_travel(traj):
+    """Per-joint TOTAL travel (rad) over a trajectory.
+
+    Net displacement hides winding: a joint-family flip travels ~2*pi on
+    a wrist joint while ending near where it started (field 2026-08-19:
+    the approach did a '360 flip' the operator never saw coming). The
+    caller prints/warns on the worst joint before motion is offered."""
+    pts = np.array([list(p.positions) for p in traj.points])
+    travel = np.abs(np.diff(pts, axis=0)).sum(axis=0)
+    return dict(zip(traj.joint_names, travel.tolist()))
+
+
 def decide(clusters, pick="refuse"):
     """The scan's verdict from cluster_sightings output.
 
@@ -433,6 +467,13 @@ def main():
         help="confidence at which ONE re-confirmed sighting skips the "
         "rest of the scan and goes straight to the approach (default "
         "0.80; set above 1.0 to always require two viewpoints)",
+    )
+    ap.add_argument(
+        "--follow",
+        action="store_true",
+        help="after arriving, keep tracking: re-detect the target and "
+        "replan to it whenever it moves (>=5 cm, <=35 cm per step; "
+        "~1-2 s reaction). Typed 'follow' arms it; Ctrl+C stops.",
     )
     args = ap.parse_args()
     scale = min(max(args.speed, 0.1), 0.25)
@@ -595,7 +636,8 @@ def main():
                     "skipping the rest" % (i + 1)
                 )
                 break
-    del model  # free the GPU for cuRobo
+    if not args.follow:
+        del model  # free the GPU for cuRobo (follow mode keeps detecting)
     if fixed is not None:
         chosen = fixed
     else:
@@ -648,7 +690,7 @@ def main():
     obj = chosen["center"]
     extent = chosen["extent"]
     print(
-        "%s fixed at [%.2f, %.2f, %.2f] — %d sighting(s) from %d viewpoints"
+        "%s fixed at [%.2f, %.2f, %.2f] — %d sighting(s) from %d viewpoint(s)"
         % (target, obj[0], obj[1], obj[2], chosen["n"], len(chosen["glances"]))
     )
     dims = [float(max(extent[0], 0.05)) + 0.04] * 2 + [
@@ -666,17 +708,22 @@ def main():
 
     from geometry_msgs.msg import Point, Vector3
 
+    def set_region(center):
+        if not ignore_cli.service_is_ready():
+            return False, "cameras node not up"
+        req = SetIgnoreRegion.Request()
+        req.center = Point(x=float(center[0]), y=float(center[1]), z=float(center[2]))
+        req.dims = Vector3(x=dims[0], y=dims[1], z=dims[2])
+        fut = ignore_cli.call_async(req)
+        rclpy.spin_until_future_complete(node, fut, timeout_sec=5.0)
+        res = fut.result()
+        return bool(res and res.success), (res.message if res else "NO RESPONSE")
+
     region_set = False
     try:
         if ignore_cli.wait_for_service(timeout_sec=3.0):
-            req = SetIgnoreRegion.Request()
-            req.center = Point(x=float(obj[0]), y=float(obj[1]), z=float(obj[2]))
-            req.dims = Vector3(x=dims[0], y=dims[1], z=dims[2])
-            fut = ignore_cli.call_async(req)
-            rclpy.spin_until_future_complete(node, fut, timeout_sec=5.0)
-            res = fut.result()
-            region_set = bool(res and res.success)
-            print("ignore region:", res.message if res else "NO RESPONSE")
+            region_set, msg = set_region(obj)
+            print("ignore region:", msg)
             # the purge reaches the PLANNER via the cameras node's next
             # 2 Hz tick + async world push — planning immediately would
             # race the stale world (audit 2026-08-18)
@@ -687,19 +734,89 @@ def main():
         plan = demo.plan_pose_from(pos, quat, None)
         if plan is None or not plan.success:
             sys.exit("cannot plan the approach — see planner log")
+        travel = joint_travel(plan.trajectory)
+        worst_j = max(travel, key=travel.get)
+        wind = ""
+        if travel[worst_j] > 3.5:
+            wind = (
+                "\n*** WARNING: this plan WINDS %s through %.1f rad (joint-"
+                "family flip) — the arm will make a large sweeping "
+                "reconfiguration. Ctrl+C mid-motion stops it; consider "
+                "re-running instead of typing go. ***"
+                % (worst_j, travel[worst_j])
+            )
         print(
             "\n%s at [%.2f, %.2f, %.2f]; approach leaves a %.2f m gap "
-            "(%.1f s at speed %.2f)"
-            % (target, obj[0], obj[1], obj[2], gap, traj_time(plan, scale), scale)
+            "(%.1f s at speed %.2f; largest joint travel %s %.1f rad)%s"
+            % (target, obj[0], obj[1], obj[2], gap, traj_time(plan, scale),
+               scale, worst_j, travel[worst_j], wind)
         )
         if input("type 'go' to approach: ").strip() != "go":
             sys.exit("aborted — arm holds at the last glance")
         if not demo.run(plan.trajectory, scale):
             sys.exit("approach failed — arm holds; see planner log")
         print(
-            "\nARRIVED — %.2f m from the %s, facing it. Take it from here."
+            "\nARRIVED — %.2f m from the %s, facing it."
             % (gap, target)
         )
+        if args.follow:
+            print(
+                "\n*** FOLLOW: after you type 'follow', the arm re-detects "
+                "the %s and moves to track it WITHOUT further confirmation "
+                "(replan loop, ~1-2 s reaction — move it SLOWLY). Ctrl+C "
+                "stops and holds. ***" % target
+            )
+            if input("type 'follow' to track: ").strip() == "follow":
+                obj = np.asarray(obj, dtype=float)
+
+                def localized(shot):
+                    frame, depth, intr, rot, trans = shot
+                    out = []
+                    for xyxy, cf, mask in detect_all(model, frame, target, args.conf):
+                        loc = box_to_center(xyxy, depth, mask=mask, **intr)
+                        if loc is not None:
+                            out.append((0, rot @ loc[0] + trans, loc[1], cf))
+                    return out
+
+                try:
+                    while True:
+                        shot = grab.shot(timeout_s=2.0)
+                        if shot is None:
+                            continue
+                        cand = track_update(obj, localized(shot))
+                        if cand is None:
+                            continue
+                        shot = grab.shot(timeout_s=2.0)
+                        if shot is None or not reconfirmed(cand, localized(shot)):
+                            continue  # one frame never moves the arm
+                        so = standoff_pose(cand, standoff=args.standoff)
+                        if so is None:
+                            print("  moved too close to the base — holding")
+                            continue
+                        npos, nquat, ngap = so
+                        ok, _ = set_region(cand)
+                        region_set = region_set or ok
+                        time.sleep(1.0)  # purge propagation (2 Hz world)
+                        plan = demo.plan_pose_from(npos, nquat, None)
+                        if plan is None or not plan.success:
+                            print("  replan failed — holding; see planner log")
+                            continue
+                        if max(joint_travel(plan.trajectory).values()) > 3.5:
+                            print("  replan winds the arm — skipped; move the "
+                                  "%s back a little" % target)
+                            continue
+                        print(
+                            "  -> [%.2f, %.2f, %.2f] (gap %.2f m)"
+                            % (cand[0], cand[1], cand[2], ngap)
+                        )
+                        if not demo.run(plan.trajectory, scale):
+                            print("  segment refused — holding; see planner log")
+                            continue
+                        obj = cand
+                except KeyboardInterrupt:
+                    print("\nfollow stopped — arm holds")
+        else:
+            print("Take it from here.")
     finally:
         # never leave a permanent blind spot in the perceived world
         # (audit 2026-08-18): zero dims clears the region on EVERY exit
