@@ -23,8 +23,8 @@ docs/HARDWARE_BRINGUP.md  the real-arm runbook — READ BEFORE TOUCHING HARDWARE
 > **Hardware safety, non-negotiable:** a human holds the physical e-stop
 > during ALL hardware runs. Execution is opt-in at three separate layers
 > (node `execute:=true`, example/demo `--execute`, typed confirmation —
-> except `seek_demo`, which by owner decision replaces the typed gate
-> with a visible pre-motion countdown), defaults to 25% speed
+> except `seek_demo`, which by owner decision starts moving immediately
+> on launch with no demo-layer gate), defaults to 25% speed
 > (`tour_demo` alone runs full-speed, behind its own all-caps warning
 > and typed 'go'), and every plan is re-validated against limits and
 > the arm's live state before anything reaches the controller.
@@ -169,14 +169,16 @@ sightings are clustered in 3D and a location confirmed from two
 different viewpoints wins (a look-alike seen once loses the vote; two
 confirmed locations refuse with a listing unless `--pick nearest`;
 `--sure-conf 1.1` = always require two viewpoints). Seek runs
-AUTONOMOUSLY once launched (owner's decision 2026-08-19): a visible
-countdown before first motion replaces the typed gates — Ctrl+C
-aborts — then scan, approach, and tracking by default: the arm keeps
+AUTONOMOUSLY and IMMEDIATELY once launched (owner's decision
+2026-08-19; no typed gates or countdowns — Ctrl+C stops and holds at
+any time): scan, approach, and tracking by default — the arm keeps
 re-detecting the target and replans whenever it moves, preempting
 mid-motion, ~1-2 s reaction, until Ctrl+C (`--once` = stop after
-arrival). ≤0.25 speed throughout. The approach pose aims the gripper
-(and camera) down at the object; a winding (joint-family-flip)
-approach plan is retried and otherwise REFUSED, never run unattended. The D405 driver needs
+arrival; a lifted target is never chased — put it down to resume).
+≤0.25 speed throughout. The approach aims the gripper (and camera)
+down at the object and relaxes to a higher/farther pose when the low
+one can't be planned; a winding (joint-family-flip) plan is retried
+and otherwise REFUSED, never run unattended. The D405 driver needs
 `align_depth.enable:=true` for this demo.
 
 ## Perceived world (cameras)

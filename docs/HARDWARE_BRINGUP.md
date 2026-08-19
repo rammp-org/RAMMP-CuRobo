@@ -257,13 +257,14 @@ unaffected — it keeps using the depth-frame topic).
    than ~0.38 m the demo refuses the approach as unsafe).
    `ros2 run rammp_curobo_ros seek_demo --text "go to the bottle"
    --execute` → camera/TF preflight (fails fast if align_depth is
-   missing, before anything moves) → **the demo then runs autonomously**
-   (owner decision 2026-08-19: no typed gates; a visible 3 s countdown
-   precedes the scan and a 2 s one precedes the approach — Ctrl+C
-   aborts either) → glances (skip-on-unplannable), sightings printed
-   with base_link positions (sanity: tape measure), the approach plan
-   printed **with the actual gap it will leave** (0.08-0.18 m depending
-   on distance) → approach at ≤0.25, e-stop in hand.
+   missing, before anything moves) → **the demo then runs autonomously
+   and immediately** (owner decision 2026-08-19: no typed gates, no
+   countdowns; Ctrl+C stops and holds at any point) → glances
+   (skip-on-unplannable), sightings printed with base_link positions
+   (sanity: tape measure), the approach plan printed **with the actual
+   gap it will leave** (0.08-0.18 m depending on distance; if the low
+   pitched pose can't be planned it relaxes to a higher/farther one
+   automatically) → approach at ≤0.25, e-stop in hand.
 2. Second run: add clutter (a box) between home and the bottle, let §6's
    world map it (markers), re-run — the approach must bow around the
    box's cuboid while still reaching the bottle (whose voxels the ignore
@@ -295,8 +296,13 @@ unaffected — it keeps using the depth-frame topic).
    pose) keeps re-detecting it, and the arm replans whenever it moves,
    preempting mid-motion via the executor's verified stop+hold (5 cm
    dead-band, 35 cm max step, two agreeing frames required, winding
-   replans skipped). Reaction is ~1-2 s per hop (replan loop, NOT
-   servoing) — move the object slowly and stay on the e-stop; Ctrl+C
-   stops and holds. `--once` restores stop-after-arrival. The old
+   replans skipped, failed segments announced and retried). Reaction is
+   ~1-2 s per hop (replan loop, NOT servoing) — move the object slowly
+   and stay on the e-stop; Ctrl+C stops and holds. **Don't pick the
+   target up while tracking**: a target lifted >15 cm above its arrival
+   height is deliberately NOT chased (the arm holds until it's back on
+   the bench) — the ignore region follows the target, so chasing a
+   hand-held object would exclude the hand's nearest voxels from
+   collision checking. `--once` restores stop-after-arrival. The old
    position's mapped box fades once the camera sees through it; it may
    linger while out of view (by design).

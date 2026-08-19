@@ -236,6 +236,26 @@ def test_joint_travel_exposes_winding_a_net_check_would_miss():
     assert t["joint_7"] > 6.0  # the flip a net end-start check would call 0
 
 
+def test_standoff_pose_z_min_ladder_raises_the_pose():
+    # the approach relax ladder passes growing z_min when the low pose
+    # IK_FAILs against unpurged perceived boxes (field 2026-08-19)
+    obj = [0.62, -0.17, 0.01]
+    low = standoff_pose(obj, standoff=0.18, z_min=0.12)
+    high = standoff_pose(obj, standoff=0.18, z_min=0.30)
+    assert np.isclose(low[0][2], 0.12) and np.isclose(high[0][2], 0.30)
+    assert np.isclose(low[2], high[2])  # gap unchanged by the z relax
+
+
+def test_purged_count_parses_the_cameras_reply():
+    from rammp_curobo_ros.seek_demo import _purged_count
+
+    assert _purged_count("ignoring 0.13 x 0.13 x 0.20 m at (0.62, -0.17, "
+                         "0.01); 0 mapped voxels purged") == 0
+    assert _purged_count("...; 17 mapped voxels purged") == 17
+    assert _purged_count("cameras node not up") is None
+    assert _purged_count(None) is None
+
+
 def test_glance_pose_points_camera_down_at_the_bench():
     pos, quat = glance_pose(0.0, np.radians(55))
     assert np.isclose(pos[2], 0.42)

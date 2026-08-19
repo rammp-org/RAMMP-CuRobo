@@ -4,11 +4,11 @@
     ros2 run rammp_curobo_ros seek_demo --text "go to the bottle"            # dry logic
     ros2 run rammp_curobo_ros seek_demo --text "go to the bottle" --execute  # the real thing
 
-Flow (attended, autonomous after launch — the typed 'seek'/'go' gates
-were removed at the owner's request 2026-08-19; a visible countdown
-before first motion is the remaining demo-layer gate, while the node's
-execute param, --execute, and every executor gate are unchanged):
-countdown -> auto-generated glance poses; every YOLO instance (wrist
+Flow (attended, autonomous IMMEDIATELY on launch — typed gates and
+countdowns removed at the owner's request 2026-08-19; the demo-layer
+gate is gone, while the node's execute param, --execute, the executor
+gates, and the human on the e-stop are unchanged):
+auto-generated glance poses; every YOLO instance (wrist
 D405) in each glance's frame is 3-D-localized via aligned depth + TF.
 The scan ends at the FIRST of: a confident sighting (conf >=
 --sure-conf, default 0.80, re-confirmed by a second same-pose frame
@@ -140,7 +140,7 @@ def box_to_center(xyxy, depth, fx, fy, cx, cy, shrink=0.3, mask=None):
     return center, extent
 
 
-def standoff_pose(obj_xyz, standoff=0.18, min_radius=0.30, min_gap=0.08):
+def standoff_pose(obj_xyz, standoff=0.18, min_radius=0.30, min_gap=0.08, z_min=0.12):
     """Approach pose on the base side of the object, AIMED AT it.
 
     Returns (pos, quat, gap) with the ACTUAL tool-to-object horizontal
@@ -165,7 +165,7 @@ def standoff_pose(obj_xyz, standoff=0.18, min_radius=0.30, min_gap=0.08):
         return None
     r = min(r, 0.72)
     gap = r_obj - r
-    z = min(max(oz + 0.05, 0.12), 0.55)
+    z = min(max(oz + 0.05, z_min), 0.55)
     pitch = math.atan2(z - oz, gap)
     pos = [r * math.cos(bearing), r * math.sin(bearing), z]
     quat = list(
@@ -243,8 +243,13 @@ class _D405Grabber:
         k = np.array(msg.k).reshape(3, 3)
         self.info = dict(fx=k[0, 0], fy=k[1, 1], cx=k[0, 2], cy=k[1, 2])
 
-    def shot(self, timeout_s=5.0):
-        """(color_rgb, depth_m, intr, R, t) or None. Fresh frames only."""
+    def shot(self, timeout_s=5.0, strict=False):
+        """(color_rgb, depth_m, intr, R, t) or None. Fresh frames only.
+
+        strict=True allows ONLY stamped TF — the tracking loop shoots
+        while a goal EXECUTES, and pairing a mid-motion frame with
+        'latest' TF is the field-verified time-skew class (audit
+        2026-08-19); better to drop the frame than smear the world."""
         from rammp_curobo.perception import quat_to_mat
 
         self.color = self.depth = None
@@ -258,13 +263,16 @@ class _D405Grabber:
                 "aligned depth %s vs color %s — launch the driver with "
                 "align_depth.enable:=true" % (self.depth.shape, self.color.shape[:2])
             )
-        # TF at the frame's stamp when the buffer can serve it (the arm is
-        # settled during shots, so latest is a safe fallback). Note: the
+        # TF at the frame's stamp when the buffer can serve it (a SETTLED
+        # arm makes latest a safe fallback — but see strict). Note: the
         # mount YAML describes the DEPTH optical frame; aligned depth
         # lives in the COLOR frame ~4 mm away — inside the ±3 cm budget,
         # deliberately uncorrected.
         tr = None
-        for when in (rclpy.time.Time.from_msg(self.color_stamp), rclpy.time.Time()):
+        whens = [rclpy.time.Time.from_msg(self.color_stamp)]
+        if not strict:
+            whens.append(rclpy.time.Time())
+        for when in whens:
             try:
                 tr = self.tf_buffer.lookup_transform("base_link", self.parent, when)
                 break
@@ -434,20 +442,15 @@ def joint_travel(traj):
     return dict(zip(traj.joint_names, travel.tolist()))
 
 
-def countdown(action, seconds):
-    """Visible last-chance window before autonomous motion.
+def _purged_count(msg):
+    """Voxels the ignore-region purge removed, parsed from its reply.
 
-    The typed 'seek'/'go' gates were removed at the owner's request
-    (2026-08-19: 'I want the arm to do it autonomously when I run the
-    code') — this countdown is what remains of the demo-layer gate.
-    The node's execute param, the --execute flag, and every executor
-    gate are unchanged."""
-    try:
-        for s in range(seconds, 0, -1):
-            print("%s in %d... (Ctrl+C aborts)" % (action, s), flush=True)
-            time.sleep(1.0)
-    except KeyboardInterrupt:
-        sys.exit("\naborted — arm holds")
+    When the purge touched NOTHING there is no world change to wait
+    for — skipping the 2 Hz-propagation settle saves 1.5 s per hop
+    (owner request 2026-08-19: 'as fast and efficient as possible').
+    Unparseable replies return None, which callers treat as 'wait'."""
+    m = re.search(r"(\d+) mapped voxels purged", msg or "")
+    return int(m.group(1)) if m else None
 
 
 def decide(clusters, pick="refuse"):
@@ -527,8 +530,14 @@ def main():
 
     if not args.execute:
         print(
-            "dry-run: would scan %d glances for %r, then approach to "
-            "%.2f m standoff. Add --execute." % (len(GLANCES), target, args.standoff)
+            "dry-run: would scan up to %d glances for %r, approach to "
+            "%.2f m standoff%s. Add --execute."
+            % (
+                len(GLANCES),
+                target,
+                args.standoff,
+                "" if args.once else ", then TRACK it until Ctrl+C",
+            )
         )
         return
     # preflight BEFORE any motion: all camera streams + TF must be alive,
@@ -553,14 +562,14 @@ def main():
 
     print(
         "\n*** SEEK: the arm will SCAN (up to %d glance poses), APPROACH "
-        "the %s%s — autonomously. Workspace clear, hand on e-stop. ***"
+        "the %s%s — autonomously, starting NOW. Workspace clear, hand on "
+        "e-stop; Ctrl+C stops and holds. ***"
         % (
             len(GLANCES),
             target,
             "" if args.once else ", then TRACK it until Ctrl+C",
         )
     )
-    countdown("scanning", 3)
 
     model = load_detector(args.weights)
     sightings = []  # (glance_idx, center_base, extent, conf) — ONE frame
@@ -586,7 +595,7 @@ def main():
         if not demo.run(plan.trajectory, scale):
             sys.exit("glance motion failed — arm holds; see planner log")
         visited += 1
-        time.sleep(1.0)  # settle; frames while moving are useless anyway
+        time.sleep(0.6)  # settle; frames while moving are useless anyway
         seen_but_lost = 0
         glance_got = []
         for _ in range(4):
@@ -671,7 +680,14 @@ def main():
                 )
                 break
     if args.once:
-        del model  # free the GPU for cuRobo (tracking keeps detecting)
+        # tracking (the default) keeps YOLO resident next to cuRobo on
+        # this shared-memory Jetson; --once hands the memory back — note
+        # cuRobo lives in the PLANNER process, so empty_cache() (not just
+        # del) is what actually returns it to the system (audit 2026-08-19)
+        del model
+        import torch
+
+        torch.cuda.empty_cache()
     if fixed is not None:
         chosen = fixed
     else:
@@ -758,16 +774,38 @@ def main():
         if ignore_cli.wait_for_service(timeout_sec=3.0):
             region_set, msg = set_region(obj)
             print("ignore region:", msg)
-            # the purge reaches the PLANNER via the cameras node's next
-            # 2 Hz tick + async world push — planning immediately would
-            # race the stale world (audit 2026-08-18)
-            time.sleep(1.5)
+            if _purged_count(msg) != 0:
+                # the purge reaches the PLANNER via the cameras node's
+                # next 2 Hz tick + async world push — planning immediately
+                # would race the stale world (audit 2026-08-18). Skipped
+                # when nothing was purged: no world change to wait for.
+                time.sleep(1.5)
         else:
             print("cameras node not up — no ignore region (approach may be refused)")
 
-        plan = demo.plan_pose_from(pos, quat, None)
-        if plan is None or not plan.success:
-            sys.exit("cannot plan the approach — see planner log")
+        # pose-relax ladder (field 2026-08-19: the aggressive low pitched
+        # pose IK_FAILed against perceived boxes the purge didn't cover —
+        # degrade to a higher/farther pose instead of dying)
+        plan = None
+        for attempt_standoff, attempt_z in (
+            (args.standoff, 0.12),
+            (args.standoff, 0.22),
+            (args.standoff + 0.08, 0.30),
+        ):
+            so = standoff_pose(obj, standoff=attempt_standoff, z_min=attempt_z)
+            if so is None:
+                continue
+            pos, quat, gap = so
+            plan = demo.plan_pose_from(pos, quat, None)
+            if plan is not None and plan.success:
+                break
+            print(
+                "no plan at gap %.2f m / z %.2f — relaxing the approach pose"
+                % (gap, pos[2])
+            )
+            plan = None
+        if plan is None:
+            sys.exit("cannot plan the approach at any pose — see planner log")
         # nobody is at a 'go' prompt to veto a joint-family flip anymore:
         # retry the plan a couple of times, and REFUSE rather than launch
         # a surprise 360 autonomously
@@ -791,7 +829,6 @@ def main():
             % (target, obj[0], obj[1], obj[2], gap, traj_time(plan, scale),
                scale, worst_j, travel[worst_j])
         )
-        countdown("approaching", 2)
         if not demo.run(plan.trajectory, scale):
             sys.exit("approach failed — arm holds; see planner log")
         print("\nARRIVED — %.2f m from the %s, facing it." % (gap, target))
@@ -804,8 +841,10 @@ def main():
                 "holds." % target
             )
             obj = np.asarray(obj, dtype=float)
+            arrival_z = float(obj[2])
             handle = None
             result_fut = None
+            pending_retry = False  # last segment failed -> re-reach obj
 
             def localized(shot):
                 frame, depth, intr, rot, trans = shot
@@ -816,18 +855,61 @@ def main():
                         out.append((0, rot @ loc[0] + trans, loc[1], cf))
                 return out
 
+            def stop_active_goal():
+                # the cancel ACK means only 'request received' — the goal
+                # RESULT future is what completes after the executor's
+                # verified stop+hold (audit 2026-08-19: syncing on the ACK
+                # planned from a still-decelerating arm and could declare
+                # 'holding' while the old goal kept driving)
+                nonlocal handle, result_fut
+                if handle is None:
+                    return True
+                spin_until_done(node, handle.cancel_goal_async(), 3.0)
+                if spin_until_done(node, result_fut, 8.0) is None:
+                    print("  cancel unconfirmed — goal may still run; holding")
+                    return False
+                handle = None
+                result_fut = None
+                time.sleep(0.3)  # settle before a live-start plan
+                return True
+
             try:
                 while True:
                     if result_fut is not None and result_fut.done():
+                        wrapped = result_fut.result()
                         handle = None
                         result_fut = None
-                    shot = grab.shot(timeout_s=2.0)
+                        if not (wrapped and wrapped.result.success):
+                            # gate refusals and aborts arrive HERE (the
+                            # action server accepts every goal; audit
+                            # 2026-08-19: they were swallowed and one
+                            # abort stalled tracking until the object
+                            # moved again)
+                            print(
+                                "  segment FAILED (%s) — will replan"
+                                % (wrapped.result.message if wrapped else "no result")
+                            )
+                            pending_retry = True
+                    moving = result_fut is not None
+                    shot = grab.shot(timeout_s=2.0, strict=moving)
                     if shot is None:
                         continue
-                    cand = track_update(obj, localized(shot))
+                    sights = localized(shot)
+                    cand = track_update(obj, sights)
+                    if cand is None and pending_retry:
+                        # arm never reached obj — re-target it even though
+                        # the object hasn't moved again
+                        cand = track_update(obj, sights, min_move=0.0)
                     if cand is None:
                         continue
-                    shot = grab.shot(timeout_s=2.0)
+                    if cand[2] > arrival_z + 0.15:
+                        print(
+                            "  %s lifted off the bench — holding, not "
+                            "chasing a hand (put it down to resume; "
+                            "Ctrl+C to stop)" % target
+                        )
+                        continue
+                    shot = grab.shot(timeout_s=2.0, strict=moving)
                     if shot is None or not reconfirmed(cand, localized(shot)):
                         continue  # one frame never moves the arm
                     so = standoff_pose(cand, standoff=args.standoff)
@@ -835,18 +917,16 @@ def main():
                         print("  moved too close to the base — holding")
                         continue
                     npos, nquat, ngap = so
-                    if handle is not None:
-                        # preempt: verified stop+hold, settle, replan live
-                        spin_until_done(node, handle.cancel_goal_async(), 3.0)
-                        handle = None
-                        result_fut = None
-                        time.sleep(0.4)  # decelerate before live-start plan
-                    ok, _ = set_region(cand)
+                    if not stop_active_goal():
+                        continue
+                    ok, msg = set_region(cand)
                     region_set = region_set or ok
-                    time.sleep(0.8)  # purge propagation (2 Hz world tick)
+                    if _purged_count(msg) != 0:
+                        time.sleep(1.5)  # purge propagation (2 Hz world push)
                     plan = demo.plan_pose_from(npos, nquat, None)
                     if plan is None or not plan.success:
                         print("  replan failed — holding; see planner log")
+                        pending_retry = True
                         continue
                     if max(joint_travel(plan.trajectory).values()) > 3.5:
                         print(
@@ -856,18 +936,31 @@ def main():
                         continue
                     handle = demo.run_async(plan.trajectory, scale)
                     if handle is None:
-                        print("  execution refused — holding; see planner log")
+                        print("  goal not accepted — is the planner up?")
+                        pending_retry = True
                         continue
                     result_fut = handle.get_result_async()
+                    pending_retry = False
                     print(
                         "  -> [%.2f, %.2f, %.2f] (gap %.2f m)"
                         % (cand[0], cand[1], cand[2], ngap)
                     )
                     obj = cand
-            except KeyboardInterrupt:
-                if handle is not None:
-                    spin_until_done(node, handle.cancel_goal_async(), 3.0)
-                print("\ntracking stopped — arm holds")
+            except BaseException as exc:
+                # ANY exit — Ctrl+C, a CUDA error in YOLO, SystemExit from
+                # shot() — must not leave a goal driving the arm while we
+                # print 'holds' (audit 2026-08-19)
+                try:
+                    if handle is not None:
+                        spin_until_done(node, handle.cancel_goal_async(), 3.0)
+                        if result_fut is not None:
+                            spin_until_done(node, result_fut, 8.0)
+                except BaseException:
+                    pass
+                if isinstance(exc, KeyboardInterrupt):
+                    print("\ntracking stopped — arm holds")
+                else:
+                    raise
     finally:
         # never leave a permanent blind spot in the perceived world
         # (audit 2026-08-18): zero dims clears the region on EVERY exit
