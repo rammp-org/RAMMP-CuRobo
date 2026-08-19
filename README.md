@@ -23,8 +23,8 @@ docs/HARDWARE_BRINGUP.md  the real-arm runbook — READ BEFORE TOUCHING HARDWARE
 > **Hardware safety, non-negotiable:** a human holds the physical e-stop
 > during ALL hardware runs. Execution is opt-in at three separate layers
 > (node `execute:=true`, example/demo `--execute`, typed confirmation —
-> except `seek_demo`, which by owner decision starts moving immediately
-> on launch with no demo-layer gate), defaults to 25% speed
+> except the `seeker`, which by owner decision moves autonomously once
+> given a target), defaults to 25% speed
 > (`tour_demo` alone runs full-speed, behind its own all-caps warning
 > and typed 'go'), and every plan is re-validated against limits and
 > the arm's live state before anything reaches the controller.
@@ -154,49 +154,22 @@ and gates as the tour: safe-box waypoints, chained pre-planning, ONE
 merged trajectory per round, Ctrl+C = hold. First run:
 `--rounds 1 --moves 4 --speed 0.25`, workspace clear, hand on the e-stop.
 
-## Seeker (continuous "go to the bottle" — the deployed form)
+## Seeker ("go to the bottle")
 
-`ros2 run rammp_curobo_ros seeker` is a perceive-decide-act CONTROLLER,
-not a scripted sequence: one loop runs forever, and searching,
-approaching, and tracking are just what it does depending on its
-current target belief. No target → idle. Target set (param
-`target:="go to the bottle"` or live via
-`/seeker/set_target` — a `SetTarget` service any RAMMP module can
-call) → it searches glance poses *interruptibly* (a detection
-mid-motion retargets immediately), approaches through the perceived
-world, keeps following the object whenever it moves (preempting
-mid-motion), re-searches from the last known position when it's lost,
-and holds rather than chases when the object is lifted. Status streams
-on `/seeker/status`. Same safety layers as everything else: planner
-`execute:=true`, every executor gate, ≤0.25 speed, human on the
-e-stop; winding joint-family-flip plans are refused, never run.
-
-## Seek demo ("go to the bottle", scripted)
-
-`ros2 run rammp_curobo_ros seek_demo --text "go to the bottle" --execute`
-— the arm scans the bench with auto-generated glance poses, finds the
-named object with YOLO on the wrist D405 (vocabulary: the 80 COCO
-classes + common synonyms; weights `~/yolo11s-seg.pt`, nothing
-downloaded), masks it as the manipulation target via the ignore region,
-and plans a standoff approach through the perceived world — dodging the
-clutter, not the target. The scan goes straight to the approach the
-moment it is sure: a sighting at conf ≥ 0.80 (`--sure-conf`),
-re-confirmed by a second frame, skips the remaining glances; otherwise
-sightings are clustered in 3D and a location confirmed from two
-different viewpoints wins (a look-alike seen once loses the vote; two
-confirmed locations refuse with a listing unless `--pick nearest`;
-`--sure-conf 1.1` = always require two viewpoints). Seek runs
-AUTONOMOUSLY and IMMEDIATELY once launched (owner's decision
-2026-08-19; no typed gates or countdowns — Ctrl+C stops and holds at
-any time): scan, approach, and tracking by default — the arm keeps
-re-detecting the target and replans whenever it moves, preempting
-mid-motion, ~1-2 s reaction, until Ctrl+C (`--once` = stop after
-arrival; a lifted target is never chased — put it down to resume).
-≤0.25 speed throughout. The approach aims the gripper (and camera)
-down at the object and relaxes to a higher/farther pose when the low
-one can't be planned; a winding (joint-family-flip) plan is retried
-and otherwise REFUSED, never run unattended. The D405 driver needs
-`align_depth.enable:=true` for this demo.
+`ros2 run rammp_curobo_ros seeker --ros-args -p target:="go to the bottle"`
+— a continuous perceive-decide-act controller, not a script. One loop:
+YOLO on the wrist D405 finds the named object (80 COCO classes +
+synonyms; weights `~/yolo11s-seg.pt`, never downloaded), 3 agreeing
+frames localize it, and the arm closes in through the live perceived
+world in short cuRobo-planned hops — wrist flat at the object's height,
+re-aimed from every fresh detection, stopping 0.18 m out. Move the
+object and it follows; hide it and it returns to a survey pose; lift it
+and it holds (never chases a hand); kill the camera and it stops.
+Retarget any time via the `/seeker/set_target` service ("" idles);
+status on `/seeker/status`; live detection view on `:8767`. Autonomous
+once targeted (owner decision 2026-08-19) — the planner's `execute`
+param, every executor gate, ≤0.25 speed, and the human on the e-stop
+are the safety layers. The D405 driver needs `align_depth.enable:=true`.
 
 ## Perceived world (cameras)
 

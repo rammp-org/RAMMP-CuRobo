@@ -121,24 +121,11 @@ def _sensor_param_request(spec):
 
 
 def ensure_sensor_params(node, cfg, timeout_s=3.0):
-    """Assert the driver-side parameters a camera YAML declares.
-
-    Schema (optional per camera):
-        sensor_params:
-          node: /d405/d405
-          params: {depth_module.visual_preset: 3}
-
-    The perception stack owns its sensor contract instead of trusting
-    driver defaults: the D405 is PASSIVE stereo and its permissive
-    default confidence thresholds confidently hallucinate depth on
-    textureless surfaces (field 2026-08-19: a blank white bench read
-    0.3 m at a true 0.7 m and mapped as 20 phantom boxes). High
-    Accuracy raises the ASIC's texture/second-peak thresholds so blank
-    regions become holes — sparse-but-true, which the accumulator
-    handles — rather than dense-but-wrong, which nothing downstream
-    can repair. Non-fatal: warns and returns False if the driver isn't
-    reachable (it may come up later — the caller may retry).
-    """
+    """Blocking-push of the YAML's `sensor_params: {node, params}` to the
+    driver. The D405 is passive stereo: its permissive defaults
+    HALLUCINATE depth on textureless surfaces (field 2026-08-19 — blank
+    bench read 0.3 m at a true 0.7 m); High Accuracy makes holes
+    instead, which the accumulator handles. Non-fatal on absence."""
     from rcl_interfaces.srv import SetParameters
 
     spec = cfg.get("sensor_params")
@@ -490,19 +477,9 @@ class CamerasNode(Node):
 
     def _assert_sensor_params(self, cam):
         """Non-blocking sensor-contract enforcement, retried each tick.
-
-        The blocking helper (ensure_sensor_params) can't run inside a
-        spinning node, and 'driver starts after us' must work too — so
-        this fires the SetParameters call when the driver's service shows
-        up and harvests the result on a later tick. Success is sticky
-        only while the driver stays up: parameters live in the DRIVER
-        process, so when its set_parameters service drops off the
-        contract re-arms and a restarted driver (back on permissive
-        defaults) gets the preset re-pushed (audit 2026-08-19). A call
-        in flight times out after 5 s — a driver that died mid-call
-        never answers its future, and without the deadline enforcement
-        would wedge forever (audit 2026-08-19).
-        """
+        Fire-and-harvest across ticks; re-arms when the driver's service
+        drops (a restarted driver reverts to defaults); a 5 s deadline
+        drops a future a dead driver will never answer."""
         from rcl_interfaces.srv import SetParameters
 
         spec = cam.cfg.get("sensor_params")

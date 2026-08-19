@@ -247,75 +247,30 @@ the `cameras` parameter list. Note it now shares the frustum-scoped
 decay: unlike the original Orbbec build, a removed object backed by a
 depth hole or occlusion persists until provably seen through.)
 
-## 7. Seek — "go to the bottle" (attended)
+## 7. Seeker — "go to the bottle" (attended)
 
-Two entry points, same pipeline and gates: `seek_demo` (one scripted
-pass, exits when done — the items below) and **`seeker`**, the deployed
-continuous controller (`ros2 run rammp_curobo_ros seeker --ros-args -p
-target:="go to the bottle"`, retarget any time via
-`/seeker/set_target`, watch `/seeker/status`). The seeker never exits:
-it searches when it has no belief, approaches and follows when it
-does, re-searches when the target vanishes, and holds when the target
-is lifted. First bench runs of the seeker: same placement rules as
-below, e-stop in hand the entire time, Ctrl+C stops and holds.
+Prereqs: §6 acceptance passed; the D405 driver running with
+`align_depth.enable:=true`; planner with `execute:=true`; cameras node
+up. Then:
 
-Prereqs: §6 acceptance passed. The D405 driver must run with aligned
-depth for this demo:
-`ros2 launch realsense2_camera rs_launch.py camera_namespace:=d405
-camera_name:=d405 align_depth.enable:=true` (the cameras node is
-unaffected — it keeps using the depth-frame topic).
+```bash
+ros2 run rammp_curobo_ros seeker --ros-args -p target:="go to the bottle"
+```
 
-1. First run: ONE bottle alone on the bench, **0.45-0.65 m** in front of
-   the arm (that band is what the glance poses actually paint; nearer
-   than ~0.38 m the demo refuses the approach as unsafe).
-   `ros2 run rammp_curobo_ros seek_demo --text "go to the bottle"
-   --execute` → camera/TF preflight (fails fast if align_depth is
-   missing, before anything moves) → **the demo then runs autonomously
-   and immediately** (owner decision 2026-08-19: no typed gates, no
-   countdowns; Ctrl+C stops and holds at any point) → glances
-   (skip-on-unplannable), sightings printed with base_link positions
-   (sanity: tape measure), the approach plan printed **with the actual
-   gap it will leave** (0.08-0.18 m depending on distance; if the low
-   pitched pose can't be planned it relaxes to a higher/farther one
-   automatically) → approach at ≤0.25, e-stop in hand.
-2. Second run: add clutter (a box) between home and the bottle, let §6's
-   world map it (markers), re-run — the approach must bow around the
-   box's cuboid while still reaching the bottle (whose voxels the ignore
-   region purges; the region is cleared again on every exit, so the
-   world keeps watching that spot afterwards).
-3. The scan stops at the FIRST of: a **confident sighting** (conf ≥
-   `--sure-conf`, default 0.80, re-confirmed by a second same-pose
-   frame within 5 cm) → the arm goes right then; a location confirmed
-   from TWO different viewpoints (within 10 cm) → same; all glances
-   visited → cluster and decide. The confident shortcut deliberately
-   trades the cross-viewpoint gate for speed — the re-check catches
-   depth flicker but NOT a high-confidence look-alike seen first; run
-   `--sure-conf 1.1` to always require two viewpoints. In the full-scan
-   decision a second bottle-shaped object visible from one glance
-   merely loses the vote (field 2026-08-19: a decoy at y≈+0.6 used to
-   veto the whole scan); if two locations are BOTH confirmed from 2+
-   viewpoints the demo refuses and lists them — remove the extra, or
-   re-run with `--pick nearest`.
-4. If nothing is confirmed from two viewpoints the demo refuses with
-   the single-viewpoint sightings listed — moving bottle, bad depth, or
-   a bumped camera bracket does that.
-5. The approach plan prints its largest joint travel. Above 3.5 rad
-   (a joint-family flip — the arm winds through a big sweeping
-   reconfiguration to reach the same tool pose) the plan is retried
-   and, if still winding, REFUSED — a flip is never launched
-   autonomously; re-run.
-6. Tracking is the DEFAULT: the launch covers the approach AND the
-   follow loop — the wrist camera (aimed at the object by the approach
-   pose) keeps re-detecting it, and the arm replans whenever it moves,
-   preempting mid-motion via the executor's verified stop+hold (5 cm
-   dead-band, 35 cm max step, two agreeing frames required, winding
-   replans skipped, failed segments announced and retried). Reaction is
-   ~1-2 s per hop (replan loop, NOT servoing) — move the object slowly
-   and stay on the e-stop; Ctrl+C stops and holds. **Don't pick the
-   target up while tracking**: a target lifted >15 cm above its arrival
-   height is deliberately NOT chased (the arm holds until it's back on
-   the bench) — the ignore region follows the target, so chasing a
-   hand-held object would exclude the hand's nearest voxels from
-   collision checking. `--once` restores stop-after-arrival. The old
-   position's mapped box fades once the camera sees through it; it may
-   linger while out of view (by design).
+It moves autonomously once targeted (owner decision 2026-08-19) —
+e-stop in hand the whole time, Ctrl+C stops and holds. Behavior, all
+one loop: 3 agreeing frames acquire the object (watch `:8767` for the
+detections, `:8766` for the obstacle map) → short cuRobo-planned hops
+close in through the perceived world, wrist flat at the object's
+height, stopping 0.18 m out → move the object and it follows; hide it
+>4 s and it returns to the survey pose; lift it >15 cm and it HOLDS
+(the ignore region follows the target, so chasing a hand-held object
+would blind collision checking exactly where the hand is — put it
+down to resume). No camera data = no motion. Retarget live:
+`ros2 service call /seeker/set_target rammp_curobo_interfaces/srv/SetTarget
+"{text: 'go to the cup'}"` ("" idles the arm).
+
+First run: one object alone, 0.45-0.65 m in front of the arm. Second
+run: add a box between arm and object — the hops must bow around its
+cuboid. If detections land on the wrong thing, `:8767` shows exactly
+what YOLO claims; the fix is the model or the scene, never the map.

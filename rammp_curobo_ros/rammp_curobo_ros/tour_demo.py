@@ -120,32 +120,6 @@ class TourDemo:
         g.start_joints = [float(v) for v in start] if start else []
         return self._call(self.plan_joints, g)
 
-    def run_async(self, traj, scale):
-        """Send an execution goal WITHOUT blocking; None if not accepted.
-
-        Returns the accepted goal handle — poll .get_result_async(),
-        preempt with .cancel_goal_async() (cancel = the executor's
-        verified stop+hold). The seek tracking loop preempts mid-motion
-        when the target moves; every goal still passes every gate."""
-        goal = ExecuteTrajectory.Goal(trajectory=traj, speed_scale=float(scale))
-        fut = self.execute.send_goal_async(goal)
-        try:
-            send = spin_until_done(self.node, fut, 10.0)
-        except KeyboardInterrupt:
-            # Ctrl+C inside the send window: the goal may already be
-            # accepted server-side with no handle returned to cancel it —
-            # grab the handle if it lands and cancel before re-raising
-            # (audit 2026-08-19: this window printed 'arm holds' while a
-            # fresh segment executed)
-            send = fut.result() if fut.done() else spin_until_done(self.node, fut, 2.0)
-            if send is not None and send.accepted:
-                spin_until_done(self.node, send.cancel_goal_async(), 3.0)
-            print("\nCtrl+C — pending goal cancelled, arm holds")
-            raise
-        if send is None or not send.accepted:
-            return None
-        return send
-
     def run(self, traj, scale):
         goal = ExecuteTrajectory.Goal(trajectory=traj, speed_scale=float(scale))
         send = spin_until_done(self.node, self.execute.send_goal_async(goal), 10.0)
