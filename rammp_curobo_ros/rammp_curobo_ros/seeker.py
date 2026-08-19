@@ -13,10 +13,14 @@ track phase — one loop runs forever:
 
   PERCEIVE  every frame: YOLO on the wrist D405, every instance
             3-D-localized (aligned depth + stamped TF), folded into a
-            target BELIEF. Acquisition (no belief yet) only uses frames
-            from a PARKED arm — mid-motion frames refresh an existing
-            belief but never create one (motion smears positions even
-            with stamped TF; cameras-node rationale, audit 2026-08-19).
+            target BELIEF. A CONFIDENT sighting (conf >= sure_conf,
+            two frames agreeing within 5 cm) acquires the belief AT ANY
+            TIME — including mid-glance, ending the search on the spot
+            (owner requirement 2026-08-19). The low-confidence
+            two-viewpoint cluster path only ingests parked-arm frames
+            (quantized viewpoints along one sweep are not independent;
+            audit 2026-08-19), gathered during a ~1 s dwell at each
+            glance pose.
   DECIDE    from the belief alone: fresh belief far from the last
             commanded standoff -> approach it; stale belief -> search
             (first toward the last known position, then the glance
@@ -141,6 +145,8 @@ class Seeker:
         self.pending_retry = False
         self.search_i = 0
         self.region_on = False
+        self._just_acquired = False
+        self._dwell_until = 0.0     # parked pause after each glance
         self._startup_clear_done = False
         self._last_data_t = time.monotonic()  # camera liveness
         self._next_cmd_t = 0.0      # approach dispatch cooldown
@@ -247,6 +253,7 @@ class Seeker:
         self.last_sure = None
         self.goal_obj = None
         self.pending_retry = False
+        self._just_acquired = False
         self.last_extent = np.array([0.06, 0.20])
 
     def _harvest_result(self):
@@ -263,6 +270,12 @@ class Seeker:
             if kind == "approach":
                 self.pending_retry = True
                 self.goal_obj = None
+        elif kind == "glance":
+            # dwell parked: without this the next glance dispatches on
+            # the very next tick, leaving ONE frame per pose — the sure
+            # pair could never complete and every acquisition needed
+            # multiple glances (field 2026-08-19: 'still tries all 4')
+            self._dwell_until = time.monotonic() + 1.0
 
     def _run(self, plan, kind, obj=None):
         self.handle = self.demo.run_async(plan.trajectory, self.speed)
@@ -321,7 +334,7 @@ class Seeker:
         )
         self.view_server.update(img)
 
-    def _perceive(self, sights, now, allow_acquire):
+    def _perceive(self, sights, now, parked):
         if self.belief is not None:
             near = track_update(self.belief["pos"], sights,
                                 max_jump=self.LEASH, min_move=0.0)
@@ -334,10 +347,10 @@ class Seeker:
                                             float(near[2]))
                 self.last_extent = np.maximum(self.last_extent, s[2])
             return
-        if not allow_acquire:
-            return  # mid-motion frames never CREATE a belief
-        self.buf = [b for b in self.buf if now - b[4] < self.BUF_TTL]
-        self.buf.extend((v, p, e, c, now) for v, p, e, c in sights)
+        # SURE path — runs even MID-MOTION (owner requirement 2026-08-19:
+        # a confident sighting must end the search right away, not after
+        # the glance tour). Strict stamped TF keeps mid-motion frames
+        # honest, and two frames agreeing within 5 cm filter the smear.
         sure = [s for s in sights if s[3] >= self.sure_conf]
         if sure:
             best = max(sure, key=lambda s: s[3])
@@ -347,6 +360,12 @@ class Seeker:
                 self._acquire(best[1], best[3], best[2])
                 return
             self.last_sure = (best[1], now)
+        if not parked:
+            return  # the CLUSTER path stays parked-only: quantized
+            # viewpoints along one sweep are not independent (audit
+            # 2026-08-19) — low-confidence acquisition needs real pauses
+        self.buf = [b for b in self.buf if now - b[4] < self.BUF_TTL]
+        self.buf.extend((v, p, e, c, now) for v, p, e, c in sights)
         clusters = cluster_sightings(
             [(v, p, e, c) for v, p, e, c, _ in self.buf]
         )
@@ -364,6 +383,11 @@ class Seeker:
         self.buf = []
         self.last_sure = None
         self.last_known = None
+        self.pending_move = None
+        # acquisition is already double-confirmed — the very next decide
+        # may approach without the extra pending_move frame (owner
+        # requirement 2026-08-19: stop glancing the moment it's sure)
+        self._just_acquired = True
         self._status("ACQUIRED %s at [%.2f, %.2f, %.2f]"
                      % (self.target, pos[0], pos[1], pos[2]))
 
@@ -403,6 +427,9 @@ class Seeker:
         if self.handle is not None:
             self._heartbeat()
             return  # let the current motion finish; frames keep coming
+        if time.monotonic() < self._dwell_until:
+            self._heartbeat()
+            return  # parked dwell — acquisition frames at this pose
         if self.last_known is not None:
             # seed the search at the last place the target was seen
             bearing = float(np.arctan2(self.last_known[1], self.last_known[0]))
@@ -463,8 +490,7 @@ class Seeker:
         shot = self.grab.shot(timeout_s=0.5, strict=moving)
         if shot is not None:
             self._last_data_t = now
-            self._perceive(self._localize(shot), now,
-                           allow_acquire=not moving)
+            self._perceive(self._localize(shot), now, parked=not moving)
         elif not moving and not self.grab.missing():
             self._last_data_t = now  # streams alive, frame just late
         if now - self._last_data_t > self.BLIND_S:
@@ -524,6 +550,13 @@ class Seeker:
         if now < self._next_cmd_t:
             self._heartbeat()
             return  # anti-churn cooldown between approach dispatches
+        if self._just_acquired:
+            # double-confirmed acquisition goes NOW — preempting a
+            # glance in flight if there is one (owner requirement
+            # 2026-08-19: stop glancing the moment it's sure)
+            self._just_acquired = False
+            self._approach(pos)
+            return
         if self.pending_retry and self.handle is None:
             self.pending_move = None
             self._approach(pos)
