@@ -268,9 +268,15 @@ unaffected — it keeps using the depth-frame topic).
    box's cuboid while still reaching the bottle (whose voxels the ignore
    region purges; the region is cleared again on every exit, so the
    world keeps watching that spot afterwards).
-3. The scan visits ALL glances and clusters every sighting in 3D: only
-   a location seen from TWO different viewpoints (within 10 cm) is
-   trusted. A second bottle-shaped object visible from one glance
+3. The scan stops at the FIRST of: a **confident sighting** (conf ≥
+   `--sure-conf`, default 0.80, re-confirmed by a second same-pose
+   frame within 5 cm) → the arm goes right then; a location confirmed
+   from TWO different viewpoints (within 10 cm) → same; all glances
+   visited → cluster and decide. The confident shortcut deliberately
+   trades the cross-viewpoint gate for speed — the re-check catches
+   depth flicker but NOT a high-confidence look-alike seen first; run
+   `--sure-conf 1.1` to always require two viewpoints. In the full-scan
+   decision a second bottle-shaped object visible from one glance
    merely loses the vote (field 2026-08-19: a decoy at y≈+0.6 used to
    veto the whole scan); if two locations are BOTH confirmed from 2+
    viewpoints the demo refuses and lists them — remove the extra, or

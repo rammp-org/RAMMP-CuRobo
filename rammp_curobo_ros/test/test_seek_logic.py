@@ -9,6 +9,7 @@ from rammp_curobo_ros.seek_demo import (
     decide,
     glance_pose,
     parse_target,
+    reconfirmed,
     standoff_pose,
 )
 
@@ -181,6 +182,18 @@ def test_cluster_sightings_between_two_objects_joins_the_nearest():
     assert np.isclose(
         confirmed[0]["center"][1], (0.15 * 0.9 + 0.08 * 0.8) / 1.7, atol=1e-6
     )
+
+
+def test_reconfirmed_needs_a_second_frame_within_tolerance():
+    # the confident fast path's only remaining guard: a second same-pose
+    # frame must re-localize within 5 cm — catches flicker, not decoys
+    first = [0.60, -0.15, 0.02]
+    near = [(0, [0.62, -0.14, 0.02], EXT, 0.7)]
+    far = [(0, [0.70, -0.15, 0.02], EXT, 0.9)]
+    assert reconfirmed(first, near)
+    assert not reconfirmed(first, far)
+    assert not reconfirmed(first, [])  # no re-detection -> no shortcut
+    assert reconfirmed(first, far + near)  # any agreeing sighting counts
 
 
 def test_glance_pose_points_camera_down_at_the_bench():

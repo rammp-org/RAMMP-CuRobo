@@ -4,16 +4,19 @@
     ros2 run rammp_curobo_ros seek_demo --text "go to the bottle"            # dry logic
     ros2 run rammp_curobo_ros seek_demo --text "go to the bottle" --execute  # the real thing
 
-Flow (attended, every gate intact): typed 'seek' -> ALL auto-generated
-glance poses are visited; every YOLO instance (wrist D405) in each
-glance's frame is 3-D-localized via aligned depth + TF and clustered
-across viewpoints -> only a location confirmed from TWO different
-glances is trusted (a look-alike seen once loses the vote; two
-confirmed locations refuse with a listing unless --pick nearest) ->
-ignore region set around the target (purges its mapped voxels; the
-thing you approach must not be dodged) -> standoff pose planned through
-the perceived world -> plan shown -> typed 'go' -> execute at <=0.25
-speed.
+Flow (attended, every gate intact): typed 'seek' -> auto-generated
+glance poses; every YOLO instance (wrist D405) in each glance's frame
+is 3-D-localized via aligned depth + TF. The scan ends at the FIRST of:
+a confident sighting (conf >= --sure-conf, default 0.80, re-confirmed
+by a second same-pose frame within 5 cm) -> go now; a location
+confirmed from TWO different glances (10 cm cluster) -> go; all glances
+visited -> cluster and decide (a look-alike seen once loses the vote;
+two confirmed locations refuse with a listing unless --pick nearest;
+--sure-conf 1.1 disables the confident shortcut and always requires
+two viewpoints) -> ignore region set around the target (purges its
+mapped voxels; the thing you approach must not be dodged) -> standoff
+pose planned through the perceived world -> plan shown -> typed 'go' ->
+execute at <=0.25 speed.
 
 Needs: planner (execute:=true), cameras node, arm bringup, and the D405
 driver WITH ALIGNED DEPTH:
@@ -366,6 +369,23 @@ def cluster_sightings(sightings, radius=0.10):
     return clusters
 
 
+def reconfirmed(first_center, second_sightings, tol=0.05):
+    """True when a second same-pose frame re-localizes the target within
+    `tol` of the confident sighting.
+
+    The confident fast path (--sure-conf) approaches after ONE glance at
+    the operator's request, trading the cross-viewpoint gate for speed —
+    this same-pose re-check is the remaining guard: it catches depth
+    flicker and flying-pixel localization (two frames rarely repeat
+    them) but NOT systematic errors or a look-alike object, which only
+    the full two-viewpoint scan can."""
+    first = np.asarray(first_center, dtype=float)
+    return any(
+        float(np.linalg.norm(np.asarray(c, dtype=float) - first)) <= tol
+        for _, c, _, _ in second_sightings
+    )
+
+
 def decide(clusters, pick="refuse"):
     """The scan's verdict from cluster_sightings output.
 
@@ -405,6 +425,14 @@ def main():
         default="refuse",
         help="when 2+ locations are each confirmed from 2+ viewpoints: "
         "refuse (default, lists them) or approach the nearest",
+    )
+    ap.add_argument(
+        "--sure-conf",
+        type=float,
+        default=0.80,
+        help="confidence at which ONE re-confirmed sighting skips the "
+        "rest of the scan and goes straight to the approach (default "
+        "0.80; set above 1.0 to always require two viewpoints)",
     )
     args = ap.parse_args()
     scale = min(max(args.speed, 0.1), 0.25)
@@ -462,12 +490,15 @@ def main():
     model = load_detector(args.weights)
     sightings = []  # (glance_idx, center_base, extent, conf) — ONE frame
     # per viewpoint (same-frame repeats share every systematic error;
-    # audit 2026-08-18 gate rationale) but EVERY instance in that frame,
-    # and ALL glances are always visited: the decision needs the whole
-    # scene, not the first two sightings (field 2026-08-19: an early
-    # exit on a decoy vetoed two scans)
+    # audit 2026-08-18 gate rationale) but EVERY instance in that frame.
+    # The scan stops EARLY the moment it is sure: a conf >= sure_conf
+    # sighting that a second same-pose frame re-confirms goes straight
+    # to approach (operator request 2026-08-19 — speed over the cross-
+    # viewpoint gate; --sure-conf 1.1 restores strict scanning), and a
+    # cluster confirmed from two viewpoints ends the tour too.
     visited = 0
     unlocalized = 0
+    fixed = None  # cluster decided before the tour finished
     for i, (bearing, pitch) in enumerate(GLANCES):
         pos, quat = glance_pose(bearing, pitch)
         plan = demo.plan_pose_from(pos, quat, None)
@@ -482,6 +513,7 @@ def main():
         visited += 1
         time.sleep(1.0)  # settle; frames while moving are useless anyway
         seen_but_lost = 0
+        glance_got = []
         for _ in range(4):
             shot = grab.shot()
             if shot is None:
@@ -501,8 +533,9 @@ def main():
                     % (target, cf, center_base[0], center_base[1], center_base[2])
                 )
             if got:
+                glance_got = got
                 sightings.extend(got)
-                break  # one frame per viewpoint
+                break  # one frame per viewpoint (except the re-check)
             seen_but_lost += len(hits)
         else:
             if seen_but_lost:
@@ -516,50 +549,102 @@ def main():
                     "(sparse depth on a low-texture/translucent target?)"
                     % (target, seen_but_lost)
                 )
+        if not glance_got:
+            continue
+        # fast path 1 — CONFIDENT: sure_conf sighting + same-pose re-check
+        sure = max(
+            (s for s in glance_got if s[3] >= args.sure_conf),
+            key=lambda s: s[3],
+            default=None,
+        )
+        if sure is not None:
+            recheck = []
+            for _ in range(3):
+                shot = grab.shot()
+                if shot is None:
+                    continue
+                frame, depth, intr, rot, trans = shot
+                for xyxy, cf, mask in detect_all(model, frame, target, args.conf):
+                    loc = box_to_center(xyxy, depth, mask=mask, **intr)
+                    if loc is not None:
+                        recheck.append((i, rot @ loc[0] + trans, loc[1], cf))
+                if recheck:
+                    break
+            if reconfirmed(sure[1], recheck):
+                cl = cluster_sightings([sure] + recheck)
+                fixed = min(
+                    cl, key=lambda c: float(np.linalg.norm(c["center"] - sure[1]))
+                )
+                print(
+                    "confident (%.2f >= --sure-conf %.2f) and re-confirmed "
+                    "— going now, %d glance(s) skipped"
+                    % (sure[3], args.sure_conf, len(GLANCES) - i - 1)
+                )
+                break
+            print(
+                "  conf %.2f but the same-pose re-check did not agree — "
+                "continuing the scan" % sure[3]
+            )
+        # fast path 2 — cross-viewpoint confirmation already achieved
+        if i < len(GLANCES) - 1:
+            st, rk = decide(cluster_sightings(sightings), pick=args.pick)
+            if st == "ok" and len(rk) == 1:
+                fixed = rk[0]
+                print(
+                    "confirmed from two viewpoints after glance %d — "
+                    "skipping the rest" % (i + 1)
+                )
+                break
     del model  # free the GPU for cuRobo
-    if visited < 2:
-        sys.exit(
-            "only %d of %d glance poses could be planned and executed — "
-            "confirmation needs two viewpoints; clear the space around "
-            "the arm or check the planner" % (visited, len(GLANCES))
+    if fixed is not None:
+        chosen = fixed
+    else:
+        if visited < 2:
+            sys.exit(
+                "only %d of %d glance poses could be planned and executed — "
+                "confirmation needs two viewpoints; clear the space around "
+                "the arm or check the planner" % (visited, len(GLANCES))
+            )
+        status, ranked = decide(cluster_sightings(sightings), pick=args.pick)
+        if status == "unseen":
+            extra = (
+                " (YOLO detected it %d time(s) but depth never localized it "
+                "— low-texture/translucent target?)" % unlocalized
+                if unlocalized
+                else ""
+            )
+            sys.exit(
+                "did not localize a %s from any viewpoint%s — reposition it "
+                "0.45-0.65 m in front of the arm and re-run" % (target, extra)
+            )
+        if status == "unconfirmed":
+            lone = "; ".join(
+                "[%.2f, %.2f, %.2f]" % tuple(c["center"]) for c in ranked
+            )
+            sys.exit(
+                "no %s location was confirmed from two viewpoints (single-"
+                "viewpoint sightings at: %s) — moving object, bad depth, or "
+                "visible from only one glance; re-run (a conf >= %.2f "
+                "sighting would have gone directly)" % (target, lone, args.sure_conf)
+            )
+        listing = "; ".join(
+            "[%.2f, %.2f, %.2f] (%d viewpoints, conf %.2f)"
+            % (c["center"][0], c["center"][1], c["center"][2],
+               len(c["glances"]), c["conf"])
+            for c in ranked
         )
-    status, ranked = decide(cluster_sightings(sightings), pick=args.pick)
-    if status == "unseen":
-        extra = (
-            " (YOLO detected it %d time(s) but depth never localized it "
-            "— low-texture/translucent target?)" % unlocalized
-            if unlocalized
-            else ""
-        )
-        sys.exit(
-            "did not localize a %s from any viewpoint%s — reposition it "
-            "0.45-0.65 m in front of the arm and re-run" % (target, extra)
-        )
-    if status == "unconfirmed":
-        lone = "; ".join("[%.2f, %.2f, %.2f]" % tuple(c["center"]) for c in ranked)
-        sys.exit(
-            "no %s location was confirmed from two viewpoints (single-"
-            "viewpoint sightings at: %s) — moving object, bad depth, or "
-            "visible from only one glance; re-run" % (target, lone)
-        )
-    listing = "; ".join(
-        "[%.2f, %.2f, %.2f] (%d viewpoints, conf %.2f)"
-        % (c["center"][0], c["center"][1], c["center"][2],
-           len(c["glances"]), c["conf"])
-        for c in ranked
-    )
-    if status == "ambiguous":
-        sys.exit(
-            "%d distinct %s locations each confirmed from 2+ viewpoints: "
-            "%s — ambiguous scene. Remove the extras or re-run with "
-            "--pick nearest." % (len(ranked), target, listing)
-        )
-    if len(ranked) > 1:
-        print(
-            "%d confirmed %s locations: %s — approaching the NEAREST "
-            "(--pick nearest)" % (len(ranked), target, listing)
-        )
-    chosen = ranked[0]
+        if status == "ambiguous":
+            sys.exit(
+                "%d distinct %s locations each confirmed from 2+ viewpoints: "
+                "%s — ambiguous scene. Remove the extras or re-run with "
+                "--pick nearest." % (len(ranked), target, listing)
+            )
+        if len(ranked) > 1:
+            print(
+                "%d confirmed %s locations: %s — approaching the NEAREST "
+                "(--pick nearest)" % (len(ranked), target, listing)
+            )
+        chosen = ranked[0]
     obj = chosen["center"]
     extent = chosen["extent"]
     print(
