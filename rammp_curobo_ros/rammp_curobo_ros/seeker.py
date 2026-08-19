@@ -21,17 +21,20 @@ track phase — one loop runs forever:
             (quantized viewpoints along one sweep are not independent;
             audit 2026-08-19), gathered during a ~1 s dwell at each
             glance pose.
-  DECIDE    from the belief alone: fresh belief far from the last
-            commanded standoff -> approach it; stale belief -> search
-            (first toward the last known position, then the glance
-            cycle — interruptible: a detection retargets next tick);
-            lifted target or unsafe geometry -> hold; blind camera ->
-            hold (no autonomous patrol without perception); no target
-            -> idle.
+  DECIDE    from the belief alone: fresh belief -> VISUAL SERVO to it
+            (owner design 2026-08-19: wrist FLAT at the object's
+            height — which centers the bbox vertically — camera
+            re-aimed at the object every hop, short cuRobo-planned
+            steps along the line to it; short hops can't wind the arm
+            and 'way too high' pose ladders are gone); sight lost ->
+            step BACK along the approach line to re-look (twice), then
+            search glances seeded at the last known position; lifted
+            target or unsafe geometry -> hold; blind camera -> hold (no
+            autonomous patrol without perception); no target -> idle.
   ACT       at most one execution goal in flight; when the decision
             changes, the active goal is preempted through the
             executor's verified stop+hold and a fresh plan starts from
-            wherever the arm is. Every plan goes through cuRobo against
+            wherever the arm is. Every hop goes through cuRobo against
             the live perceived world; winding (joint-family-flip) plans
             are refused; speed hard-clamped to 0.25.
 
@@ -70,10 +73,10 @@ from rammp_curobo_ros.seek_demo import (
     joint_travel,
     load_detector,
     parse_target,
-    standoff_pose,
     track_update,
 )
-from rammp_curobo_ros.tour_demo import TourDemo
+from rammp_curobo.geometry import yaw_about_world_z
+from rammp_curobo_ros.tour_demo import HOME_QUAT_XYZW, TourDemo
 
 
 def viewpoint_key(cam_trans, grid=0.05):
@@ -99,7 +102,12 @@ class Seeker:
     BUF_TTL = 10.0     # s; acquisition sighting buffer
     WIND_RAD = 3.5     # joint-travel above this = family flip, refused
     BLIND_S = 3.0      # s without camera data -> no autonomous motion
-    CMD_COOLDOWN = 2.0  # s between approach dispatches (anti-churn)
+    CMD_COOLDOWN = 0.75  # s between servo hop dispatches (anti-churn)
+    HOP_MAX = 0.20     # m; longest single servo hop
+    HOP_MIN = 0.06     # m; shortest useful hop
+    ARRIVE_TOL = 0.04  # m; within standoff+this = arrived
+    Z_FLOOR = 0.10     # m; lowest fingertip height while servoing
+    BACKOFF_M = 0.15   # m; step-back distance when sight is lost
 
     def __init__(self, node):
         self.node = node
@@ -145,8 +153,10 @@ class Seeker:
         self.pending_retry = False
         self.search_i = 0
         self.region_on = False
+        self._region_pos = None     # where the ignore region last went
         self._just_acquired = False
         self._dwell_until = 0.0     # parked pause after each glance
+        self._backoffs = 0          # step-backs tried since losing sight
         self._startup_clear_done = False
         self._last_data_t = time.monotonic()  # camera liveness
         self._next_cmd_t = 0.0      # approach dispatch cooldown
@@ -220,6 +230,7 @@ class Seeker:
         return res.message if res is not None else None
 
     def clear_region(self):
+        self._region_pos = None
         if self.region_on and self.ignore_cli.service_is_ready():
             fut = self.ignore_cli.call_async(self._SetIgnoreRegion.Request())
             rclpy.spin_until_future_complete(self.node, fut, timeout_sec=3.0)
@@ -254,6 +265,7 @@ class Seeker:
         self.goal_obj = None
         self.pending_retry = False
         self._just_acquired = False
+        self._backoffs = 0
         self.last_extent = np.array([0.06, 0.20])
 
     def _harvest_result(self):
@@ -384,6 +396,7 @@ class Seeker:
         self.last_sure = None
         self.last_known = None
         self.pending_move = None
+        self._backoffs = 0
         # acquisition is already double-confirmed — the very next decide
         # may approach without the extra pending_move frame (owner
         # requirement 2026-08-19: stop glancing the moment it's sure)
@@ -392,36 +405,79 @@ class Seeker:
                      % (self.target, pos[0], pos[1], pos[2]))
 
     # -------------------------------------------------------------- decide
-    def _approach(self, obj):
+    def _tool_pos(self):
+        """Fingertip midpoint (tool_frame) in base_link, or None.
+
+        tool_frame exists only in the planner's kinematics — TF ends at
+        end_effector_link; the tip sits 0.120 m along its z."""
+        try:
+            tr = self.grab.tf_buffer.lookup_transform(
+                "base_link", "end_effector_link", rclpy.time.Time()
+            )
+        except Exception:
+            return None
+        q, t = tr.transform.rotation, tr.transform.translation
+        from rammp_curobo.perception import quat_to_mat
+
+        rot = quat_to_mat(q.x, q.y, q.z, q.w)
+        return np.array([t.x, t.y, t.z]) + rot[:, 2] * 0.120
+
+    def _servo(self, obj):
+        """One visual-servo hop: flat wrist, at the object's height,
+        camera re-aimed at the object, a short cuRobo-planned step along
+        the line to it (owner design 2026-08-19: center the bbox and
+        approach with the wrist flat). Short hops can't wind the arm and
+        each one is collision-checked against the live world; height =
+        object height (the old pose ladder relaxed UP to z 0.30 and
+        'approached way too high')."""
+        tool = self._tool_pos()
+        if tool is None:
+            self._status("no TF to the arm — cannot servo")
+            return
+        to_t = np.asarray(obj[:2], dtype=float) - tool[:2]
+        gap = float(np.linalg.norm(to_t))
+        if gap <= self.standoff + self.ARRIVE_TOL:
+            self.goal_obj = np.asarray(obj, dtype=float)
+            self._status("ARRIVED at %s (gap %.2f m) — holding"
+                         % (self.target, gap))
+            return
         if not self.stop_goal():
             return
         self._next_cmd_t = time.monotonic() + self.CMD_COOLDOWN
-        msg = self._set_region(obj)
-        if msg is not None and _purged_count(msg) != 0:
-            time.sleep(1.5)  # purge propagation (2 Hz world push)
+        if (
+            self._region_pos is None
+            or np.linalg.norm(np.asarray(obj) - self._region_pos) > 0.03
+        ):
+            msg = self._set_region(obj)
+            self._region_pos = np.asarray(obj, dtype=float).copy()
+            if msg is not None and _purged_count(msg) != 0:
+                time.sleep(1.5)  # purge propagation (2 Hz world push)
+        hop = min(self.HOP_MAX, max(self.HOP_MIN, 0.4 * (gap - self.standoff)))
+        hop = min(hop, gap - self.standoff)  # never step inside the standoff
+        step = tool[:2] + to_t / gap * hop
+        z = max(float(obj[2]) + 0.03, self.Z_FLOOR)
+        bearing = float(np.arctan2(obj[1] - step[1], obj[0] - step[0]))
+        quat = list(yaw_about_world_z(HOME_QUAT_XYZW, bearing))  # WRIST FLAT
         plan = None
-        gap = 0.0
-        for st, zmin in ((self.standoff, 0.12), (self.standoff, 0.22),
-                         (self.standoff + 0.08, 0.30)):
-            so = standoff_pose(obj, standoff=st, z_min=zmin)
-            if so is None:
-                self._status("target too close to the base — holding")
-                return
-            pos, quat, gap = so
-            plan = self.demo.plan_pose_from(pos, quat, None)
+        for step_len in (hop, hop / 2.0):
+            tgt = [float(tool[0] + to_t[0] / gap * step_len),
+                   float(tool[1] + to_t[1] / gap * step_len), z]
+            plan = self.demo.plan_pose_from(tgt, quat, None)
             if plan is not None and plan.success:
                 break
             plan = None
         if plan is None:
-            self._status("no approach plan at any pose — holding")
+            self._status("no plan for the next hop — holding, will retry")
             self.pending_retry = True
             return
         if max(joint_travel(plan.trajectory).values()) > self.WIND_RAD:
-            self._status("plan winds the arm (family flip) — refused, holding")
+            self._status("hop winds the arm (family flip) — refused, holding")
             return
         if self._run(plan, "approach", obj):
-            self._status("APPROACHING %s -> [%.2f, %.2f, %.2f] (gap %.2f m)"
-                         % (self.target, obj[0], obj[1], obj[2], gap))
+            self._status(
+                "SERVOING to %s [%.2f, %.2f, %.2f] — gap %.2f m, hop %.2f m"
+                % (self.target, obj[0], obj[1], obj[2], gap, step_len)
+            )
 
     def _search(self):
         if self.handle is not None:
@@ -430,6 +486,36 @@ class Seeker:
         if time.monotonic() < self._dwell_until:
             self._heartbeat()
             return  # parked dwell — acquisition frames at this pose
+        if self.last_known is not None and self._backoffs < 2:
+            # lost sight while closing in: step BACK along the approach
+            # line, camera still on the last known spot, before any
+            # glance tour (field 2026-08-19: a glance planned from a
+            # fully extended arm swept joint_1 at full reach)
+            tool = self._tool_pos()
+            if tool is not None:
+                away = tool[:2] - np.asarray(self.last_known[:2])
+                n = float(np.linalg.norm(away))
+                if n > 1e-6:
+                    step = tool[:2] + away / n * self.BACKOFF_M
+                    bearing = float(np.arctan2(self.last_known[1] - step[1],
+                                               self.last_known[0] - step[0]))
+                    tgt = [float(step[0]), float(step[1]),
+                           max(float(tool[2]), 0.15)]
+                    quat = list(yaw_about_world_z(HOME_QUAT_XYZW, bearing))
+                    plan = self.demo.plan_pose_from(tgt, quat, None)
+                    if (
+                        plan is not None
+                        and plan.success
+                        and max(joint_travel(plan.trajectory).values())
+                        <= self.WIND_RAD
+                    ):
+                        self._backoffs += 1
+                        if self._run(plan, "glance"):
+                            self._status(
+                                "lost sight — stepping back to re-look "
+                                "(%d/2)" % self._backoffs
+                            )
+                            return
         if self.last_known is not None:
             # seed the search at the last place the target was seen
             bearing = float(np.arctan2(self.last_known[1], self.last_known[0]))
@@ -510,9 +596,10 @@ class Seeker:
             if self.goal_kind == "approach":
                 self._heartbeat()
                 return  # camera can't see mid-approach; judge on arrival
-            self._status("%s lost — searching near its last position"
-                         % self.target)
+            self._status("%s lost — stepping back, then searching near "
+                         "its last position" % self.target)
             self.last_known = self.belief["pos"].copy()
+            self._backoffs = 0
             self.stop_goal()
             self.belief = None
             self.pending_move = None
@@ -534,37 +621,43 @@ class Seeker:
         if age > self.FRESH_S:
             self._heartbeat()
             return  # too old to chase; too young to declare lost
-        want = (
-            self.goal_obj is None
-            or self.goal_kind == "glance"
-            or float(np.linalg.norm(pos - self.goal_obj)) > self.DEAD_BAND
-            or (self.pending_retry and self.handle is None)
+        tool = self._tool_pos()
+        gap = (
+            float(np.linalg.norm(pos[:2] - tool[:2])) if tool is not None else None
         )
-        if not want:
+        arrived = gap is not None and gap <= self.standoff + self.ARRIVE_TOL
+        moved = (
+            self.goal_obj is not None
+            and float(np.linalg.norm(pos - self.goal_obj)) > self.DEAD_BAND
+        )
+        if arrived and not moved:
             if self.handle is None:
-                self._status("HOLDING at %s [%.2f, %.2f, %.2f]"
-                             % (self.target, pos[0], pos[1], pos[2]))
+                self._status("ARRIVED at %s (gap %.2f m) — holding"
+                             % (self.target, gap))
             else:
                 self._heartbeat()
             return
+        if self.handle is not None and self.goal_kind == "approach" and not moved:
+            self._heartbeat()
+            return  # hop in flight toward a still-valid target
         if now < self._next_cmd_t:
             self._heartbeat()
-            return  # anti-churn cooldown between approach dispatches
-        if self._just_acquired:
-            # double-confirmed acquisition goes NOW — preempting a
-            # glance in flight if there is one (owner requirement
-            # 2026-08-19: stop glancing the moment it's sure)
+            return  # anti-churn cooldown between hop dispatches
+        if (
+            self._just_acquired
+            or (self.pending_retry and self.handle is None)
+            or not moved
+        ):
+            # first hop (double-confirmed acquisition — preempts a
+            # glance in flight; owner requirement 2026-08-19), a retry,
+            # or a continuation hop toward a target that hasn't moved
             self._just_acquired = False
-            self._approach(pos)
-            return
-        if self.pending_retry and self.handle is None:
             self.pending_move = None
-            self._approach(pos)
+            self._servo(pos)
             return
-        # commit a move only when a NEWER frame agrees with the pending
-        # one — comparing against a stale belief copy made one sighting
-        # enough (audit 2026-08-19); the stamp check requires an actual
-        # second localization
+        # target MOVED: commit only when a NEWER frame agrees with the
+        # pending one — one frame never re-aims the arm (audit 2026-08-19:
+        # comparing against a stale belief copy made one sighting enough)
         if (
             self.pending_move is not None
             and now - self.pending_move[1] < 1.0
@@ -572,7 +665,7 @@ class Seeker:
             and np.linalg.norm(pos - self.pending_move[0]) <= 0.05
         ):
             self.pending_move = None
-            self._approach(pos)
+            self._servo(pos)
         else:
             self.pending_move = (pos.copy(), now)
 
