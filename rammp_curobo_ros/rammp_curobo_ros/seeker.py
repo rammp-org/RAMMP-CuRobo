@@ -53,7 +53,7 @@ import numpy as np
 import rclpy
 from std_msgs.msg import String
 
-from rammp_curobo_ros.cameras import ensure_sensor_params
+from rammp_curobo_ros.cameras import _ViewServer, ensure_sensor_params
 from rammp_curobo_ros.ros_util import spin_until_done
 from rammp_curobo_ros.seek_demo import (
     GLANCES,
@@ -144,6 +144,22 @@ class Seeker:
         self._startup_clear_done = False
         self._last_data_t = time.monotonic()  # camera liveness
         self._next_cmd_t = 0.0      # approach dispatch cooldown
+
+        # DETECTION view (distinct from the cameras node's :8766 WORLD
+        # view, which draws perceived obstacle boxes): this one shows
+        # what YOLO claims — target-class boxes with confidence, plus
+        # the current belief — so "is it detecting the right thing?"
+        # is answerable by eye (field question 2026-08-19)
+        self.view_server = None
+        if bool(p("view", True).value):
+            try:
+                self.view_server = _ViewServer(int(p("view_port", 8767).value))
+                node.get_logger().info(
+                    "detection view: http://<this-host>:8767/ "
+                    "(param view:=false to disable)"
+                )
+            except OSError as e:
+                node.get_logger().warn("detection view failed (%s)" % e)
 
     # ------------------------------------------------------------ plumbing
     def _set_target_cb(self, req, res):
@@ -266,14 +282,44 @@ class Seeker:
     def _localize(self, shot):
         frame, depth, intr, rot, trans = shot
         vkey = viewpoint_key(trans)
+        hits = detect_all(self.model, frame, self.target, self.conf)
         out = []
-        for xyxy, cf, mask in detect_all(self.model, frame, self.target, self.conf):
+        for xyxy, cf, mask in hits:
             loc = box_to_center(xyxy, depth, mask=mask, **intr)
             if loc is None:
                 continue
             center, extent = loc
             out.append((vkey, rot @ center + trans, np.asarray(extent), cf))
+        if self.view_server is not None:
+            self._render_view(frame, hits, intr, rot, trans, len(out))
         return out
+
+    def _render_view(self, frame, hits, intr, rot, trans, n_localized):
+        import cv2
+
+        img = frame.copy()
+        for xyxy, cf, _ in hits:
+            x1, y1, x2, y2 = (int(v) for v in xyxy)
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 200, 0), 2)
+            cv2.putText(img, "%s %.2f" % (self.target, cf), (x1, max(y1 - 6, 14)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 0), 2)
+        if self.belief is not None:
+            pc = (self.belief["pos"] - trans) @ rot
+            if pc[2] > 0.05:
+                u = int(intr["fx"] * pc[0] / pc[2] + intr["cx"])
+                v = int(intr["fy"] * pc[1] / pc[2] + intr["cy"])
+                cv2.drawMarker(img, (u, v), (255, 120, 0),
+                               cv2.MARKER_CROSS, 24, 2)
+                cv2.putText(img, "belief", (u + 8, v - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 120, 0), 1)
+        cv2.putText(
+            img,
+            "%s | %d det / %d localized" % (self._last_status[:70],
+                                            len(hits), n_localized),
+            (8, img.shape[0] - 10),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
+        )
+        self.view_server.update(img)
 
     def _perceive(self, sights, now, allow_acquire):
         if self.belief is not None:
