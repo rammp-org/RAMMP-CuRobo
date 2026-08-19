@@ -168,6 +168,7 @@ class _D405Grabber:
 
         self.node = node
         cfg = load_camera_config("camera_d405_wrist.yaml")
+        self.cfg = cfg
         self.mount_xyz = np.asarray(cfg["mount_xyz"], dtype=float)
         self.mount_quat = list(cfg["mount_quat_xyzw"])
         self.parent = cfg["parent_frame"]
@@ -338,6 +339,13 @@ def main():
     # else a missing align_depth flag would burn a full arm scan and then
     # misdiagnose as "object not seen" (audit 2026-08-18)
     print("preflight: waiting for camera streams + TF...")
+    # enforce the driver-side depth contract (High Accuracy preset):
+    # localization on hallucinated textureless-surface depth put the
+    # bottle 25 cm in the air (field 2026-08-19). Non-fatal — the
+    # cameras node also asserts it and retries.
+    from rammp_curobo_ros.cameras import ensure_sensor_params
+
+    ensure_sensor_params(node, grab.cfg)
     if grab.shot(timeout_s=6.0) is None:
         sys.exit(
             "camera preflight FAILED — missing: %s (and/or TF to %s). "

@@ -85,6 +85,75 @@ def load_camera_config(name_or_path):
     )
 
 
+def _sensor_param_request(spec):
+    """Build the SetParameters request a `sensor_params` YAML block asks for."""
+    from rcl_interfaces.msg import Parameter, ParameterValue
+    from rcl_interfaces.srv import SetParameters
+
+    req = SetParameters.Request()
+    for name, value in spec["params"].items():
+        v = ParameterValue()
+        if isinstance(value, bool):
+            v.type, v.bool_value = 1, value
+        elif isinstance(value, int):
+            v.type, v.integer_value = 2, value
+        elif isinstance(value, float):
+            v.type, v.double_value = 3, value
+        else:
+            v.type, v.string_value = 4, str(value)
+        req.parameters.append(Parameter(name=name, value=v))
+    return req
+
+
+def ensure_sensor_params(node, cfg, timeout_s=3.0):
+    """Assert the driver-side parameters a camera YAML declares.
+
+    Schema (optional per camera):
+        sensor_params:
+          node: /d405/d405
+          params: {depth_module.visual_preset: 3}
+
+    The perception stack owns its sensor contract instead of trusting
+    driver defaults: the D405 is PASSIVE stereo and its permissive
+    default confidence thresholds confidently hallucinate depth on
+    textureless surfaces (field 2026-08-19: a blank white bench read
+    0.3 m at a true 0.7 m and mapped as 20 phantom boxes). High
+    Accuracy raises the ASIC's texture/second-peak thresholds so blank
+    regions become holes — sparse-but-true, which the accumulator
+    handles — rather than dense-but-wrong, which nothing downstream
+    can repair. Non-fatal: warns and returns False if the driver isn't
+    reachable (it may come up later — the caller may retry).
+    """
+    from rcl_interfaces.srv import SetParameters
+
+    spec = cfg.get("sensor_params")
+    if not spec:
+        return True
+    client = node.create_client(SetParameters, spec["node"] + "/set_parameters")
+    try:
+        if not client.wait_for_service(timeout_sec=timeout_s):
+            node.get_logger().warn(
+                "sensor_params: %s not reachable — set %s on the driver "
+                "manually (depth quality contract unenforced)"
+                % (spec["node"], spec["params"])
+            )
+            return False
+        future = client.call_async(_sensor_param_request(spec))
+        rclpy.spin_until_future_complete(node, future, timeout_sec=timeout_s)
+        res = future.result()
+        if res is None or not all(r.successful for r in res.results):
+            node.get_logger().warn(
+                "sensor_params: %s refused %s" % (spec["node"], spec["params"])
+            )
+            return False
+        node.get_logger().info(
+            "sensor_params: %s <- %s" % (spec["node"], spec["params"])
+        )
+        return True
+    finally:
+        node.destroy_client(client)
+
+
 def process_camera_points(
     depth,
     intr,
@@ -159,6 +228,10 @@ class _CameraInput:
         self.stamp = None
         self.ros_stamp = None
         self.info = None
+        # sensor-contract enforcement state (see _assert_sensor_params)
+        self.sp_done = not cfg.get("sensor_params")
+        self.sp_future = None
+        self.sp_client = None
         node.create_subscription(
             CameraInfo,
             cfg["info_topic"],
@@ -301,6 +374,58 @@ class CamerasNode(Node):
         qx, qy, qz, qw = cfg["mount_quat_xyzw"]
         return r_p @ quat_to_mat(qx, qy, qz, qw), r_p @ mx + t_p
 
+    def _assert_sensor_params(self, cam):
+        """Non-blocking sensor-contract enforcement, retried each tick.
+
+        The blocking helper (ensure_sensor_params) can't run inside a
+        spinning node, and 'driver starts after us' must work too — so
+        this fires the SetParameters call when the driver's service shows
+        up and harvests the result on a later tick. Success is sticky; a
+        refusal or vanished driver retries until it lands.
+        """
+        from rcl_interfaces.srv import SetParameters
+
+        if cam.sp_done:
+            return
+        spec = cam.cfg["sensor_params"]
+        key = "sp:%s" % spec["node"]
+        if cam.sp_future is not None:
+            if not cam.sp_future.done():
+                return
+            res = cam.sp_future.result()
+            cam.sp_future = None
+            if res is not None and res.results and all(
+                r.successful for r in res.results
+            ):
+                cam.sp_done = True
+                self._warned.discard(key)
+                self.get_logger().info(
+                    "sensor_params: %s <- %s" % (spec["node"], spec["params"])
+                )
+            elif key not in self._warned:
+                self._warned.add(key)
+                self.get_logger().warn(
+                    "sensor_params: %s refused %s — retrying"
+                    % (spec["node"], spec["params"])
+                )
+            return
+        if cam.sp_client is None:
+            cam.sp_client = self.create_client(
+                SetParameters,
+                spec["node"] + "/set_parameters",
+                callback_group=self.cb_group,
+            )
+        if not cam.sp_client.service_is_ready():
+            if key not in self._warned:
+                self._warned.add(key)
+                self.get_logger().warn(
+                    "sensor_params: %s not reachable yet — will keep trying "
+                    "(depth quality contract unenforced until then)"
+                    % spec["node"]
+                )
+            return
+        cam.sp_future = cam.sp_client.call_async(_sensor_param_request(spec))
+
     def _camera_still(self, cam):
         """False while the camera was moving around the frame's stamp.
 
@@ -372,6 +497,7 @@ class CamerasNode(Node):
                 "dropped, world restarts clean" % n
             )
         for cam in self.cams:
+            self._assert_sensor_params(cam)
             if not cam.fresh(max_age=2.0 / self.rate_hz):
                 continue
             had_fresh = True

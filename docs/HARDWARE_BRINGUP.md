@@ -215,7 +215,19 @@ below validates it against reality).
 Honest limits: the wrist camera only maps where it has looked — plans
 through never-seen space rely on the baseline world (keep
 `world_real_bench.yaml` honest); range is 0.9 m, so the map builds up
-close-in, which matches manipulation. Frames captured while the wrist
+close-in, which matches manipulation. The D405 is PASSIVE stereo (no
+projector): on textureless surfaces its permissive default settings
+invent depth rather than admit ignorance (field 2026-08-19: the blank
+white bench read 0.3 m at a true 0.7 m — 20 phantom boxes, sightings
+floating 25 cm above the bench). The wrist YAML therefore declares
+`depth_module.visual_preset: 3` (High Accuracy) as a `sensor_params`
+contract; the cameras node and the seek preflight push it to the driver
+at startup and keep retrying (log: `sensor_params: /d405/d405 <- ...`),
+so driver restarts and start order don't matter. The flip side is
+physics, not configuration: a truly featureless surface returns HOLES —
+unknown space, not obstacles. A blank white box is seen only by its
+edges and shading; anything like that in the workspace belongs in the
+baseline world. Frames captured while the wrist
 moves (or rotates — rotation sweeps points far faster than it moves the
 lens) are dropped by design: the "depth frames gated" log line is normal
 during motion. Thin objects (cables, rods) near the silhouette can

@@ -18,3 +18,18 @@ mount_xyz: [0.0, 0.075, -0.005]
 mount_quat_xyzw: [0.0, 0.0, 0.0, 1.0]
 min_range: 0.07          # D405 is short-range: optimal 7-50 cm
 max_range: 0.9           # accuracy degrades fast beyond ~1 m
+
+# Driver-side contract, enforced at startup by the cameras node and the
+# seek preflight (survives driver restarts and start-order): the D405 is
+# PASSIVE stereo and Intel's permissive default confidence thresholds
+# hallucinate depth on textureless surfaces — the blank white bench read
+# 0.3 m at a true 0.7 m and mapped as 20 phantom boxes (field
+# 2026-08-19). High Accuracy (3) raises the ASIC's texture/second-peak
+# thresholds: blank regions become HOLES (unknown, handled) instead of
+# lies (unrecoverable). Cost: sparse depth on featureless surfaces — a
+# truly textureless obstacle is seen only by its edges; that's sensor
+# physics, keep the baseline world honest.
+sensor_params:
+  node: /d405/d405
+  params:
+    depth_module.visual_preset: 3

@@ -190,7 +190,11 @@ Watch `/cameras/world_markers` in RViz — a box placed in front of the
 gripper appears within ~2 s (±3 cm validates the bracket mount), survives
 the wrist looking away, and fades ~3 s after the camera sees its spot
 empty. The wrist only maps where it has looked: plans through never-seen
-space rely on the baseline world. `scripts/cameras_checks.py` verifies
+space rely on the baseline world. The camera YAML also declares a
+`sensor_params` contract the node pushes to the driver at startup —
+for the D405 (passive stereo, no projector) that's the High Accuracy
+preset, which makes textureless surfaces return holes (unknown, safe)
+instead of hallucinated depth (phantom obstacles — field-bitten). `scripts/cameras_checks.py` verifies
 the service loop live; `/cameras/set_ignore_region` masks the object
 you're about to grasp (see INTEGRATION.md). A fixed bench camera can be
 added via the `cameras` param after running
