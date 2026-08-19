@@ -154,7 +154,24 @@ and gates as the tour: safe-box waypoints, chained pre-planning, ONE
 merged trajectory per round, Ctrl+C = hold. First run:
 `--rounds 1 --moves 4 --speed 0.25`, workspace clear, hand on the e-stop.
 
-## Seek ("go to the bottle")
+## Seeker (continuous "go to the bottle" — the deployed form)
+
+`ros2 run rammp_curobo_ros seeker` is a perceive-decide-act CONTROLLER,
+not a scripted sequence: one loop runs forever, and searching,
+approaching, and tracking are just what it does depending on its
+current target belief. No target → idle. Target set (param
+`target:="go to the bottle"` or live via
+`/seeker/set_target` — a `SetTarget` service any RAMMP module can
+call) → it searches glance poses *interruptibly* (a detection
+mid-motion retargets immediately), approaches through the perceived
+world, keeps following the object whenever it moves (preempting
+mid-motion), re-searches from the last known position when it's lost,
+and holds rather than chases when the object is lifted. Status streams
+on `/seeker/status`. Same safety layers as everything else: planner
+`execute:=true`, every executor gate, ≤0.25 speed, human on the
+e-stop; winding joint-family-flip plans are refused, never run.
+
+## Seek demo ("go to the bottle", scripted)
 
 `ros2 run rammp_curobo_ros seek_demo --text "go to the bottle" --execute`
 — the arm scans the bench with auto-generated glance poses, finds the

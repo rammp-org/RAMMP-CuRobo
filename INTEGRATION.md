@@ -87,6 +87,13 @@ at all. Two services matter to integrators:
   clears the region (the purge is not undone; the object remaps only if
   the camera sees it again outside an active region).
 
+- `/seeker/set_target` (`rammp_curobo_interfaces/srv/SetTarget`, when
+  the `seeker` node is running): free text in ("go to the bottle"),
+  resolved COCO class out; empty text idles the arm. The seeker is the
+  continuous perceive-decide-act controller — search, approach, follow,
+  hold — and streams state on `/seeker/status` (`std_msgs/String`).
+  This is the intended hook for an NL layer in another RAMMP module.
+
 `/cameras/world_markers` (`visualization_msgs/MarkerArray`) shows the
 perceived boxes in RViz — check it before trusting a plan near clutter.
 

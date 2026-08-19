@@ -1,0 +1,7 @@
+# Point the continuous seeker at a new target (free text, e.g. "go to
+# the bottle"); empty text clears the target and idles the arm.
+string text
+---
+bool success
+string message
+string resolved_class   # the COCO class the text resolved to ("" if none)

@@ -244,7 +244,17 @@ the `cameras` parameter list. Note it now shares the frustum-scoped
 decay: unlike the original Orbbec build, a removed object backed by a
 depth hole or occlusion persists until provably seen through.)
 
-## 7. Seek demo — "go to the bottle" (attended)
+## 7. Seek — "go to the bottle" (attended)
+
+Two entry points, same pipeline and gates: `seek_demo` (one scripted
+pass, exits when done — the items below) and **`seeker`**, the deployed
+continuous controller (`ros2 run rammp_curobo_ros seeker --ros-args -p
+target:="go to the bottle"`, retarget any time via
+`/seeker/set_target`, watch `/seeker/status`). The seeker never exits:
+it searches when it has no belief, approaches and follows when it
+does, re-searches when the target vanishes, and holds when the target
+is lifted. First bench runs of the seeker: same placement rules as
+below, e-stop in hand the entire time, Ctrl+C stops and holds.
 
 Prereqs: §6 acceptance passed. The D405 driver must run with aligned
 depth for this demo:
