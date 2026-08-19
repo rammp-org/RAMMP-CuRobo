@@ -219,7 +219,10 @@ ros2 launch realsense2_camera rs_launch.py camera_namespace:=d405 camera_name:=d
 ros2 run rammp_curobo_ros cameras
 ```
 
-Watch `/cameras/world_markers` in RViz — a box placed in front of the
+No monitor needed: the node serves a **live browser view** at
+`http://<jetson>:8766/` (camera feed with the perceived boxes drawn on
+it, plus gating/ignore status; `view:=false` disables). Or watch
+`/cameras/world_markers` in RViz — a box placed in front of the
 gripper appears within ~2 s (±3 cm validates the bracket mount), survives
 the wrist looking away, and fades ~3 s after the camera sees its spot
 empty. The wrist only maps where it has looked: plans through never-seen

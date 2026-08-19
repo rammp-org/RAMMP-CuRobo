@@ -234,6 +234,74 @@ def decayable_cells(cells, voxel, frames):
     return out
 
 
+class _ViewServer:
+    """Live MJPEG debug view — this bench has no monitor (field
+    2026-08-17: the cv2 window attempt core-dumped on the headless
+    Jetson), so 'a window' is a browser tab: http://<jetson>:<port>/
+    streams what the camera sees with the perceived world drawn on top.
+    Read-only and best-effort; never load-bearing for perception."""
+
+    def __init__(self, port):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        self._lock = threading.Lock()
+        self._jpeg = None
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/":
+                    body = (
+                        b"<html><head><title>cameras view</title></head>"
+                        b"<body style='margin:0;background:#111'>"
+                        b"<img src='/stream' style='width:100%'>"
+                        b"</body></html>"
+                    )
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if self.path != "/stream":
+                    self.send_error(404)
+                    return
+                self.send_response(200)
+                self.send_header(
+                    "Content-Type", "multipart/x-mixed-replace; boundary=f"
+                )
+                self.end_headers()
+                try:
+                    while True:
+                        with outer._lock:
+                            buf = outer._jpeg
+                        if buf is not None:
+                            self.wfile.write(
+                                b"--f\r\nContent-Type: image/jpeg\r\n"
+                                b"Content-Length: %d\r\n\r\n" % len(buf)
+                            )
+                            self.wfile.write(buf)
+                            self.wfile.write(b"\r\n")
+                        time.sleep(0.15)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+            def log_message(self, *args):
+                pass
+
+        self.httpd = ThreadingHTTPServer(("0.0.0.0", int(port)), Handler)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def update(self, bgr):
+        import cv2
+
+        ok, buf = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        if ok:
+            with self._lock:
+                self._jpeg = buf.tobytes()
+
+
 class _CameraInput:
     """Latest depth frame + intrinsics for one configured camera."""
 
@@ -346,6 +414,36 @@ class CamerasNode(Node):
             callback_group=self.cb_group,
         )
         self.markers_pub = self.create_publisher(MarkerArray, "~/world_markers", 1)
+
+        self._view_boxes = {}
+        self._view_color = None
+        self.view = bool(p("view", True).value)
+        if self.view:
+            port = int(p("view_port", 8766).value)
+            try:
+                self._view_server = _ViewServer(port)
+            except OSError as e:
+                self.get_logger().warn(
+                    "view server failed (%s) — continuing headless" % e
+                )
+                self.view = False
+            else:
+                cfg0 = self.cams[0].cfg
+                if "/depth/" in cfg0.get("depth_topic", ""):
+                    ns = cfg0["depth_topic"].rsplit("/depth/", 1)[0]
+                    self.create_subscription(
+                        Image,
+                        ns + "/color/image_raw",
+                        self._view_color_cb,
+                        qos_profile_sensor_data,
+                        callback_group=self.cb_group,
+                    )
+                self.create_timer(0.2, self._view_tick, callback_group=self.cb_group)
+                self.get_logger().info(
+                    "live view: http://<this-host>:%d/ (param view:=false "
+                    "to disable)" % port
+                )
+
         self.create_timer(1.0 / self.rate_hz, self._tick, callback_group=self.cb_group)
         self.get_logger().info(
             "cameras up: %s @ %.1f Hz, voxel %.0f mm"
@@ -654,7 +752,80 @@ class CamerasNode(Node):
         self._pending = self.world_client.call_async(req)
         self._pending.add_done_callback(_done)
 
+    # -------------------------------------------------------------- view
+    def _view_color_cb(self, msg):
+        if msg.encoding in ("rgb8", "bgr8"):
+            a = np.frombuffer(msg.data, dtype=np.uint8).reshape(
+                msg.height, msg.width, 3
+            )
+            self._view_color = a[:, :, ::-1].copy() if msg.encoding == "rgb8" else a.copy()
+
+    def _view_tick(self):
+        import cv2
+
+        cam = self.cams[0]
+        img = None
+        if self._view_color is not None:
+            img = self._view_color.copy()
+        elif cam.depth is not None:
+            top = max(float(cam.cfg.get("max_range", 0.9)), 0.1)
+            d = cam.depth.copy()
+            d[~np.isfinite(d)] = 0.0
+            dv = np.clip(d / top * 255, 0, 255).astype(np.uint8)
+            img = cv2.applyColorMap(dv, cv2.COLORMAP_TURBO)
+        if img is None:
+            img = np.zeros((240, 424, 3), np.uint8)
+            cv2.putText(img, "no frames yet", (20, 130),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
+        # perceived boxes projected into the image (latest TF + depth
+        # intrinsics on the color frame: a few px off — a debug view for
+        # human eyes, never load-bearing)
+        pose = self._camera_pose(cam.cfg)
+        if pose is not None and cam.info is not None:
+            r, t = pose
+            fx, fy = cam.info["fx"], cam.info["fy"]
+            cx, cy = cam.info["cx"], cam.info["cy"]
+            h, w = img.shape[:2]
+            for name, b in sorted(self._view_boxes.items()):
+                c = np.asarray(b["center"], dtype=float)
+                half = np.asarray(b["dims"], dtype=float) / 2.0
+                corners = c + np.array(
+                    [
+                        [sx, sy, sz]
+                        for sx in (-half[0], half[0])
+                        for sy in (-half[1], half[1])
+                        for sz in (-half[2], half[2])
+                    ]
+                )
+                pc = (corners - t) @ r  # base -> optical (row form of R^T)
+                if (pc[:, 2] <= 0.05).any():
+                    continue
+                us = fx * pc[:, 0] / pc[:, 2] + cx
+                vs = fy * pc[:, 1] / pc[:, 2] + cy
+                x1, x2 = int(us.min()), int(us.max())
+                y1, y2 = int(vs.min()), int(vs.max())
+                if x2 < 0 or y2 < 0 or x1 >= w or y1 >= h:
+                    continue
+                cv2.rectangle(
+                    img,
+                    (max(x1, 0), max(y1, 0)),
+                    (min(x2, w - 1), min(y2, h - 1)),
+                    (0, 80, 255),
+                    2,
+                )
+                cv2.putText(img, name, (max(x1, 0), max(y1 - 5, 14)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 80, 255), 1)
+        status = "boxes %d | gated %d | ignore %s" % (
+            len(self._view_boxes),
+            self._moving_skips,
+            "ON" if self.ignore_region is not None else "off",
+        )
+        cv2.putText(img, status, (8, img.shape[0] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+        self._view_server.update(img)
+
     def _publish_markers(self, named):
+        self._view_boxes = dict(named)
         arr = MarkerArray()
         wipe = Marker()
         wipe.action = Marker.DELETEALL

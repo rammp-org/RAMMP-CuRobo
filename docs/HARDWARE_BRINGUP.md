@@ -190,10 +190,13 @@ below validates it against reality).
    ```
    The cameras node defaults to the wrist config. Sanity: its log shows
    the baseline obstacle count and NO "no fresh depth frames" warning.
-2. **See what it sees:** RViz with the robot model +
-   `/cameras/world_markers`. The bench in front of the gripper (0.07-0.9 m
-   from the camera) populates as the wrist looks at it; the table itself
-   is stripped by the baseline; the ARM must not appear (self-filter).
+2. **See what it sees:** open `http://192.168.1.11:8766/` in any
+   browser on the lab network — the node streams the camera feed with
+   every perceived box drawn on it (no monitor needed; `view:=false`
+   disables). RViz + `/cameras/world_markers` shows the same boxes in
+   3D. The bench in front of the gripper (0.07-0.9 m from the camera)
+   populates as the wrist looks at it; the table itself is stripped by
+   the baseline; the ARM must not appear (self-filter).
 3. **Mount validation via acceptance:** place a box on the bench in
    front of the gripper → marker within ~2 s, within ±3 cm of the real
    box (tape measure). More than 3 cm off in a consistent direction =
