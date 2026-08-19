@@ -15,12 +15,13 @@ two confirmed locations refuse with a listing unless --pick nearest;
 --sure-conf 1.1 disables the confident shortcut and always requires
 two viewpoints) -> ignore region set around the target (purges its
 mapped voxels; the thing you approach must not be dodged) -> standoff
-pose planned through the perceived world -> plan shown (with the
-largest joint travel — a wind-up warning precedes any joint-family
-flip) -> typed 'go' -> execute at <=0.25 speed. With --follow, typed
-'follow' then keeps tracking: the wrist camera re-detects the target
-and the arm replans to it whenever it moves (~1-2 s reaction — a
-replan loop, not millisecond servoing), until Ctrl+C.
+pose planned through the perceived world, aimed AT the object (with
+the largest joint travel shown — a wind-up warning precedes any
+joint-family flip) -> typed 'go' -> approach at <=0.25 speed, then
+KEEP TRACKING: the wrist camera re-detects the target and the arm
+replans whenever it moves, preempting mid-motion (~1-2 s reaction — a
+replan loop, not millisecond servoing), until Ctrl+C. --once stops
+after the first arrival instead.
 
 Needs: planner (execute:=true), cameras node, arm bringup, and the D405
 driver WITH ALIGNED DEPTH:
@@ -43,6 +44,7 @@ import numpy as np
 import rclpy
 
 from rammp_curobo.geometry import rot_about_world_y, yaw_about_world_z
+from rammp_curobo_ros.ros_util import spin_until_done
 from rammp_curobo_ros.tour_demo import HOME_QUAT_XYZW, TourDemo, traj_time
 
 COCO_CLASSES = [
@@ -136,7 +138,7 @@ def box_to_center(xyxy, depth, fx, fy, cx, cy, shrink=0.3, mask=None):
 
 
 def standoff_pose(obj_xyz, standoff=0.18, min_radius=0.30, min_gap=0.08):
-    """Wrist-flat approach pose on the base side of the object.
+    """Approach pose on the base side of the object, AIMED AT it.
 
     Returns (pos, quat, gap) with the ACTUAL tool-to-object horizontal
     gap after clamping — never claim the requested standoff (audit
@@ -145,6 +147,12 @@ def standoff_pose(obj_xyz, standoff=0.18, min_radius=0.30, min_gap=0.08):
     ignore region had just purged). Returns None when the object is too
     close to the base for a safe approach (gap would fall under
     min_gap).
+
+    The tool sits just above the object's height and PITCHES DOWN to
+    point at its center (field 2026-08-19: the old level, z>=0.15 pose
+    hovered over a small bottle's cap and read as 'nowhere near it') —
+    which also keeps the wrist camera on the object, exactly what the
+    tracking loop needs.
     """
     ox, oy, oz = (float(v) for v in obj_xyz)
     bearing = math.atan2(oy, ox)
@@ -154,9 +162,12 @@ def standoff_pose(obj_xyz, standoff=0.18, min_radius=0.30, min_gap=0.08):
         return None
     r = min(r, 0.72)
     gap = r_obj - r
-    z = min(max(oz + 0.03, 0.15), 0.55)
+    z = min(max(oz + 0.05, 0.12), 0.55)
+    pitch = math.atan2(z - oz, gap)
     pos = [r * math.cos(bearing), r * math.sin(bearing), z]
-    quat = list(yaw_about_world_z(HOME_QUAT_XYZW, bearing))
+    quat = list(
+        yaw_about_world_z(rot_about_world_y(HOME_QUAT_XYZW, pitch), bearing)
+    )
     return pos, quat, gap
 
 
@@ -469,11 +480,11 @@ def main():
         "0.80; set above 1.0 to always require two viewpoints)",
     )
     ap.add_argument(
-        "--follow",
+        "--once",
         action="store_true",
-        help="after arriving, keep tracking: re-detect the target and "
-        "replan to it whenever it moves (>=5 cm, <=35 cm per step; "
-        "~1-2 s reaction). Typed 'follow' arms it; Ctrl+C stops.",
+        help="stop after the first arrival instead of tracking (tracking "
+        "is the default: the arm keeps re-detecting the target and "
+        "replans whenever it moves, preempting mid-motion; Ctrl+C stops)",
     )
     args = ap.parse_args()
     scale = min(max(args.speed, 0.1), 0.25)
@@ -636,8 +647,8 @@ def main():
                     "skipping the rest" % (i + 1)
                 )
                 break
-    if not args.follow:
-        del model  # free the GPU for cuRobo (follow mode keeps detecting)
+    if args.once:
+        del model  # free the GPU for cuRobo (tracking keeps detecting)
     if fixed is not None:
         chosen = fixed
     else:
@@ -751,72 +762,90 @@ def main():
             % (target, obj[0], obj[1], obj[2], gap, traj_time(plan, scale),
                scale, worst_j, travel[worst_j], wind)
         )
-        if input("type 'go' to approach: ").strip() != "go":
+        prompt = (
+            "type 'go' to approach: "
+            if args.once
+            else "type 'go' to approach and TRACK it (the arm then follows "
+            "the %s WITHOUT further confirmation until Ctrl+C): " % target
+        )
+        if input(prompt).strip() != "go":
             sys.exit("aborted — arm holds at the last glance")
         if not demo.run(plan.trajectory, scale):
             sys.exit("approach failed — arm holds; see planner log")
-        print(
-            "\nARRIVED — %.2f m from the %s, facing it."
-            % (gap, target)
-        )
-        if args.follow:
-            print(
-                "\n*** FOLLOW: after you type 'follow', the arm re-detects "
-                "the %s and moves to track it WITHOUT further confirmation "
-                "(replan loop, ~1-2 s reaction — move it SLOWLY). Ctrl+C "
-                "stops and holds. ***" % target
-            )
-            if input("type 'follow' to track: ").strip() == "follow":
-                obj = np.asarray(obj, dtype=float)
-
-                def localized(shot):
-                    frame, depth, intr, rot, trans = shot
-                    out = []
-                    for xyxy, cf, mask in detect_all(model, frame, target, args.conf):
-                        loc = box_to_center(xyxy, depth, mask=mask, **intr)
-                        if loc is not None:
-                            out.append((0, rot @ loc[0] + trans, loc[1], cf))
-                    return out
-
-                try:
-                    while True:
-                        shot = grab.shot(timeout_s=2.0)
-                        if shot is None:
-                            continue
-                        cand = track_update(obj, localized(shot))
-                        if cand is None:
-                            continue
-                        shot = grab.shot(timeout_s=2.0)
-                        if shot is None or not reconfirmed(cand, localized(shot)):
-                            continue  # one frame never moves the arm
-                        so = standoff_pose(cand, standoff=args.standoff)
-                        if so is None:
-                            print("  moved too close to the base — holding")
-                            continue
-                        npos, nquat, ngap = so
-                        ok, _ = set_region(cand)
-                        region_set = region_set or ok
-                        time.sleep(1.0)  # purge propagation (2 Hz world)
-                        plan = demo.plan_pose_from(npos, nquat, None)
-                        if plan is None or not plan.success:
-                            print("  replan failed — holding; see planner log")
-                            continue
-                        if max(joint_travel(plan.trajectory).values()) > 3.5:
-                            print("  replan winds the arm — skipped; move the "
-                                  "%s back a little" % target)
-                            continue
-                        print(
-                            "  -> [%.2f, %.2f, %.2f] (gap %.2f m)"
-                            % (cand[0], cand[1], cand[2], ngap)
-                        )
-                        if not demo.run(plan.trajectory, scale):
-                            print("  segment refused — holding; see planner log")
-                            continue
-                        obj = cand
-                except KeyboardInterrupt:
-                    print("\nfollow stopped — arm holds")
-        else:
+        print("\nARRIVED — %.2f m from the %s, facing it." % (gap, target))
+        if args.once:
             print("Take it from here.")
+        else:
+            print(
+                "\nTRACKING the %s — move it slowly; the arm follows and "
+                "preempts mid-motion if it moves again. Ctrl+C stops and "
+                "holds." % target
+            )
+            obj = np.asarray(obj, dtype=float)
+            handle = None
+            result_fut = None
+
+            def localized(shot):
+                frame, depth, intr, rot, trans = shot
+                out = []
+                for xyxy, cf, mask in detect_all(model, frame, target, args.conf):
+                    loc = box_to_center(xyxy, depth, mask=mask, **intr)
+                    if loc is not None:
+                        out.append((0, rot @ loc[0] + trans, loc[1], cf))
+                return out
+
+            try:
+                while True:
+                    if result_fut is not None and result_fut.done():
+                        handle = None
+                        result_fut = None
+                    shot = grab.shot(timeout_s=2.0)
+                    if shot is None:
+                        continue
+                    cand = track_update(obj, localized(shot))
+                    if cand is None:
+                        continue
+                    shot = grab.shot(timeout_s=2.0)
+                    if shot is None or not reconfirmed(cand, localized(shot)):
+                        continue  # one frame never moves the arm
+                    so = standoff_pose(cand, standoff=args.standoff)
+                    if so is None:
+                        print("  moved too close to the base — holding")
+                        continue
+                    npos, nquat, ngap = so
+                    if handle is not None:
+                        # preempt: verified stop+hold, settle, replan live
+                        spin_until_done(node, handle.cancel_goal_async(), 3.0)
+                        handle = None
+                        result_fut = None
+                        time.sleep(0.4)  # decelerate before live-start plan
+                    ok, _ = set_region(cand)
+                    region_set = region_set or ok
+                    time.sleep(0.8)  # purge propagation (2 Hz world tick)
+                    plan = demo.plan_pose_from(npos, nquat, None)
+                    if plan is None or not plan.success:
+                        print("  replan failed — holding; see planner log")
+                        continue
+                    if max(joint_travel(plan.trajectory).values()) > 3.5:
+                        print(
+                            "  replan winds the arm — skipped; move the "
+                            "%s back a little" % target
+                        )
+                        continue
+                    handle = demo.run_async(plan.trajectory, scale)
+                    if handle is None:
+                        print("  execution refused — holding; see planner log")
+                        continue
+                    result_fut = handle.get_result_async()
+                    print(
+                        "  -> [%.2f, %.2f, %.2f] (gap %.2f m)"
+                        % (cand[0], cand[1], cand[2], ngap)
+                    )
+                    obj = cand
+            except KeyboardInterrupt:
+                if handle is not None:
+                    spin_until_done(node, handle.cancel_goal_async(), 3.0)
+                print("\ntracking stopped — arm holds")
     finally:
         # never leave a permanent blind spot in the perceived world
         # (audit 2026-08-18): zero dims clears the region on EVERY exit

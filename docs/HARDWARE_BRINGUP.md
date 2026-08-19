@@ -289,11 +289,13 @@ unaffected — it keeps using the depth-frame topic).
    sweeping reconfiguration to reach the same tool pose). Don't type
    `go` on a warned plan unless you want to watch it; re-running
    usually draws a sane one.
-6. `--follow`: after arrival, typed `follow` keeps tracking — the wrist
-   camera re-detects the target and the arm replans whenever it moves
-   (5 cm dead-band, 35 cm max step, two agreeing frames required,
-   winding replans skipped). Reaction is ~1-2 s per hop (replan loop,
-   NOT servoing) — move the object slowly and stay on the e-stop; the
-   arm moves without further per-segment confirmation until Ctrl+C.
-   The old position's mapped box fades once the camera sees through
-   it; it may linger while out of view (by design).
+6. Tracking is the DEFAULT: typed `go` covers the approach AND the
+   follow loop — the wrist camera (aimed at the object by the approach
+   pose) keeps re-detecting it, and the arm replans whenever it moves,
+   preempting mid-motion via the executor's verified stop+hold (5 cm
+   dead-band, 35 cm max step, two agreeing frames required, winding
+   replans skipped). Reaction is ~1-2 s per hop (replan loop, NOT
+   servoing) — move the object slowly and stay on the e-stop; Ctrl+C
+   stops and holds. `--once` restores stop-after-arrival. The old
+   position's mapped box fades once the camera sees through it; it may
+   linger while out of view (by design).

@@ -74,16 +74,26 @@ def test_box_to_center_mask_excludes_the_occluder():
     assert np.isclose(center_nomask[2], 0.3, atol=0.02)
 
 
-def test_standoff_pose_backs_off_toward_base_and_faces_object():
+def test_standoff_pose_backs_off_toward_base_and_aims_at_object():
     obj = [0.6, 0.0, 0.25]
     pos, quat, gap = standoff_pose(obj, standoff=0.18)
     assert np.isclose(pos[0], 0.42, atol=1e-6) and abs(pos[1]) < 1e-9
     assert np.isclose(gap, 0.18, atol=1e-9)
-    assert 0.15 <= pos[2] <= 0.55
-    # tool z (facing direction) points at the object bearing
+    assert np.isclose(pos[2], 0.30, atol=1e-6)  # 5 cm above the object
+    # tool z (facing direction) points at the object bearing AND pitches
+    # down at its center (field 2026-08-19: the old level pose hovered
+    # over a small bottle's cap and read as a miss)
     x, y, z, w = quat
     tool_z = [2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y)]
     assert np.isclose(np.arctan2(tool_z[1], tool_z[0]), 0.0, atol=1e-6)
+    expected_pitch = np.arctan2(pos[2] - obj[2], gap)
+    assert np.isclose(tool_z[2], -np.sin(expected_pitch), atol=1e-6)
+    # a bench-level object: height floor keeps the tool at 0.12 m
+    low, lquat, lgap = standoff_pose([0.62, -0.17, 0.01], standoff=0.18)
+    assert np.isclose(low[2], 0.12, atol=1e-6)
+    lx, ly, lz, lw = lquat
+    ltz = 1 - 2 * (lx * lx + ly * ly)
+    assert ltz < -0.3  # still pointing down at the bottle, not over it
 
 
 def test_standoff_pose_reports_reduced_gap_and_refuses_too_close():

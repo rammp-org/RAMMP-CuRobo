@@ -120,6 +120,19 @@ class TourDemo:
         g.start_joints = [float(v) for v in start] if start else []
         return self._call(self.plan_joints, g)
 
+    def run_async(self, traj, scale):
+        """Send an execution goal WITHOUT blocking; None if not accepted.
+
+        Returns the accepted goal handle — poll .get_result_async(),
+        preempt with .cancel_goal_async() (cancel = the executor's
+        verified stop+hold). The seek tracking loop preempts mid-motion
+        when the target moves; every goal still passes every gate."""
+        goal = ExecuteTrajectory.Goal(trajectory=traj, speed_scale=float(scale))
+        send = spin_until_done(self.node, self.execute.send_goal_async(goal), 10.0)
+        if send is None or not send.accepted:
+            return None
+        return send
+
     def run(self, traj, scale):
         goal = ExecuteTrajectory.Goal(trajectory=traj, speed_scale=float(scale))
         send = spin_until_done(self.node, self.execute.send_goal_async(goal), 10.0)

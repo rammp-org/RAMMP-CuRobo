@@ -168,10 +168,12 @@ sightings are clustered in 3D and a location confirmed from two
 different viewpoints wins (a look-alike seen once loses the vote; two
 confirmed locations refuse with a listing unless `--pick nearest`;
 `--sure-conf 1.1` = always require two viewpoints). Typed `seek`
-gates the scan, typed `go` gates the approach, ≤0.25 speed. With
-`--follow`, a typed `follow` after arrival keeps tracking the target —
-re-detect + replan whenever it moves, ~1-2 s reaction, Ctrl+C stops.
-Every plan prints its largest joint travel and warns before a
+gates the scan; typed `go` gates the approach AND the tracking that
+follows by default — the arm keeps re-detecting the target and
+replans whenever it moves, preempting mid-motion, ~1-2 s reaction,
+until Ctrl+C (`--once` = stop after arrival). ≤0.25 speed throughout.
+The approach pose aims the gripper (and camera) down at the object,
+and every plan prints its largest joint travel, warning before a
 joint-family wind-up. The D405 driver needs
 `align_depth.enable:=true` for this demo.
 
