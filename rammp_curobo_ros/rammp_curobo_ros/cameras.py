@@ -815,7 +815,9 @@ class CamerasNode(Node):
                 )
                 cv2.putText(img, name, (max(x1, 0), max(y1 - 5, 14)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 80, 255), 1)
-        status = "boxes %d | gated %d | ignore %s" % (
+        cv2.putText(img, "DEPTH OBSTACLE MAP (no object detection here)",
+                    (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 80, 255), 2)
+        status = "obstacles %d | gated %d | ignore %s" % (
             len(self._view_boxes),
             self._moving_skips,
             "ON" if self.ignore_region is not None else "off",
