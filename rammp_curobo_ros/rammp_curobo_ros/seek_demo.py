@@ -98,7 +98,8 @@ def parse_target(text):
     return max(hits, key=len) if hits else None
 
 
-def box_to_center(xyxy, depth, fx, fy, cx, cy, shrink=0.3, mask=None):
+def box_to_center(xyxy, depth, fx, fy, cx, cy, shrink=0.3, mask=None,
+                  min_depth=0.07):
     """Median-deproject the detection's core -> (center_cam, extent_m).
 
     Samples the bbox's shrunken core (off the silhouette edge, where
@@ -120,7 +121,12 @@ def box_to_center(xyxy, depth, fx, fy, cx, cy, shrink=0.3, mask=None):
     h, w = core.shape
     vv, uu = np.mgrid[0:h, 0:w]
     z = core
-    valid = (z > 0.07) & (z < 0.9) & np.isfinite(z)
+    # min_depth: the seeker raises this to ~0.16 so the gripper's OWN
+    # fingers (0.10-0.14 m from the lens, rigidly attached) can never
+    # become the foreground anchor — a mask bleeding onto a finger made
+    # the belief track the camera itself, a descend-toward-the-table
+    # feedback spiral (field 2026-08-19)
+    valid = (z > min_depth) & (z < 0.9) & np.isfinite(z)
     if mask is not None:
         valid &= mask[ys, xs].astype(bool)
     if valid.sum() < 10:

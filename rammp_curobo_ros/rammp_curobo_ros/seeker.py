@@ -79,6 +79,19 @@ from rammp_curobo.geometry import yaw_about_world_z
 from rammp_curobo_ros.tour_demo import HOME_QUAT_XYZW, TourDemo
 
 
+def roll_about_tool_z(xyzw, rad):
+    """Post-multiply a LOCAL z (tool-axis) roll onto quat xyzw.
+
+    'Wrist flat' is a roll convention: the same horizontal tool axis
+    can carry the knuckles vertical or horizontal. The seeker exposes
+    it as `wrist_roll` (field 2026-08-19: the default came out
+    vertical; +90 deg makes it flat — flip the sign if your bracket
+    disagrees)."""
+    x, y, z, w = xyzw
+    c, s = np.cos(rad / 2.0), np.sin(rad / 2.0)
+    return (x * c + y * s, y * c - x * s, z * c + w * s, w * c - z * s)
+
+
 def viewpoint_key(cam_trans, grid=0.05):
     """Quantized camera position — 'distinct viewpoint' for clustering.
 
@@ -108,6 +121,10 @@ class Seeker:
     ARRIVE_TOL = 0.04  # m; within standoff+this = arrived
     Z_FLOOR = 0.10     # m; lowest fingertip height while servoing
     BACKOFF_M = 0.15   # m; step-back distance when sight is lost
+    PREEMPT_BAND = 0.12  # m; smaller target drift lets a hop FINISH —
+    # preempting every >5 cm belief wobble made 2 cm jitter-hops (field
+    # 2026-08-19); re-aiming waits for the hop boundary instead
+    EMA = 0.4          # belief smoothing toward each new sighting
 
     def __init__(self, node):
         self.node = node
@@ -117,6 +134,7 @@ class Seeker:
         self.standoff = float(p("standoff", 0.18).value)
         # hard clamp — the module promises <=0.25 regardless of params
         self.speed = min(max(float(p("speed", 0.25).value), 0.05), 0.25)
+        self.wrist_roll = float(p("wrist_roll", np.pi / 2.0).value)
         self.weights = str(p("weights", "~/yolo11s-seg.pt").value)
         initial = str(p("target", "").value)
 
@@ -304,13 +322,23 @@ class Seeker:
         return True
 
     # ------------------------------------------------------------ perceive
+    def _flat_quat(self, bearing):
+        return list(
+            roll_about_tool_z(
+                yaw_about_world_z(HOME_QUAT_XYZW, bearing), self.wrist_roll
+            )
+        )
+
     def _localize(self, shot):
         frame, depth, intr, rot, trans = shot
         vkey = viewpoint_key(trans)
         hits = detect_all(self.model, frame, self.target, self.conf)
         out = []
         for xyxy, cf, mask in hits:
-            loc = box_to_center(xyxy, depth, mask=mask, **intr)
+            # min_depth 0.16: the gripper's own fingers (0.10-0.14 m
+            # from the lens) must never anchor the localization — the
+            # target can't be nearer than the standoff anyway
+            loc = box_to_center(xyxy, depth, mask=mask, min_depth=0.16, **intr)
             if loc is None:
                 continue
             center, extent = loc
@@ -351,12 +379,25 @@ class Seeker:
             near = track_update(self.belief["pos"], sights,
                                 max_jump=self.LEASH, min_move=0.0)
             if near is not None:
+                # physical-plausibility gates (field 2026-08-19: a mask
+                # bleeding onto the fingers made the belief follow the
+                # camera down through the table):
+                if near[2] < self.belief["base_z"] - 0.06:
+                    return  # objects don't sink through their surface
+                tool = self._tool_pos()
+                if tool is not None and float(
+                    np.linalg.norm(near[:2] - tool[:2])
+                ) < self.standoff - 0.03:
+                    return  # inside the standoff = self-sighting, not target
                 s = min(sights, key=lambda s: np.linalg.norm(s[1] - near))
-                self.belief.update(pos=near, stamp=now, conf=s[3])
+                smoothed = (1.0 - self.EMA) * self.belief["pos"] + self.EMA * near
+                self.belief.update(pos=smoothed, stamp=now, conf=s[3])
                 # resting height tracks DOWN (placed on a lower surface)
-                # but never up — up is what the lift guard detects
-                self.belief["base_z"] = min(self.belief["base_z"],
-                                            float(near[2]))
+                # but only while PARKED — mid-pursuit drift must not
+                # ratchet the lift guard's reference
+                if parked:
+                    self.belief["base_z"] = min(self.belief["base_z"],
+                                                float(smoothed[2]))
                 self.last_extent = np.maximum(self.last_extent, s[2])
             return
         # SURE path — runs even MID-MOTION (owner requirement 2026-08-19:
@@ -457,7 +498,7 @@ class Seeker:
         step = tool[:2] + to_t / gap * hop
         z = max(float(obj[2]) + 0.03, self.Z_FLOOR)
         bearing = float(np.arctan2(obj[1] - step[1], obj[0] - step[0]))
-        quat = list(yaw_about_world_z(HOME_QUAT_XYZW, bearing))  # WRIST FLAT
+        quat = self._flat_quat(bearing)  # WRIST FLAT (wrist_roll param)
         plan = None
         for step_len in (hop, hop / 2.0):
             tgt = [float(tool[0] + to_t[0] / gap * step_len),
@@ -501,7 +542,7 @@ class Seeker:
                                                self.last_known[0] - step[0]))
                     tgt = [float(step[0]), float(step[1]),
                            max(float(tool[2]), 0.15)]
-                    quat = list(yaw_about_world_z(HOME_QUAT_XYZW, bearing))
+                    quat = self._flat_quat(bearing)
                     plan = self.demo.plan_pose_from(tgt, quat, None)
                     if (
                         plan is not None
@@ -577,8 +618,11 @@ class Seeker:
         if shot is not None:
             self._last_data_t = now
             self._perceive(self._localize(shot), now, parked=not moving)
-        elif not moving and not self.grab.missing():
-            self._last_data_t = now  # streams alive, frame just late
+        elif not self.grab.missing():
+            # streams alive — a failed shot mid-motion is the strict-TF
+            # frame drop working, not blindness (field 2026-08-19: the
+            # blind pause fired DURING normal motion and cancelled hops)
+            self._last_data_t = now
         if now - self._last_data_t > self.BLIND_S:
             # blind: no autonomous patrol without perception (audit
             # 2026-08-19: a dead camera meant endless glance motion)
@@ -637,9 +681,16 @@ class Seeker:
             else:
                 self._heartbeat()
             return
-        if self.handle is not None and self.goal_kind == "approach" and not moved:
-            self._heartbeat()
-            return  # hop in flight toward a still-valid target
+        if self.handle is not None and self.goal_kind == "approach":
+            drift = (
+                float(np.linalg.norm(pos - self.goal_obj))
+                if self.goal_obj is not None
+                else 0.0
+            )
+            if drift <= self.PREEMPT_BAND:
+                self._heartbeat()
+                return  # let the hop FINISH; re-aim at the hop boundary
+                # (preempting every belief wobble made 2 cm jitter-hops)
         if now < self._next_cmd_t:
             self._heartbeat()
             return  # anti-churn cooldown between hop dispatches
