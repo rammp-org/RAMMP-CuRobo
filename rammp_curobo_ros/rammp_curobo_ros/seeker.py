@@ -13,25 +13,34 @@ track phase — one loop runs forever:
 
   PERCEIVE  every frame: YOLO on the wrist D405, every instance
             3-D-localized (aligned depth + stamped TF), folded into a
-            target BELIEF (position + freshness + confidence).
+            target BELIEF. Acquisition (no belief yet) only uses frames
+            from a PARKED arm — mid-motion frames refresh an existing
+            belief but never create one (motion smears positions even
+            with stamped TF; cameras-node rationale, audit 2026-08-19).
   DECIDE    from the belief alone: fresh belief far from the last
             commanded standoff -> approach it; stale belief -> search
-            (visit glance poses — interruptible: a detection mid-motion
-            retargets immediately); lifted target or unsafe geometry ->
-            hold; no target set -> idle.
+            (first toward the last known position, then the glance
+            cycle — interruptible: a detection retargets next tick);
+            lifted target or unsafe geometry -> hold; blind camera ->
+            hold (no autonomous patrol without perception); no target
+            -> idle.
   ACT       at most one execution goal in flight; when the decision
             changes, the active goal is preempted through the
             executor's verified stop+hold and a fresh plan starts from
             wherever the arm is. Every plan goes through cuRobo against
             the live perceived world; winding (joint-family-flip) plans
-            are refused; ≤0.25 speed.
+            are refused; speed hard-clamped to 0.25.
 
 Safety posture (owner decision 2026-08-19): autonomous and immediate —
 no typed gates or countdowns. The planner's execute param, every
 executor gate, and the human on the physical e-stop are the layers
-that remain. A target lifted off its surface is HELD, never chased
-(the ignore region follows the target; chasing a hand-held object
-would exclude the hand's nearest voxels from collision checking).
+that remain. A target lifted off its resting height is HELD, never
+chased — the active goal is preempted and the ignore region cleared
+(the region follows the target; chasing a hand-held object would
+exclude the hand's nearest voxels from collision checking). Known
+limit: a target FIRST acquired while already held in the air has that
+height as its resting height — the lift guard can't recognize what it
+never saw on a surface.
 
 Needs: planner (execute:=true), cameras node, arm bringup, D405 driver
 with align_depth.enable:=true. Vocabulary: 80 COCO classes + synonyms;
@@ -69,7 +78,9 @@ def viewpoint_key(cam_trans, grid=0.05):
     Replaces the scripted scan's glance index: two sightings only
     triangulate when the camera has MOVED between them (>= one 5 cm
     grid cell); sightings from a parked camera share every systematic
-    error (audit 2026-08-18) and collapse to one viewpoint here."""
+    error (audit 2026-08-18) and collapse to one viewpoint here.
+    Acquisition additionally only ingests parked-arm frames, so the
+    grid separates PAUSES, not points along one sweep."""
     return tuple(int(round(float(v) / grid)) for v in cam_trans)
 
 
@@ -80,9 +91,11 @@ class Seeker:
     LOST_S = 4.0       # belief older than this is dropped -> search
     DEAD_BAND = 0.05   # m; smaller target moves are noise, not commands
     LEASH = 0.35       # m; a sighting farther from the belief is a decoy
-    LIFT_HOLD = 0.15   # m above acquisition height -> held, not chased
+    LIFT_HOLD = 0.15   # m above resting height -> held, not chased
     BUF_TTL = 10.0     # s; acquisition sighting buffer
     WIND_RAD = 3.5     # joint-travel above this = family flip, refused
+    BLIND_S = 3.0      # s without camera data -> no autonomous motion
+    CMD_COOLDOWN = 2.0  # s between approach dispatches (anti-churn)
 
     def __init__(self, node):
         self.node = node
@@ -90,7 +103,8 @@ class Seeker:
         self.conf = float(p("conf", 0.4).value)
         self.sure_conf = float(p("sure_conf", 0.8).value)
         self.standoff = float(p("standoff", 0.18).value)
-        self.speed = float(p("speed", 0.25).value)
+        # hard clamp — the module promises <=0.25 regardless of params
+        self.speed = min(max(float(p("speed", 0.25).value), 0.05), 0.25)
         self.weights = str(p("weights", "~/yolo11s-seg.pt").value)
         initial = str(p("target", "").value)
 
@@ -106,7 +120,8 @@ class Seeker:
         )
         node.create_service(SetTarget, "~/set_target", self._set_target_cb)
         self.status_pub = node.create_publisher(String, "~/status", 1)
-        self._last_status = None
+        self._last_status = "starting"
+        self._last_pub_t = 0.0
 
         self.model = None
         self.target = None          # resolved COCO class or None
@@ -115,8 +130,9 @@ class Seeker:
         self.belief = None          # dict(pos, stamp, conf, base_z)
         self.buf = []               # acquisition: (vkey, pos, extent, conf, t)
         self.last_extent = np.array([0.06, 0.20])
-        self.pending_move = None    # (pos, t) awaiting 2nd-frame agreement
+        self.pending_move = None    # (pos, t) awaiting a NEWER agreeing frame
         self.last_sure = None       # (pos, t) awaiting 2nd sure frame
+        self.last_known = None      # search seed after a loss
 
         self.handle = None          # active execution goal
         self.result_fut = None
@@ -125,6 +141,9 @@ class Seeker:
         self.pending_retry = False
         self.search_i = 0
         self.region_on = False
+        self._startup_clear_done = False
+        self._last_data_t = time.monotonic()  # camera liveness
+        self._next_cmd_t = 0.0      # approach dispatch cooldown
 
     # ------------------------------------------------------------ plumbing
     def _set_target_cb(self, req, res):
@@ -143,10 +162,21 @@ class Seeker:
         return res
 
     def _status(self, text):
+        now = time.monotonic()
         if text != self._last_status:
             self._last_status = text
             self.node.get_logger().info(text)
-        self.status_pub.publish(String(data=text))
+            self.status_pub.publish(String(data=text))
+            self._last_pub_t = now
+        elif now - self._last_pub_t > 0.5:  # heartbeat, throttled
+            self.status_pub.publish(String(data=text))
+            self._last_pub_t = now
+
+    def _heartbeat(self):
+        # every tick republishes the standing state (throttled) so a
+        # late-joining subscriber and a mid-motion dashboard both see it
+        # (audit 2026-08-19: the topic went silent during every motion)
+        self._status(self._last_status)
 
     def _set_region(self, center):
         if not self.ignore_cli.service_is_ready():
@@ -157,11 +187,14 @@ class Seeker:
             float(max(self.last_extent[1], 0.05)) + 0.04
         ]
         req.dims.x, req.dims.y, req.dims.z = d
+        # pessimistic: the REQUEST may land even if the response times
+        # out — assume it did so a later clear is always attempted
+        # (audit 2026-08-19: the optimistic flag leaked a permanent
+        # blind spot on a slow cameras-node response)
+        self.region_on = True
         fut = self.ignore_cli.call_async(req)
         rclpy.spin_until_future_complete(self.node, fut, timeout_sec=3.0)
         res = fut.result()
-        if res is not None and res.success:
-            self.region_on = True
         return res.message if res is not None else None
 
     def clear_region(self):
@@ -186,6 +219,20 @@ class Seeker:
         time.sleep(0.3)  # settle before a live-start plan
         return True
 
+    def _drop_target_state(self):
+        """Everything tied to the current pursuit — reset on target
+        clear/retarget/loss so nothing stale leaks into the next one
+        (audit 2026-08-19: stale goal_obj deadlocked reacquisition as a
+        false HOLDING; stale pending_retry bypassed the two-frame gate;
+        ratcheted last_extent blinded a small target's surroundings)."""
+        self.belief = None
+        self.buf = []
+        self.pending_move = None
+        self.last_sure = None
+        self.goal_obj = None
+        self.pending_retry = False
+        self.last_extent = np.array([0.06, 0.20])
+
     def _harvest_result(self):
         if self.result_fut is None or not self.result_fut.done():
             return
@@ -199,6 +246,7 @@ class Seeker:
             self._status("segment FAILED (%s) — will replan" % msg)
             if kind == "approach":
                 self.pending_retry = True
+                self.goal_obj = None
 
     def _run(self, plan, kind, obj=None):
         self.handle = self.demo.run_async(plan.trajectory, self.speed)
@@ -227,18 +275,21 @@ class Seeker:
             out.append((vkey, rot @ center + trans, np.asarray(extent), cf))
         return out
 
-    def _perceive(self, sights, now):
+    def _perceive(self, sights, now, allow_acquire):
         if self.belief is not None:
             near = track_update(self.belief["pos"], sights,
                                 max_jump=self.LEASH, min_move=0.0)
             if near is not None:
                 s = min(sights, key=lambda s: np.linalg.norm(s[1] - near))
                 self.belief.update(pos=near, stamp=now, conf=s[3])
+                # resting height tracks DOWN (placed on a lower surface)
+                # but never up — up is what the lift guard detects
+                self.belief["base_z"] = min(self.belief["base_z"],
+                                            float(near[2]))
                 self.last_extent = np.maximum(self.last_extent, s[2])
             return
-        # acquisition — two INDEPENDENT confirmations, two ways to get them:
-        # a sure-confidence pair of consecutive frames, or sightings from
-        # two distinct (moved-camera) viewpoints in the recent buffer
+        if not allow_acquire:
+            return  # mid-motion frames never CREATE a belief
         self.buf = [b for b in self.buf if now - b[4] < self.BUF_TTL]
         self.buf.extend((v, p, e, c, now) for v, p, e, c in sights)
         sure = [s for s in sights if s[3] >= self.sure_conf]
@@ -266,6 +317,7 @@ class Seeker:
         self.last_extent = np.maximum(self.last_extent, extent)
         self.buf = []
         self.last_sure = None
+        self.last_known = None
         self._status("ACQUIRED %s at [%.2f, %.2f, %.2f]"
                      % (self.target, pos[0], pos[1], pos[2]))
 
@@ -273,10 +325,12 @@ class Seeker:
     def _approach(self, obj):
         if not self.stop_goal():
             return
+        self._next_cmd_t = time.monotonic() + self.CMD_COOLDOWN
         msg = self._set_region(obj)
         if msg is not None and _purged_count(msg) != 0:
             time.sleep(1.5)  # purge propagation (2 Hz world push)
         plan = None
+        gap = 0.0
         for st, zmin in ((self.standoff, 0.12), (self.standoff, 0.22),
                          (self.standoff + 0.08, 0.30)):
             so = standoff_pose(obj, standoff=st, z_min=zmin)
@@ -301,71 +355,113 @@ class Seeker:
 
     def _search(self):
         if self.handle is not None:
+            self._heartbeat()
             return  # let the current motion finish; frames keep coming
-        bearing, pitch = GLANCES[self.search_i % len(GLANCES)]
-        self.search_i += 1
-        pos, quat = glance_pose(bearing, pitch)
+        if self.last_known is not None:
+            # seed the search at the last place the target was seen
+            bearing = float(np.arctan2(self.last_known[1], self.last_known[0]))
+            self.last_known = None
+            pos, quat = glance_pose(bearing, np.radians(55.0))
+            label = "last known position"
+        else:
+            bearing, pitch = GLANCES[self.search_i % len(GLANCES)]
+            self.search_i += 1
+            pos, quat = glance_pose(bearing, pitch)
+            label = "glance %d/%d" % ((self.search_i - 1) % len(GLANCES) + 1,
+                                      len(GLANCES))
         plan = self.demo.plan_pose_from(pos, quat, None)
         if plan is None or not plan.success:
-            return  # unplannable glance: next loop tries the next one
+            return  # unplannable pose: next loop tries the next one
         if max(joint_travel(plan.trajectory).values()) > self.WIND_RAD:
             return
         if self._run(plan, "glance"):
-            self._status("SEARCHING for %s (glance %d/%d)"
-                         % (self.target, (self.search_i - 1) % len(GLANCES) + 1,
-                            len(GLANCES)))
+            self._status("SEARCHING for %s (%s)" % (self.target, label))
 
     # ---------------------------------------------------------------- tick
     def tick(self):
         now = time.monotonic()
+        if not self._startup_clear_done and self.ignore_cli.service_is_ready():
+            # a crashed predecessor may have left an ignore region — a
+            # fresh controller starts with a whole world (audit 2026-08-19)
+            self._startup_clear_done = True
+            self.region_on = True
+            self.clear_region()
         # target changes (service or param) land between frames
         if self._pending_text is not None:
             text, self._pending_text = self._pending_text, None
             if text == "":
                 self.target = None
-                self.belief = None
                 self.stop_goal()
+                self._drop_target_state()
                 self.clear_region()
             else:
                 cls = parse_target(text)
-                if cls is not None and cls != self.target:
-                    self.target = cls
-                    self.belief = None
-                    self.buf = []
-                    self.pending_move = None
+                if cls is None:
+                    self._status("cannot resolve %r to a known class — "
+                                 "still %s" % (text, self.target or "IDLE"))
+                elif cls != self.target:
+                    self.stop_goal()  # a retarget IS a decision change
+                    self._drop_target_state()
                     self.clear_region()
+                    self.target = cls
                     if self.model is None:
+                        self._status("loading detector for %s..." % cls)
                         self.model = load_detector(self.weights)
         self._harvest_result()
         if self.target is None:
             self._status("IDLE — set a target via ~/set_target")
-            rclpy.spin_once(self.node, timeout_sec=0.2)
+            rclpy.spin_once(self.node, timeout_sec=0.05)
+            time.sleep(0.1)  # bounded idle rate, not callback rate
             return
         moving = self.result_fut is not None
         shot = self.grab.shot(timeout_s=0.5, strict=moving)
         if shot is not None:
-            self._perceive(self._localize(shot), now)
+            self._last_data_t = now
+            self._perceive(self._localize(shot), now,
+                           allow_acquire=not moving)
+        elif not moving and not self.grab.missing():
+            self._last_data_t = now  # streams alive, frame just late
+        if now - self._last_data_t > self.BLIND_S:
+            # blind: no autonomous patrol without perception (audit
+            # 2026-08-19: a dead camera meant endless glance motion)
+            self.stop_goal()
+            self._status("no camera data for %.0f s (%s) — motion paused"
+                         % (now - self._last_data_t,
+                            ", ".join(self.grab.missing()) or "TF"))
+            return
         if self.belief is None:
             self.clear_region()
             self._search()
             return
         age = now - self.belief["stamp"]
         if age > self.LOST_S:
-            self._status("%s lost — searching from last known position"
+            if self.goal_kind == "approach":
+                self._heartbeat()
+                return  # camera can't see mid-approach; judge on arrival
+            self._status("%s lost — searching near its last position"
                          % self.target)
+            self.last_known = self.belief["pos"].copy()
+            self.stop_goal()
             self.belief = None
             self.pending_move = None
+            self.goal_obj = None
             self.clear_region()
-            self.stop_goal()
             return
         pos = self.belief["pos"]
         if pos[2] > self.belief["base_z"] + self.LIFT_HOLD:
+            # preempt AND clear the region: an in-flight approach would
+            # otherwise keep driving toward the spot a hand just reached
+            # into, with that spot's voxels purged (audit 2026-08-19)
+            self.stop_goal()
+            self.clear_region()
+            self.goal_obj = None
+            self.pending_move = None
             self._status("%s lifted — holding, not chasing a hand"
                          % self.target)
-            self.pending_move = None
             return
         if age > self.FRESH_S:
-            return  # belief usable for search seeding but too old to chase
+            self._heartbeat()
+            return  # too old to chase; too young to declare lost
         want = (
             self.goal_obj is None
             or self.goal_kind == "glance"
@@ -376,16 +472,24 @@ class Seeker:
             if self.handle is None:
                 self._status("HOLDING at %s [%.2f, %.2f, %.2f]"
                              % (self.target, pos[0], pos[1], pos[2]))
+            else:
+                self._heartbeat()
             return
-        # commit a move only when two consecutive frames agree (a single
-        # frame never moves the arm — audit 2026-08-18)
+        if now < self._next_cmd_t:
+            self._heartbeat()
+            return  # anti-churn cooldown between approach dispatches
         if self.pending_retry and self.handle is None:
             self.pending_move = None
             self._approach(pos)
             return
+        # commit a move only when a NEWER frame agrees with the pending
+        # one — comparing against a stale belief copy made one sighting
+        # enough (audit 2026-08-19); the stamp check requires an actual
+        # second localization
         if (
             self.pending_move is not None
             and now - self.pending_move[1] < 1.0
+            and self.belief["stamp"] > self.pending_move[1]
             and np.linalg.norm(pos - self.pending_move[0]) <= 0.05
         ):
             self.pending_move = None
@@ -396,12 +500,21 @@ class Seeker:
     def shutdown(self):
         try:
             self.stop_goal()
-        finally:
+        except Exception:
+            pass
+        try:
             self.clear_region()
+        except Exception:
+            pass
 
 
 def main():
-    rclpy.init()
+    from rclpy.signals import SignalHandlerOptions
+
+    # keep SIGINT as a normal KeyboardInterrupt: rclpy's own handler
+    # would shut the context down BEFORE our cleanup can cancel the
+    # active goal and clear the ignore region (audit 2026-08-19)
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = rclpy.create_node("seeker")
     seeker = Seeker(node)
     print(
@@ -411,18 +524,21 @@ def main():
     )
     try:
         while rclpy.ok():
-            seeker.tick()
+            try:
+                seeker.tick()
+            except SystemExit as e:
+                # helper hard-exits (planner briefly gone, driver
+                # relaunched wrong) must DEGRADE, not kill the
+                # controller (audit 2026-08-19)
+                seeker._status("recoverable: %s — retrying" % e)
+                time.sleep(2.0)
     except KeyboardInterrupt:
         pass
-    except BaseException:
+    finally:
         seeker.shutdown()
-        raise
-    seeker.shutdown()
+        rclpy.try_shutdown()
     print("\nseeker stopped — arm holds")
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\nseeker stopped — arm holds")
+    main()
