@@ -22,11 +22,12 @@ docs/HARDWARE_BRINGUP.md  the real-arm runbook — READ BEFORE TOUCHING HARDWARE
 
 > **Hardware safety, non-negotiable:** a human holds the physical e-stop
 > during ALL hardware runs. Execution is opt-in at three separate layers
-> (node `execute:=true`, example/demo `--execute`, typed confirmation),
-> defaults to 25% speed (`tour_demo` alone runs full-speed, behind its
-> own all-caps warning and typed 'go'), and every plan is re-validated
-> against limits and the arm's live state before anything reaches the
-> controller.
+> (node `execute:=true`, example/demo `--execute`, typed confirmation —
+> except `seek_demo`, which by owner decision replaces the typed gate
+> with a visible pre-motion countdown), defaults to 25% speed
+> (`tour_demo` alone runs full-speed, behind its own all-caps warning
+> and typed 'go'), and every plan is re-validated against limits and
+> the arm's live state before anything reaches the controller.
 
 ## Install (Jetson AGX Orin)
 
@@ -167,14 +168,15 @@ re-confirmed by a second frame, skips the remaining glances; otherwise
 sightings are clustered in 3D and a location confirmed from two
 different viewpoints wins (a look-alike seen once loses the vote; two
 confirmed locations refuse with a listing unless `--pick nearest`;
-`--sure-conf 1.1` = always require two viewpoints). Typed `seek`
-gates the scan; typed `go` gates the approach AND the tracking that
-follows by default — the arm keeps re-detecting the target and
-replans whenever it moves, preempting mid-motion, ~1-2 s reaction,
-until Ctrl+C (`--once` = stop after arrival). ≤0.25 speed throughout.
-The approach pose aims the gripper (and camera) down at the object,
-and every plan prints its largest joint travel, warning before a
-joint-family wind-up. The D405 driver needs
+`--sure-conf 1.1` = always require two viewpoints). Seek runs
+AUTONOMOUSLY once launched (owner's decision 2026-08-19): a visible
+countdown before first motion replaces the typed gates — Ctrl+C
+aborts — then scan, approach, and tracking by default: the arm keeps
+re-detecting the target and replans whenever it moves, preempting
+mid-motion, ~1-2 s reaction, until Ctrl+C (`--once` = stop after
+arrival). ≤0.25 speed throughout. The approach pose aims the gripper
+(and camera) down at the object; a winding (joint-family-flip)
+approach plan is retried and otherwise REFUSED, never run unattended. The D405 driver needs
 `align_depth.enable:=true` for this demo.
 
 ## Perceived world (cameras)

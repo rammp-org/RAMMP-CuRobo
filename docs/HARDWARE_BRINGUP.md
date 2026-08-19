@@ -257,12 +257,13 @@ unaffected — it keeps using the depth-frame topic).
    than ~0.38 m the demo refuses the approach as unsafe).
    `ros2 run rammp_curobo_ros seek_demo --text "go to the bottle"
    --execute` → camera/TF preflight (fails fast if align_depth is
-   missing, before anything moves) → typed `seek` → the arm glances
-   (skip-on-unplannable), needs sightings from TWO different viewpoints
-   (prints each with its base_link position — sanity: tape measure),
-   then shows the approach plan **with the actual gap it will leave**
-   (0.08-0.18 m depending on distance) → typed `go` → approach at
-   ≤0.25, e-stop in hand.
+   missing, before anything moves) → **the demo then runs autonomously**
+   (owner decision 2026-08-19: no typed gates; a visible 3 s countdown
+   precedes the scan and a 2 s one precedes the approach — Ctrl+C
+   aborts either) → glances (skip-on-unplannable), sightings printed
+   with base_link positions (sanity: tape measure), the approach plan
+   printed **with the actual gap it will leave** (0.08-0.18 m depending
+   on distance) → approach at ≤0.25, e-stop in hand.
 2. Second run: add clutter (a box) between home and the bottle, let §6's
    world map it (markers), re-run — the approach must bow around the
    box's cuboid while still reaching the bottle (whose voxels the ignore
@@ -284,12 +285,12 @@ unaffected — it keeps using the depth-frame topic).
 4. If nothing is confirmed from two viewpoints the demo refuses with
    the single-viewpoint sightings listed — moving bottle, bad depth, or
    a bumped camera bracket does that.
-5. The approach plan prints its largest joint travel and WARNS above
-   3.5 rad — that's a joint-family flip (the arm winds through a big
-   sweeping reconfiguration to reach the same tool pose). Don't type
-   `go` on a warned plan unless you want to watch it; re-running
-   usually draws a sane one.
-6. Tracking is the DEFAULT: typed `go` covers the approach AND the
+5. The approach plan prints its largest joint travel. Above 3.5 rad
+   (a joint-family flip — the arm winds through a big sweeping
+   reconfiguration to reach the same tool pose) the plan is retried
+   and, if still winding, REFUSED — a flip is never launched
+   autonomously; re-run.
+6. Tracking is the DEFAULT: the launch covers the approach AND the
    follow loop — the wrist camera (aimed at the object by the approach
    pose) keeps re-detecting it, and the arm replans whenever it moves,
    preempting mid-motion via the executor's verified stop+hold (5 cm

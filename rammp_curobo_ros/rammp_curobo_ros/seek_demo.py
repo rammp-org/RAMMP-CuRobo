@@ -4,24 +4,27 @@
     ros2 run rammp_curobo_ros seek_demo --text "go to the bottle"            # dry logic
     ros2 run rammp_curobo_ros seek_demo --text "go to the bottle" --execute  # the real thing
 
-Flow (attended, every gate intact): typed 'seek' -> auto-generated
-glance poses; every YOLO instance (wrist D405) in each glance's frame
-is 3-D-localized via aligned depth + TF. The scan ends at the FIRST of:
-a confident sighting (conf >= --sure-conf, default 0.80, re-confirmed
-by a second same-pose frame within 5 cm) -> go now; a location
-confirmed from TWO different glances (10 cm cluster) -> go; all glances
-visited -> cluster and decide (a look-alike seen once loses the vote;
-two confirmed locations refuse with a listing unless --pick nearest;
---sure-conf 1.1 disables the confident shortcut and always requires
-two viewpoints) -> ignore region set around the target (purges its
-mapped voxels; the thing you approach must not be dodged) -> standoff
-pose planned through the perceived world, aimed AT the object (with
-the largest joint travel shown — a wind-up warning precedes any
-joint-family flip) -> typed 'go' -> approach at <=0.25 speed, then
-KEEP TRACKING: the wrist camera re-detects the target and the arm
-replans whenever it moves, preempting mid-motion (~1-2 s reaction — a
-replan loop, not millisecond servoing), until Ctrl+C. --once stops
-after the first arrival instead.
+Flow (attended, autonomous after launch — the typed 'seek'/'go' gates
+were removed at the owner's request 2026-08-19; a visible countdown
+before first motion is the remaining demo-layer gate, while the node's
+execute param, --execute, and every executor gate are unchanged):
+countdown -> auto-generated glance poses; every YOLO instance (wrist
+D405) in each glance's frame is 3-D-localized via aligned depth + TF.
+The scan ends at the FIRST of: a confident sighting (conf >=
+--sure-conf, default 0.80, re-confirmed by a second same-pose frame
+within 5 cm); a location confirmed from TWO different glances (10 cm
+cluster); all glances visited -> cluster and decide (a look-alike seen
+once loses the vote; two confirmed locations refuse with a listing
+unless --pick nearest; --sure-conf 1.1 always requires two viewpoints)
+-> ignore region set around the target (purges its mapped voxels; the
+thing you approach must not be dodged) -> standoff pose planned
+through the perceived world, aimed AT the object (a winding
+joint-family-flip plan is retried, then REFUSED — never launched
+autonomously) -> approach at <=0.25 speed, then KEEP TRACKING: the
+wrist camera re-detects the target and the arm replans whenever it
+moves, preempting mid-motion (~1-2 s reaction — a replan loop, not
+millisecond servoing), until Ctrl+C. --once stops after the first
+arrival instead.
 
 Needs: planner (execute:=true), cameras node, arm bringup, and the D405
 driver WITH ALIGNED DEPTH:
@@ -431,6 +434,22 @@ def joint_travel(traj):
     return dict(zip(traj.joint_names, travel.tolist()))
 
 
+def countdown(action, seconds):
+    """Visible last-chance window before autonomous motion.
+
+    The typed 'seek'/'go' gates were removed at the owner's request
+    (2026-08-19: 'I want the arm to do it autonomously when I run the
+    code') — this countdown is what remains of the demo-layer gate.
+    The node's execute param, the --execute flag, and every executor
+    gate are unchanged."""
+    try:
+        for s in range(seconds, 0, -1):
+            print("%s in %d... (Ctrl+C aborts)" % (action, s), flush=True)
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        sys.exit("\naborted — arm holds")
+
+
 def decide(clusters, pick="refuse"):
     """The scan's verdict from cluster_sightings output.
 
@@ -533,11 +552,15 @@ def main():
     print("preflight OK.")
 
     print(
-        "\n*** SEEK: the arm will SCAN (%d glance poses) and then APPROACH "
-        "the %s. Workspace clear, hand on e-stop. ***" % (len(GLANCES), target)
+        "\n*** SEEK: the arm will SCAN (up to %d glance poses), APPROACH "
+        "the %s%s — autonomously. Workspace clear, hand on e-stop. ***"
+        % (
+            len(GLANCES),
+            target,
+            "" if args.once else ", then TRACK it until Ctrl+C",
+        )
     )
-    if input("type 'seek' to start scanning: ").strip() != "seek":
-        sys.exit("aborted — nothing moved")
+    countdown("scanning", 3)
 
     model = load_detector(args.weights)
     sightings = []  # (glance_idx, center_base, extent, conf) — ONE frame
@@ -745,31 +768,30 @@ def main():
         plan = demo.plan_pose_from(pos, quat, None)
         if plan is None or not plan.success:
             sys.exit("cannot plan the approach — see planner log")
+        # nobody is at a 'go' prompt to veto a joint-family flip anymore:
+        # retry the plan a couple of times, and REFUSE rather than launch
+        # a surprise 360 autonomously
+        for _ in range(2):
+            if max(joint_travel(plan.trajectory).values()) <= 3.5:
+                break
+            retry = demo.plan_pose_from(pos, quat, None)
+            if retry is not None and retry.success:
+                plan = retry
         travel = joint_travel(plan.trajectory)
         worst_j = max(travel, key=travel.get)
-        wind = ""
         if travel[worst_j] > 3.5:
-            wind = (
-                "\n*** WARNING: this plan WINDS %s through %.1f rad (joint-"
-                "family flip) — the arm will make a large sweeping "
-                "reconfiguration. Ctrl+C mid-motion stops it; consider "
-                "re-running instead of typing go. ***"
-                % (worst_j, travel[worst_j])
+            sys.exit(
+                "approach plan winds %s through %.1f rad (joint-family "
+                "flip) even after retries — arm holds at the last glance; "
+                "re-run" % (worst_j, travel[worst_j])
             )
         print(
             "\n%s at [%.2f, %.2f, %.2f]; approach leaves a %.2f m gap "
-            "(%.1f s at speed %.2f; largest joint travel %s %.1f rad)%s"
+            "(%.1f s at speed %.2f; largest joint travel %s %.1f rad)"
             % (target, obj[0], obj[1], obj[2], gap, traj_time(plan, scale),
-               scale, worst_j, travel[worst_j], wind)
+               scale, worst_j, travel[worst_j])
         )
-        prompt = (
-            "type 'go' to approach: "
-            if args.once
-            else "type 'go' to approach and TRACK it (the arm then follows "
-            "the %s WITHOUT further confirmation until Ctrl+C): " % target
-        )
-        if input(prompt).strip() != "go":
-            sys.exit("aborted — arm holds at the last glance")
+        countdown("approaching", 2)
         if not demo.run(plan.trajectory, scale):
             sys.exit("approach failed — arm holds; see planner log")
         print("\nARRIVED — %.2f m from the %s, facing it." % (gap, target))

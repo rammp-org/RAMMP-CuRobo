@@ -4,7 +4,9 @@ Standalone cuRobo planning for the RAMMP Kinova Gen3 7-DoF (+ Robotiq
 2F-85): a planning SERVICE — end position in, collision-free joint
 trajectory out — plus showcases (`tour_demo`, and the `dance_demo`
 easter egg, and `seek_demo`: "go to the bottle" via YOLO on the wrist
-camera — same gates), a safety-gated
+camera — autonomous once launched BY OWNER DECISION 2026-08-19:
+countdown replaces its typed gates; node/executor gates unchanged;
+tracks the target by default until Ctrl+C), a safety-gated
 executor for this bench, and live spatial awareness (the `cameras` node:
 wrist-D405 depth → cuboid obstacles → planner world at ~2 Hz; TF
 extrinsics, no calibration). Parts:
