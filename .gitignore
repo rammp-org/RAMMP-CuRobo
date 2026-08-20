@@ -17,3 +17,6 @@ docs/license_*/
 *.lic
 *.signature
 *.public_key
+
+# generated fiducials (scripts/make_tag.py)
+tag*.png

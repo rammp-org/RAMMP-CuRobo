@@ -94,9 +94,11 @@ def load_camera_config(name_or_path):
                 )
             return cfg
     sys.exit(
-        "camera config %r not found (tried: %s). The Orbbec config is "
-        "WRITTEN BY scripts/calibrate_camera_extrinsics.py — run the "
-        "calibration first." % (name_or_path, candidates)
+        "camera config %r not found (tried: %s).\nIf you just added it, "
+        "colcon globs config/*.yaml at BUILD time — rebuild:\n  colcon "
+        "build --symlink-install --packages-select rammp_curobo_ros\n"
+        "The Orbbec config is written by scripts/calibrate_orbbec.py."
+        % (name_or_path, candidates)
     )
 
 
