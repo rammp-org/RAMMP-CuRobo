@@ -145,9 +145,11 @@ def test_update_world_boxes_reaches_the_live_checker(planner):
 def test_update_world_guards_and_round_trip(planner):
     with pytest.raises(ValueError, match="empty"):
         planner.update_world([])
+    # one past whatever the config's cache is, so raising the cache does
+    # not silently stop testing the guard
     too_many = [
         {"name": "b%d" % i, "position": [2 + i, 5, 5], "dims": [0.01, 0.01, 0.01]}
-        for i in range(61)  # cache is 60
+        for i in range(planner.collision_cache_obb + 1)
     ]
     with pytest.raises(ValueError, match="collision_cache_obb"):
         planner.update_world(too_many)
