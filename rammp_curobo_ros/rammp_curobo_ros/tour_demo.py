@@ -122,14 +122,21 @@ class TourDemo:
 
     def run(self, traj, scale):
         goal = ExecuteTrajectory.Goal(trajectory=traj, speed_scale=float(scale))
-        send = spin_until_done(self.node, self.execute.send_goal_async(goal), 10.0)
-        if send is None or not send.accepted:
-            return False
-        future = send.get_result_async()
+        send_fut = self.execute.send_goal_async(goal)
+        send = None
         try:
-            wrapped = spin_until_done(self.node, future, 240.0)
+            # the SEND window counts too: a goal accepted server-side but
+            # not yet in hand would otherwise keep driving the arm while
+            # we print "holds" (audit 2026-08-19)
+            send = spin_until_done(self.node, send_fut, 10.0)
+            if send is None or not send.accepted:
+                return False
+            wrapped = spin_until_done(self.node, send.get_result_async(), 240.0)
         except KeyboardInterrupt:
-            spin_until_done(self.node, send.cancel_goal_async(), 3.0)
+            if send is None and send_fut.done():
+                send = send_fut.result()
+            if send is not None and send.accepted:
+                spin_until_done(self.node, send.cancel_goal_async(), 3.0)
             print("\nCtrl+C — segment cancelled, arm holds")
             raise
         return wrapped is not None and wrapped.result.success

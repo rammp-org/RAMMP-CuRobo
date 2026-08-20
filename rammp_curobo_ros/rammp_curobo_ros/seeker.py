@@ -47,7 +47,7 @@ from rammp_curobo_ros.tour_demo import HOME_QUAT_XYZW, TourDemo
 
 class Seeker:
     LOST_S = 4.0        # no sighting this long -> drop the fix, survey
-    DEAD_BAND = 0.05    # m; smaller target moves don't re-aim the arm
+    AGREE_S = 2.5       # acquisition window: 3 sightings must land inside
     LEASH = 0.35        # m; a sighting farther from the fix is a decoy
     LIFT_HOLD = 0.15    # m above resting height -> hold, never chase
     BLIND_S = 3.0       # s without camera streams -> no motion
@@ -99,6 +99,7 @@ class Seeker:
         self.last_data = time.monotonic()
         self.region_pos = None
         self.region_on = True      # a predecessor may have left one
+        self._startup_cleared = False
         self.at_survey = False
 
     # ------------------------------------------------------------ plumbing
@@ -182,7 +183,14 @@ class Seeker:
             self._status("%s: plan winds the arm — refused" % label)
             return False
         self._status(label)
-        if not self.demo.run(plan.trajectory, self.speed):
+        t0 = time.monotonic()
+        ok = self.demo.run(plan.trajectory, self.speed)
+        # a blocking hop can outlast LOST_S while the camera is busy
+        # moving — don't let its own motion time declare the target lost
+        moved_for = time.monotonic() - t0
+        self.last_seen += moved_for
+        self.last_data += moved_for
+        if not ok:
             self._status("%s: execution failed — holding" % label)
             return False
         return True
@@ -192,8 +200,8 @@ class Seeker:
         """One frame -> detections -> fix update/acquisition."""
         shot = self.grab.shot(timeout_s=0.5)
         if shot is None:
-            if not self.grab.missing():
-                self.last_data = now  # streams alive, frame merely late
+            # streams missing OR TF unusable — both are blindness, and
+            # both must be able to trip the BLIND_S motion pause
             return
         self.last_data = now
         frame, depth, intr, rot, trans = shot
@@ -224,9 +232,12 @@ class Seeker:
             self.fix["extent"] = np.maximum(self.fix["extent"], s[2])
             self.last_seen = now
             return
-        # acquisition: n parked frames agreeing (one frame never moves the arm)
-        best = max(sights, key=lambda s: s[3])
-        self.recent = [(p, t) for p, t in self.recent if now - t < 1.5]
+        # acquisition: n parked frames agreeing (one frame never moves the
+        # arm). NEAREST wins, not most-confident — with two same-class
+        # objects in frame, confidence jitter alternated the candidate and
+        # agreement could never converge (review 2026-08-20)
+        best = min(sights, key=lambda s: float(np.hypot(s[1][0], s[1][1])))
+        self.recent = [(p, t) for p, t in self.recent if now - t < self.AGREE_S]
         self.recent.append((best[1], now))
         pos = stable_fix(self.recent)
         if pos is not None:
@@ -262,21 +273,32 @@ class Seeker:
     # ---------------------------------------------------------------- tick
     def tick(self):
         now = time.monotonic()
+        if not self._startup_cleared and self.ignore_cli.service_is_ready():
+            # a crashed predecessor may have left a region purged — clear
+            # it even while idle, or it blinds the shared world forever
+            self._startup_cleared = True
+            self.clear_region()
         if self._pending is not None:
-            text, self._pending = self._pending, None
+            text = self._pending
             cls = parse_target(text) if text else None
             if text and cls is None:
+                self._pending = None
                 self._status("cannot resolve %r — still %s"
                              % (text, self.target or "IDLE"))
-            elif cls != self.target:
-                self.target = cls
-                self.fix = None
-                self.recent = []
-                self.at_survey = False
-                self.clear_region()
+            else:
                 if cls and self.model is None:
+                    # load BEFORE committing the target: load_detector
+                    # exits on missing weights and _pending must survive
+                    # so main's degrade actually retries
                     self._status("loading detector...")
                     self.model = load_detector(self.weights)
+                self._pending = None
+                if cls != self.target:
+                    self.target = cls
+                    self.fix = None
+                    self.recent = []
+                    self.at_survey = False
+                    self.clear_region()
         if self.target is None:
             self._status("IDLE — set a target via ~/set_target")
             rclpy.spin_once(self.node, timeout_sec=0.05)
@@ -285,7 +307,7 @@ class Seeker:
         self._look(now)
         if now - self.last_data > self.BLIND_S:
             self._status("no camera data (%s) — motion paused"
-                         % (", ".join(self.grab.missing()) or "TF"))
+                         % (self.grab.last_fail or "unknown"))
             return
         if self.fix is not None and now - self.last_seen > self.LOST_S:
             self._status("%s lost — surveying" % self.target)
@@ -299,6 +321,9 @@ class Seeker:
             return
         pos = self.fix["pos"]
         if pos[2] > self.fix["base_z"] + self.LIFT_HOLD:
+            # release the purge too: a hand is working in that volume and
+            # the world must see it while we hold
+            self.clear_region()
             self._status("%s lifted — holding, not chasing a hand" % self.target)
             return
         tool = self._tool_pos()

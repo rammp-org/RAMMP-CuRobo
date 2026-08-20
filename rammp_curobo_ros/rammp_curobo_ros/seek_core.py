@@ -125,6 +125,7 @@ class D405Grabber:
         self.tf_listener = TransformListener(self.tf_buffer, node)
         self.color = self.depth = self.info = None
         self.color_stamp = None
+        self.last_fail = "no frames yet"
         node.create_subscription(
             Image, ns + "/color/image_raw", self._color_cb, qos_profile_sensor_data
         )
@@ -179,6 +180,7 @@ class D405Grabber:
         while self.color is None or self.depth is None or self.info is None:
             rclpy.spin_once(self.node, timeout_sec=0.2)
             if time.monotonic() - t0 > timeout_s:
+                self.last_fail = ", ".join(self.missing())
                 return None
         if self.depth.shape != self.color.shape[:2]:
             sys.exit(
@@ -193,7 +195,9 @@ class D405Grabber:
             except Exception:
                 continue
         if tr is None:
+            self.last_fail = "TF base_link->%s" % self.parent
             return None
+        self.last_fail = None
         q, t = tr.transform.rotation, tr.transform.translation
         r_p = quat_to_mat(q.x, q.y, q.z, q.w)
         qx, qy, qz, qw = self.mount_quat
