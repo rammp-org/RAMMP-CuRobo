@@ -87,6 +87,11 @@ def main():
     ap.add_argument("--goal", type=float, nargs=3, default=[0.55, 0.30, 0.35])
     ap.add_argument("--margin", type=float, default=0.02,
                     help="clearance (m) the aware path must achieve")
+    ap.add_argument("--execute", action="store_true",
+                    help="on PASS, actually DRIVE the avoiding path on the "
+                    "arm (needs the planner node with execute:=true; the "
+                    "arm moves — e-stop in hand)")
+    ap.add_argument("--speed", type=float, default=0.2)
     args = ap.parse_args()
 
     if args.box:
@@ -148,12 +153,58 @@ def main():
     if worst_blind > 0.0:
         print("\nINCONCLUSIVE: the blind path already missed the obstacle. "
               "Put the obstacle between --start and --goal.")
-    elif worst_aware >= args.margin:
-        print("\nPASS — the blind path goes through the obstacle, the aware "
-              "path clears it by %.0f mm. cuRobo is using the camera." % (worst_aware * 1000))
-    else:
+        return
+    if worst_aware < args.margin:
         print("\nFAIL — the aware path still comes within %.0f mm."
               % (worst_aware * 1000))
+        return
+    print("\nPASS — the blind path goes through the obstacle, the aware "
+          "path clears it by %.0f mm. cuRobo is using the camera."
+          % (worst_aware * 1000))
+    if args.execute:
+        drive(args, to_start, aware)
+
+
+def drive(args, to_start, aware):
+    """Run the two segments on the real arm through the planner node."""
+    import rclpy
+    from builtin_interfaces.msg import Duration
+    from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+
+    from rammp_curobo_ros.tour_demo import TourDemo
+
+    def to_msg(traj):
+        m = JointTrajectory()
+        m.joint_names = list(traj.joint_names)
+        for i, q in enumerate(traj.positions):
+            p = JointTrajectoryPoint()
+            p.positions = [float(v) for v in q]
+            if traj.velocities is not None:
+                p.velocities = [float(v) for v in traj.velocities[i]]
+            t = (i + 1) * traj.dt
+            p.time_from_start = Duration(sec=int(t),
+                                         nanosec=int(round((t % 1.0) * 1e9)))
+            m.points.append(p)
+        return m
+
+    rclpy.init()
+    node = rclpy.create_node("prove_avoidance_exec")
+    demo = TourDemo(node)
+    print("\nDriving it: home -> start, then the AVOIDING path. e-stop in hand.")
+    try:
+        for label, traj in (("to start", to_start.joint_traj),
+                            ("avoiding path", aware.joint_traj)):
+            print("  %s ..." % label)
+            if not demo.run(to_msg(traj), args.speed):
+                print("  refused — is the planner node running with "
+                      "execute:=true, and is the arm where the plan starts?")
+                break
+        else:
+            print("  done — the arm went around it.")
+    except KeyboardInterrupt:
+        print("\n  Ctrl+C — cancelled, arm holds")
+    finally:
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":
