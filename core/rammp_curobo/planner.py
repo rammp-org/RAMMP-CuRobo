@@ -340,6 +340,19 @@ class CuRoboPlanner:
         wxyz = [float(v) for v in state.ee_quaternion[0].tolist()]
         return pos, (wxyz if quat_order == "wxyz" else geometry.wxyz_to_xyzw(wxyz))
 
+    def link_spheres(self, q):
+        """Collision spheres of the WHOLE arm at joint vector q.
+
+        (N, 4) numpy: x, y, z, radius in base_link — the same model
+        cuRobo collision-checks against, so this is what "did the arm
+        hit it" actually means (tool_frame alone answers a much weaker
+        question).
+        """
+        state = self._motion_gen.kinematics.get_state(
+            self._tensor([self._to_curobo_order(q)])
+        )
+        return state.link_spheres_tensor[0].detach().cpu().numpy()
+
     def joint_limits(self):
         """{'position': (2, dof) [lower; upper], 'velocity': (dof,)} in
         CONTROLLER joint order (numpy, radians)."""

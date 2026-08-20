@@ -1,0 +1,32 @@
+# Fixed Orbbec Gemini 336L watching the bench (ENVIRONMENT camera).
+#
+# !!! PLACEHOLDER POSE — MEASURE OR CALIBRATE BEFORE TRUSTING IT !!!
+# mount_xyz / mount_quat_xyzw describe the camera's DEPTH OPTICAL frame
+# in base_link (+x forward from the arm, +z up). Optical convention:
+# camera +Z looks along the view direction, +X right, +Y down.
+#
+# Two ways to fill it in:
+#   1. SOLVE it (recommended, ~2 min, no measuring):
+#        python3 scripts/make_tag.py --id 0 --size 0.06 --out tag0.png
+#        # tape the printed tag to the gripper, then
+#        python3 scripts/calibrate_orbbec.py --marker-size 0.06 --execute
+#      That OVERWRITES this file with the solved pose.
+#   2. Hand-measure the camera position with a tape and set the rotation
+#      from how it is aimed. Rough is fine to start — then use the
+#      free check below.
+#
+# FREE ACCURACY CHECK (no tag needed): run the cameras node with this
+# config and watch /cameras/world_markers or the :8766 view. The node
+# self-filters the ARM out using TF. If the extrinsics are right the arm
+# vanishes; if they are wrong you get a big phantom obstacle sitting
+# where the arm is. Tune until the arm disappears.
+#
+# The values below assume a camera ~1 m in front of the arm, 0.6 m up,
+# looking back at it and tilted ~30 deg down. Almost certainly not yours.
+depth_topic: /camera/depth/image_raw
+info_topic: /camera/depth/camera_info
+parent_frame: base_link
+mount_xyz: [1.00, 0.0, 0.60]
+mount_quat_xyzw: [0.6123724, -0.3535534, 0.3535534, 0.6123724]
+min_range: 0.2
+max_range: 2.0
