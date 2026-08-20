@@ -361,7 +361,12 @@ class CamerasNode(Node):
         self.baseline = str(p("baseline", "world_real_bench.yaml").value)
         self.voxel = float(p("voxel", 0.03).value)
         self.self_radius = float(p("self_radius", 0.11).value)
-        self.max_boxes = int(p("max_boxes", 20).value)
+        # 20 was sized for the WRIST camera's handful of clusters. A fixed
+        # ENVIRONMENT camera sees the whole bench: 60-70 clusters, of which
+        # 20 threw two-thirds of the scene away — obstacles the planner
+        # never saw (field 2026-08-20). collision_cache_obb is 60 and the
+        # real-bench baseline uses 2, so 50 fits with headroom.
+        self.max_boxes = int(p("max_boxes", 50).value)
         self.min_voxels = int(p("min_voxels", 8).value)
         self.stride = int(p("stride", 4).value)
         self.xy_extent = float(p("xy_extent", 1.2).value)

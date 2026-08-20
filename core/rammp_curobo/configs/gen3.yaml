@@ -29,7 +29,9 @@ planner:
   enable_finetune: true              # false = ~2x faster planning, less smooth
   enable_graph: false                # KEEP OFF on Jetson: the PRM planner needs a
                                      # cuSOLVER newer than JetPack ships (torch.svd)
-  collision_cache_obb: 60            # headroom for live set_world/update_world
+  collision_cache_obb: 120           # headroom for live set_world/update_world
+                                     # (a fixed environment camera yields
+                                     #  60-70 clusters; 20 dropped most)
                                      # additions (cache overflow raises)
   collision_cache_mesh: 10
   collision_activation_distance: 0.03  # soft standoff; default 0.025 grazes
