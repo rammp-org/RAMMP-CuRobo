@@ -154,6 +154,28 @@ and gates as the tour: safe-box waypoints, chained pre-planning, ONE
 merged trajectory per round, Ctrl+C = hold. First run:
 `--rounds 1 --moves 4 --speed 0.25`, workspace clear, hand on the e-stop.
 
+## Tag follow (fiducial → point in front of it)
+
+`ros2 run rammp_curobo_ros tag_follow` — the simple, deterministic
+path. An ArUco/AprilTag marker gives full 6-DoF pose from ONE colour
+image (marker size + intrinsics; no depth, no model, no network), TF
+lifts it into base_link, and cuRobo plans to a standoff pose on the
+tag's normal, facing it, through the live perceived world. Move the
+tag and the arm follows.
+
+```bash
+python3 scripts/make_tag.py --id 0 --size 0.06 --out tag0.png   # print at 100%
+ros2 run rammp_curobo_ros tag_follow --ros-args -p marker_size:=0.06
+```
+
+`marker_size` must match the printed black square to the millimetre —
+range error scales directly with it. **Reach matters** (measured
+2026-08-20): standing off *shrinks* the radius, and `tool_frame` sits
+12 cm ahead of the flange, so a tag at 0.70–0.80 m plans fine at a
+0.15 m standoff, a tag at 0.60 m only at 0.05–0.10 m, and a tag at
+0.50 m not at all. The node ladders the standoff down before refusing,
+and says which. Live view on `:8768`; status on `/tag_follow/status`.
+
 ## Seeker ("go to the bottle")
 
 `ros2 run rammp_curobo_ros seeker --ros-args -p target:="go to the bottle"`

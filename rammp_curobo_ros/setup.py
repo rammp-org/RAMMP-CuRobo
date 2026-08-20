@@ -28,6 +28,7 @@ setup(
             "tour_demo = rammp_curobo_ros.tour_demo:main",
             "dance_demo = rammp_curobo_ros.dance_demo:main",
             "seeker = rammp_curobo_ros.seeker:main",
+            "tag_follow = rammp_curobo_ros.tags:main",
             "cameras = rammp_curobo_ros.cameras:main",
         ],
     },
