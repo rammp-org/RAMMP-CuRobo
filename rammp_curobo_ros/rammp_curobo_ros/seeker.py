@@ -5,17 +5,18 @@
     ros2 service call /seeker/set_target rammp_curobo_interfaces/srv/SetTarget \
         "{text: 'go to the cup'}"          # retarget any time; "" idles
 
-One loop, no phases: look (YOLO on the wrist D405, 3-D localize), then
-either hop (one short cuRobo-planned step toward the target, wrist flat
-at its height, collision-checked against the live perceived world) or
-survey (not seen for a while -> one fixed vantage pose). Hops BLOCK —
-the arm only looks while parked, which is when frames are best; the
-worst-case reaction to a moved target is one hop (~2 s).
+One loop, no phases: LOOK from a parked pose (YOLO on the wrist D405,
+3-D localize), then act on the fix — survey when there isn't one, and
+otherwise GO STRAIGHT AT IT: GraspGenX turns the masked depth into
+ranked 6-DoF grasps and cuRobo plans pre-grasp -> grasp before the
+gripper closes (grasps.py holds the frame contract). `grasp:=false`
+approaches to a standoff instead, using the same pose geometry.
 
-Inside GRASP_RANGE the heuristic pose hands over to a real grasp:
-GraspGenX turns the masked depth into ranked 6-DoF grasps, and cuRobo
-plans pre-grasp -> grasp before the gripper closes (see grasps.py for
-the frame contract). `grasp:=false` restores stop-at-standoff.
+There is deliberately no "creep closer first" phase. tool_frame sits
+12 cm AHEAD of the flange, so a flat wrist inside ~0.5 m radius folds
+the arm into itself — every inward hop was IK_FAIL by construction
+(field 2026-08-20). Poses at or near the object are reachable; poses
+part-way to it are not.
 
 Autonomous once targeted (owner decision 2026-08-19; the planner's
 execute param, the executor gates, and the human on the e-stop are the
@@ -42,12 +43,10 @@ from rammp_curobo_ros.seek_core import (
     load_detector,
     parse_target,
     purged_count,
-    roll_about_tool_z,
     stable_fix,
     track_update,
-    yaw_about_world_z,
 )
-from rammp_curobo_ros.tour_demo import HOME_QUAT_XYZW, TourDemo
+from rammp_curobo_ros.tour_demo import TourDemo
 
 
 class Seeker:
@@ -56,11 +55,7 @@ class Seeker:
     LEASH = 0.35        # m; a sighting farther from the fix is a decoy
     LIFT_HOLD = 0.15    # m above resting height -> hold, never chase
     BLIND_S = 3.0       # s without camera streams -> no motion
-    HOP_MAX = 0.20      # m
-    HOP_MIN = 0.05      # m
-    ARRIVE_TOL = 0.04   # m; within standoff+this = arrived
-    GRASP_RANGE = 0.35  # m; close to here, then ask GraspGenX (D405 is
-    # sharpest at 0.15-0.5 m, and the grasp needs a dense object cloud)
+    REACH_MAX = 0.80    # m planar; beyond this the Gen3 cannot reach it
     WIND_RAD = 3.5      # joint travel above this = family flip, refused
     SURVEY = (0.0, np.radians(55.0))  # bearing, pitch of the vantage pose
 
@@ -70,7 +65,6 @@ class Seeker:
         self.conf = float(p("conf", 0.4).value)
         self.standoff = float(p("standoff", 0.18).value)
         self.speed = min(max(float(p("speed", 0.25).value), 0.05), 0.25)
-        self.wrist_roll = float(p("wrist_roll", np.pi / 2.0).value)
         self.weights = str(p("weights", "~/yolo11s-seg.pt").value)
         initial = str(p("target", "").value)
         # grasping: off -> stop at standoff (the old behaviour)
@@ -110,7 +104,7 @@ class Seeker:
         self.grasp_cli = None       # lazy: only when we actually grasp
         self.last_frame = None      # depth+intr+pose+mask for grasp gen
         self.grasped = False        # terminal: object is in the gripper
-        self._next_grasp_t = 0.0
+        self._next_try_t = 0.0      # one attempt at a time (no plan spam)
 
         self.model = None
         self.target = None
@@ -187,13 +181,6 @@ class Seeker:
         q, t = tr.transform.rotation, tr.transform.translation
         rot = quat_to_mat(q.x, q.y, q.z, q.w)
         return np.array([t.x, t.y, t.z]) + rot[:, 2] * 0.120
-
-    def _flat_quat(self, bearing):
-        return list(
-            roll_about_tool_z(
-                yaw_about_world_z(HOME_QUAT_XYZW, bearing), self.wrist_roll
-            )
-        )
 
     def _move(self, pos, quat, label):
         """Plan + BLOCKING execute one motion; False on refusal."""
@@ -427,41 +414,45 @@ class Seeker:
             self.clear_region()
             self._status("%s lifted — holding, not chasing a hand" % self.target)
             return
-        tool = self._tool_pos()
-        if tool is None:
-            self._status("no TF to the arm — holding")
+        if now < self._next_try_t:
+            self._heartbeat()
             return
-        gap = float(np.linalg.norm(pos[:2] - tool[:2]))
-        if (
-            self.do_grasp
-            and gap <= self.GRASP_RANGE
-            and self.last_frame is not None
-            and now >= self._next_grasp_t
-        ):
-            # a failed attempt must not hammer the planner every tick
-            self._next_grasp_t = now + 5.0
+        self._next_try_t = now + 4.0   # one attempt at a time, no spinning
+        reach = float(np.hypot(pos[0], pos[1]))
+        if reach > self.REACH_MAX:
+            self._status("%s is %.2f m out — beyond reach; move it closer"
+                         % (self.target, reach))
+            return
+        self._set_region(pos, self.fix["extent"])
+        if self.do_grasp:
             self.grasped = self._grasp()
-            return
-        if gap <= self.standoff + self.ARRIVE_TOL:
-            self._status("ARRIVED at %s (gap %.2f m)" % (self.target, gap))
-            return
-        if (
-            self.region_pos is None
-            or float(np.linalg.norm(pos - self.region_pos)) > 0.10
-        ):
-            self._set_region(pos, self.fix["extent"])
-        hop = min(self.HOP_MAX, max(self.HOP_MIN, 0.4 * (gap - self.standoff)))
-        hop = min(hop, gap - self.standoff)
-        step = tool[:2] + (pos[:2] - tool[:2]) / gap * hop
-        z = max(float(pos[2]) + 0.03, 0.10)
-        bearing = float(np.arctan2(pos[1] - step[1], pos[0] - step[0]))
-        self.at_survey = False
-        self._move(
-            [float(step[0]), float(step[1]), z],
-            self._flat_quat(bearing),
-            "SERVOING to %s [%.2f, %.2f, %.2f] (gap %.2f m)"
-            % (self.target, pos[0], pos[1], pos[2], gap),
-        )
+        else:
+            self._approach_only(pos)
+
+    def _approach_only(self, obj):
+        """grasp:=false — face the object from a standoff, don't touch it.
+
+        Uses the SAME side-approach geometry the grasp path uses, so there
+        is one pose convention in this file: a horizontal approach along
+        the base->object bearing, tool at the object's height. The old
+        inward-hop poses were unreachable by construction (field
+        2026-08-20: tool_frame is 12 cm ahead of the flange, so a flat
+        wrist inside ~0.5 m radius folds the arm into itself)."""
+        from rammp_curobo_ros.grasps import mat_to_quat_xyzw
+
+        obj = np.asarray(obj, dtype=float)
+        bearing = float(np.arctan2(obj[1], obj[0]))
+        approach = np.array([np.cos(bearing), np.sin(bearing), 0.0])
+        x = np.cross([0.0, 0.0, 1.0], approach)
+        x /= np.linalg.norm(x)
+        rot = np.stack([x, np.cross(approach, x), approach], axis=1)
+        quat = mat_to_quat_xyzw(rot)
+        pos = obj - approach * self.standoff
+        if self._move([float(v) for v in pos], [float(v) for v in quat],
+                      "APPROACHING %s (standoff %.2f m)"
+                      % (self.target, self.standoff)):
+            self._status("ARRIVED at %s (standoff %.2f m)"
+                         % (self.target, self.standoff))
 
     def shutdown(self):
         try:

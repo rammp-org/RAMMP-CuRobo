@@ -260,9 +260,9 @@ ros2 run rammp_curobo_ros seeker --ros-args -p target:="go to the bottle"
 It moves autonomously once targeted (owner decision 2026-08-19) —
 e-stop in hand the whole time, Ctrl+C stops and holds. Behavior, all
 one loop: 3 agreeing frames acquire the object (watch `:8767` for the
-detections, `:8766` for the obstacle map) → short cuRobo-planned hops
-close in through the perceived world, wrist flat at the object's
-height, stopping 0.18 m out → move the object and it follows; hide it
+detections, `:8766` for the obstacle map) → cuRobo plans straight to
+the object through the perceived world (pre-grasp → grasp with
+`grasp:=true`, or a standoff with `grasp:=false`) → move the object and it follows; hide it
 >4 s and it returns to the survey pose; lift it >15 cm and it HOLDS
 (the ignore region follows the target, so chasing a hand-held object
 would blind collision checking exactly where the hand is — put it
@@ -271,13 +271,13 @@ down to resume). No camera data = no motion. Retarget live:
 "{text: 'go to the cup'}"` ("" idles the arm).
 
 First run: one object alone, 0.45-0.65 m in front of the arm. Second
-run: add a box between arm and object — the hops must bow around its
+run: add a box between arm and object — the approach must bow around its
 cuboid. If detections land on the wrong thing, `:8767` shows exactly
 what YOLO claims; the fix is the model or the scene, never the map.
 
 ### Grasping (GraspGenX)
 
-With the grasp server up (see README), inside 0.35 m the seeker asks
+With the grasp server up (see README), the seeker asks
 GraspGenX for 6-DoF grasps and runs pre-grasp → grasp → close.
 **Two things MUST be settled before the first hardware grasp:**
 

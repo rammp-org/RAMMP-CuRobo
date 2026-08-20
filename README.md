@@ -160,18 +160,19 @@ merged trajectory per round, Ctrl+C = hold. First run:
 — a continuous perceive-decide-act controller, not a script. One loop:
 YOLO on the wrist D405 finds the named object (80 COCO classes +
 synonyms; weights `~/yolo11s-seg.pt`, never downloaded), 3 agreeing
-frames localize it, and the arm closes in through the live perceived
-world in short cuRobo-planned hops — wrist flat at the object's height,
-re-aimed from every fresh detection, stopping 0.18 m out. Move the
-object and it follows; hide it and it returns to a survey pose; lift it
-and it holds (never chases a hand); kill the camera and it stops.
+frames localize it, and cuRobo plans straight to it through the live
+perceived world — pre-grasp, then grasp. There is no creep-closer
+phase: `tool_frame` sits 12 cm ahead of the flange, so poses part-way
+to the object are unreachable while poses AT it are fine. Move the
+object and it re-plans; hide it and it returns to a survey pose; lift
+it and it holds (never chases a hand); kill the camera and it stops.
 Retarget any time via the `/seeker/set_target` service ("" idles);
 status on `/seeker/status`; live detection view on `:8767`. Autonomous
 once targeted (owner decision 2026-08-19) — the planner's `execute`
 param, every executor gate, ≤0.25 speed, and the human on the e-stop
 are the safety layers. The D405 driver needs `align_depth.enable:=true`.
 
-**Grasping.** Within 0.35 m the seeker stops guessing a pose and asks
+**Grasping.** Instead of guessing a pose, the seeker asks
 **GraspGenX** (NVlabs, Apache-2.0, runs on this Jetson — ~1.3 s and
 ~660 MiB per object) for real 6-DoF grasps on the masked depth, then
 plans pre-grasp → grasp with cuRobo and closes the gripper. Start its
