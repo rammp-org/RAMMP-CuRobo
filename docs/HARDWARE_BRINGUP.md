@@ -274,3 +274,22 @@ First run: one object alone, 0.45-0.65 m in front of the arm. Second
 run: add a box between arm and object — the hops must bow around its
 cuboid. If detections land on the wrong thing, `:8767` shows exactly
 what YOLO claims; the fix is the model or the scene, never the map.
+
+### Grasping (GraspGenX)
+
+With the grasp server up (see README), inside 0.35 m the seeker asks
+GraspGenX for 6-DoF grasps and runs pre-grasp → grasp → close.
+**Two things MUST be settled before the first hardware grasp:**
+
+1. **Gripper mount twist.** `gen3.yaml`'s `spin_deg` (90 deg in sim)
+   ships DISABLED pending re-measurement on the real arm. GraspGenX's
+   grasp frame matches the URDF's `end_effector_link`; if the physical
+   gripper is bolted 90 deg off the URDF, every grasp closes across the
+   wrong axis. Verify with a tape measure / photo before trusting one.
+2. **Grasp depth.** `tool_offset` defaults to 0.120 (our `tool_frame`);
+   GraspGenX calls the 2F-85 fingertip 0.136. Dry-run first
+   (`execute:=false` on the planner) and eyeball the pre-grasp pose in
+   RViz before arming.
+
+Dry-run the whole pipeline first, then a first live grasp on something
+light and forgiving, e-stop in hand.

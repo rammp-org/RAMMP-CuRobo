@@ -10,3 +10,10 @@ dist/
 *.npy
 *.npz
 *.MOV
+
+# AnyGrasp licenses are per-machine credentials — never publish them
+# (the vendor SDK gitignores them too). Keep the files, not the history.
+docs/license_*/
+*.lic
+*.signature
+*.public_key

@@ -171,6 +171,24 @@ once targeted (owner decision 2026-08-19) — the planner's `execute`
 param, every executor gate, ≤0.25 speed, and the human on the e-stop
 are the safety layers. The D405 driver needs `align_depth.enable:=true`.
 
+**Grasping.** Within 0.35 m the seeker stops guessing a pose and asks
+**GraspGenX** (NVlabs, Apache-2.0, runs on this Jetson — ~1.3 s and
+~660 MiB per object) for real 6-DoF grasps on the masked depth, then
+plans pre-grasp → grasp with cuRobo and closes the gripper. Start its
+server once, out-of-tree:
+
+```bash
+cd ~/GraspGenX && ~/graspgen_venv/bin/python client-server/graspgenx_server.py \
+    --config ext/graspgenx_checkpoints/release --assets_dir assets \
+    --port 5556 --default_gripper robotiq_2f_85
+```
+
+We speak its ZMQ protocol directly (`grasps.py`) — no GraspGenX import,
+so the socket being down just means `grasp:=false` behaviour. Its grasp
+frame coincides with our `end_effector_link`, so the handoff is one
+`tool_offset` push along the grasp's approach axis; that offset
+(0.120 our `tool_frame` vs 0.136 GraspGenX's fingertip) is a parameter.
+
 ## Perceived world (cameras)
 
 The `cameras` node gives the planner live spatial awareness from the

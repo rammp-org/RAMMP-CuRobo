@@ -12,6 +12,11 @@ survey (not seen for a while -> one fixed vantage pose). Hops BLOCK —
 the arm only looks while parked, which is when frames are best; the
 worst-case reaction to a moved target is one hop (~2 s).
 
+Inside GRASP_RANGE the heuristic pose hands over to a real grasp:
+GraspGenX turns the masked depth into ranked 6-DoF grasps, and cuRobo
+plans pre-grasp -> grasp before the gripper closes (see grasps.py for
+the frame contract). `grasp:=false` restores stop-at-standoff.
+
 Autonomous once targeted (owner decision 2026-08-19; the planner's
 execute param, the executor gates, and the human on the e-stop are the
 safety layers). Guards, all field-earned: acquisition needs 3 agreeing
@@ -54,6 +59,8 @@ class Seeker:
     HOP_MAX = 0.20      # m
     HOP_MIN = 0.05      # m
     ARRIVE_TOL = 0.04   # m; within standoff+this = arrived
+    GRASP_RANGE = 0.35  # m; close to here, then ask GraspGenX (D405 is
+    # sharpest at 0.15-0.5 m, and the grasp needs a dense object cloud)
     WIND_RAD = 3.5      # joint travel above this = family flip, refused
     SURVEY = (0.0, np.radians(55.0))  # bearing, pitch of the vantage pose
 
@@ -66,6 +73,12 @@ class Seeker:
         self.wrist_roll = float(p("wrist_roll", np.pi / 2.0).value)
         self.weights = str(p("weights", "~/yolo11s-seg.pt").value)
         initial = str(p("target", "").value)
+        # grasping: off -> stop at standoff (the old behaviour)
+        self.do_grasp = bool(p("grasp", True).value)
+        self.grasp_endpoint = str(p("grasp_endpoint", "tcp://127.0.0.1:5556").value)
+        self.tool_offset = float(p("tool_offset", 0.120).value)
+        self.pregrasp_standoff = float(p("pregrasp_standoff", 0.10).value)
+        self.grasp_score_min = float(p("grasp_score_min", 0.5).value)
 
         self.demo = TourDemo(node)
         self.grab = D405Grabber(node)
@@ -89,6 +102,15 @@ class Seeker:
                 node.get_logger().info("detection view: http://<host>:8767/")
             except OSError as e:
                 node.get_logger().warn("detection view failed (%s)" % e)
+
+        from std_srvs.srv import Trigger
+
+        self.open_cli = node.create_client(Trigger, "/rammp_curobo/open_gripper")
+        self.close_cli = node.create_client(Trigger, "/rammp_curobo/close_gripper")
+        self.grasp_cli = None       # lazy: only when we actually grasp
+        self.last_frame = None      # depth+intr+pose+mask for grasp gen
+        self.grasped = False        # terminal: object is in the gripper
+        self._next_grasp_t = 0.0
 
         self.model = None
         self.target = None
@@ -207,10 +229,17 @@ class Seeker:
         frame, depth, intr, rot, trans = shot
         hits = detect_all(self.model, frame, self.target, self.conf)
         sights = []
+        best_mask = None
         for xyxy, cf, mask in hits:
             loc = box_to_center(xyxy, depth, mask=mask, min_depth=0.16, **intr)
             if loc is not None:
                 sights.append((0, rot @ loc[0] + trans, np.asarray(loc[1]), cf))
+                if best_mask is None and mask is not None:
+                    best_mask = mask  # hits are best-first
+        if best_mask is not None:
+            # keep the raw frame: GraspGenX wants depth + K + this mask
+            self.last_frame = dict(depth=depth, intr=intr, rot=rot,
+                                   trans=trans, mask=best_mask)
         if self.view is not None:
             self._render(frame, hits, intr, rot, trans, len(sights))
         if not sights:
@@ -270,6 +299,69 @@ class Seeker:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         self.view.update(img)
 
+    # --------------------------------------------------------------- grasp
+    def _trigger(self, cli, what):
+        from std_srvs.srv import Trigger
+
+        if not cli.service_is_ready():
+            self._status("%s: gripper service missing" % what)
+            return False
+        fut = cli.call_async(Trigger.Request())
+        rclpy.spin_until_future_complete(self.node, fut, timeout_sec=15.0)
+        res = fut.result()
+        return bool(res and res.success)
+
+    def _grasp(self):
+        """GraspGenX -> ranked 6-DoF grasps -> cuRobo pre-grasp, approach,
+        close. Returns True when the object is held.
+
+        The object's voxels stay purged (ignore region) for both motions:
+        the thing being grasped must not be an obstacle. Every pose still
+        goes through cuRobo against the rest of the perceived world.
+        """
+        from rammp_curobo_ros.grasps import GraspClient, pregrasp, quat_to_mat3, to_base
+
+        if self.grasp_cli is None:
+            self.grasp_cli = GraspClient(self.grasp_endpoint)
+        f = self.last_frame
+        try:
+            grasps, scores = self.grasp_cli.grasps_from_mask(
+                f["depth"], np.array([[f["intr"]["fx"], 0, f["intr"]["cx"]],
+                                      [0, f["intr"]["fy"], f["intr"]["cy"]],
+                                      [0, 0, 1]]),
+                (np.asarray(f["mask"]).astype(bool)).astype(np.int32),
+                threshold=self.grasp_score_min, topk=8)
+        except Exception as exc:
+            self._status("grasp server unreachable (%s) — holding" % exc)
+            return False
+        if len(grasps) == 0:
+            self._status("no grasp above %.2f — holding" % self.grasp_score_min)
+            return False
+        self._status("%d grasp candidates (best %.2f) — planning"
+                     % (len(grasps), float(scores[0])))
+        self._trigger(self.open_cli, "open")
+        for g, sc in zip(grasps, scores):
+            pos, quat = to_base(g, f["rot"], f["trans"], self.tool_offset)
+            rot3 = quat_to_mat3(quat)
+            pre = pregrasp(pos, rot3, self.pregrasp_standoff)
+            if pre[2] < 0.05 or pos[2] < 0.02:
+                continue  # into the table
+            if not self._move([float(v) for v in pre], list(quat),
+                              "PRE-GRASP (score %.2f)" % float(sc)):
+                continue
+            if not self._move([float(v) for v in pos], list(quat),
+                              "GRASPING (score %.2f)" % float(sc)):
+                # backed onto an unreachable final pose — retreat and retry
+                self._move([float(v) for v in pre], list(quat), "retreating")
+                continue
+            if not self._trigger(self.close_cli, "close"):
+                self._status("gripper close failed")
+                return False
+            self._status("GRASPED %s (score %.2f)" % (self.target, float(sc)))
+            return True
+        self._status("no candidate was reachable — holding")
+        return False
+
     # ---------------------------------------------------------------- tick
     def tick(self):
         now = time.monotonic()
@@ -298,9 +390,18 @@ class Seeker:
                     self.fix = None
                     self.recent = []
                     self.at_survey = False
+                    self.grasped = False
+                    self.last_frame = None
                     self.clear_region()
         if self.target is None:
             self._status("IDLE — set a target via ~/set_target")
+            rclpy.spin_once(self.node, timeout_sec=0.05)
+            time.sleep(0.1)
+            return
+        if self.grasped:
+            # holding the object: done. Retarget (or "" then the class
+            # again) to run another cycle.
+            self._status("HOLDING %s — grasp complete" % self.target)
             rclpy.spin_once(self.node, timeout_sec=0.05)
             time.sleep(0.1)
             return
@@ -331,6 +432,16 @@ class Seeker:
             self._status("no TF to the arm — holding")
             return
         gap = float(np.linalg.norm(pos[:2] - tool[:2]))
+        if (
+            self.do_grasp
+            and gap <= self.GRASP_RANGE
+            and self.last_frame is not None
+            and now >= self._next_grasp_t
+        ):
+            # a failed attempt must not hammer the planner every tick
+            self._next_grasp_t = now + 5.0
+            self.grasped = self._grasp()
+            return
         if gap <= self.standoff + self.ARRIVE_TOL:
             self._status("ARRIVED at %s (gap %.2f m)" % (self.target, gap))
             return
