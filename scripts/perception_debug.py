@@ -41,7 +41,17 @@ def main():
                     help="read mount_xyz from here to print a corrected line")
     args = ap.parse_args()
 
+    import yaml
+
     from rammp_curobo import CuRoboPlanner
+
+    cam_xyz = None
+    try:
+        with open(args.camera_config) as f:
+            cam_xyz = np.array(yaml.safe_load(f)["mount_xyz"], dtype=float)
+    except Exception as exc:
+        print("could not read %s (%s) — offsets will keep the "
+              "near-surface bias" % (args.camera_config, exc))
 
     print("loading kinematics (%s)..." % args.config)
     planner = CuRoboPlanner.from_config(args.config)
@@ -103,13 +113,22 @@ def main():
             detail[key] = (c, d)
             worst_gap[key] = min(worst_gap.get(key, 1e9), gap)
             if gap < args.near:
-                # A box sitting on the arm IS the arm, mis-placed. The
-                # vector from the nearest arm sphere to the box centre is
-                # the camera-pose error, measured against the one object
-                # whose true position we know exactly.
+                # A box sitting on the arm IS the arm, mis-placed. Compare
+                # it to where the arm's visible surface SHOULD be drawn —
+                # not to the axis: depth only ever sees the camera-facing
+                # side, so a box centre sits about one arm-radius toward
+                # the camera by geometry alone. Subtract that or the
+                # estimate over-corrects by ~4 cm.
                 j = int(np.argmin(np.linalg.norm(spheres[:, :3] - np.array(c),
                                                  axis=1)))
-                offsets.append(np.array(c) - spheres[j, :3])
+                axis, radius = spheres[j, :3], spheres[j, 3]
+                expected = axis
+                if cam_xyz is not None:
+                    toward = cam_xyz - axis
+                    n = float(np.linalg.norm(toward))
+                    if n > 1e-6:
+                        expected = axis + radius * toward / n
+                offsets.append(np.array(c) - expected)
             tag = ("ON-ARM" if gap < 0 else
                    "near" if gap < args.near else "ok")
             line.append("%s@%s %s(%.3f)" % (name, np.round(c, 2), tag, gap))
