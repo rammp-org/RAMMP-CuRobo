@@ -367,6 +367,29 @@ perception 0.28-0.48 + watchdog notice <=0.20 + check 0.04
           + cancel & settle (MEASURED AND LOGGED EACH TIME) + replan 0.26
 ```
 
+**Workspace sector.** `max_left_deg` / `max_right_deg` bound the BASE
+yaw so the arm cannot swing through 360 to reach something behind it —
+the launch defaults are 75 left / 90 right. The arm's azimuth is
+`-joint_1` (verified on hardware: `joint_1 = -90 deg` puts the tool at
+azimuth +90), so those become `joint_1 in [-75, +90]`.
+
+It has to be applied before warmup, and that is why it is a launch
+argument rather than a service: cuRobo's solvers read the joint-limit
+tensors once and cache them. Truncate after the first solve and the
+planner keeps using the old range — our validator sees the new one, so
+every plan comes back `LIBRARY_VALIDATION_FAILED` instead of being
+routed inside the sector.
+
+What it does and does not guarantee, measured:
+
+- the base never yaws outside the sector, and goals behind the arm
+  (azimuth 180, -140) are refused outright with IK_FAIL;
+- the A<->B sweep stays at whole-arm azimuth -49..+49;
+- but it bounds the BASE, not the fingertip. For a goal just outside the
+  sector the arm can still bend to reach it. A true workspace wedge
+  needs collision walls, and those leak: the arm folds inside the gap
+  they must leave around the base and rotates through it.
+
 **Standoff is bimodal — do not tune it as if it were a dial.** Measured
 on this bench against a raised slab across the sweep corridor:
 

@@ -223,6 +223,51 @@ def test_trajectory_clearance_measures_the_whole_arm(planner):
     )
 
 
+def test_joint_limit_override_bounds_the_base():
+    """Workspace sector via a truncated joint_1.
+
+    Must be applied before warmup: cuRobo's solvers cache the limit
+    tensors at first solve, so a later edit is seen only by our own
+    validator and every plan comes back LIBRARY_VALIDATION_FAILED
+    instead of being routed inside the sector.
+    """
+    p = CuRoboPlanner.from_config(
+        "gen3_real.yaml",
+        planner_overrides={"joint_limits_deg": {"joint_1": [-75.0, 90.0]},
+                           "warmup": False},
+    )
+    k = p.joint_names.index("joint_1")
+    lo, hi = p.joint_limits()["position"][:, k]
+    assert lo == pytest.approx(np.radians(-75.0), abs=1e-3)
+    assert hi == pytest.approx(np.radians(90.0), abs=1e-3)
+
+    quat = [0.5, 0.5, 0.5, 0.5]
+    p.update_world_boxes([])
+    res = p.plan_to_pose([0.55, 0.30, 0.35], quat)
+    assert res.success, res.error
+    j1 = res.joint_traj.positions[:, k]
+    assert j1.min() >= np.radians(-75.0) - 1e-3
+    assert j1.max() <= np.radians(90.0) + 1e-3
+    # straight behind needs a base rotation the sector forbids
+    assert not p.plan_to_pose([-0.55, 0.0, 0.35], quat).success
+
+
+def test_joint_limit_override_refuses_nonsense():
+    with pytest.raises(KeyError, match="unknown joint"):
+        CuRoboPlanner.from_config(
+            "gen3_real.yaml",
+            planner_overrides={"joint_limits_deg": {"elbow": [-10.0, 10.0]},
+                               "warmup": False},
+        )
+    # a sector that excludes home would fail every retract seed
+    with pytest.raises(ValueError, match="excludes the home pose"):
+        CuRoboPlanner.from_config(
+            "gen3_real.yaml",
+            planner_overrides={"joint_limits_deg": {"joint_1": [10.0, 20.0]},
+                               "warmup": False},
+        )
+
+
 def test_park_pose_outside_model_limits_is_clamped(planner):
     # The real Gen3 parks with joint_4 ~0.8 deg past cuRobo's URDF bound
     # (found on first hardware contact) — tiny violations clamp inward,

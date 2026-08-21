@@ -28,6 +28,8 @@ ARGS = [
     ("speed_scale", "0.25", "execution speed; start low, raise once trusted"),
     ("activation_distance", "0.0", "collision standoff (m); 0 = config's 0.03"),
     ("world_padding", "0.0", "hard box inflation (m); 0 = config's 0.02"),
+    ("max_left_deg", "75.0", "base yaw limit to the left (+y); 0 = none"),
+    ("max_right_deg", "90.0", "base yaw limit to the right (-y); 0 = none"),
     ("camera", "camera_orbbec_bench.yaml", "environment camera config"),
     ("rate_hz", "5.0", "perception tick rate"),
     ("occupied_at", "2", "ticks before a voxel counts as an obstacle"),
@@ -78,6 +80,8 @@ def _nodes(context, *_args, **_kwargs):
             "speed_scale": speed,
             "activation_distance": float(val("activation_distance")),
             "world_padding": float(val("world_padding")),
+            "max_left_deg": float(val("max_left_deg")),
+            "max_right_deg": float(val("max_right_deg")),
         }],
     )
     cameras = Node(

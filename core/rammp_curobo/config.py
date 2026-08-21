@@ -38,6 +38,10 @@ PLANNER_DEFAULTS = {
         "collision_cache_mesh": 10,
         "collision_activation_distance": 0.03,
         "world_padding": 0.02,
+        # {joint_name: [lo_deg, hi_deg]} — TIGHTENS the URDF ranges only.
+        # joint_1 is the base yaw and azimuth = -joint_1, so a workspace
+        # of 75 deg left / 90 deg right is joint_1 [-75, +90].
+        "joint_limits_deg": {},
         "no_pad_names": ["pedestal"],
         "joint_space_method": "auto",
         "limit_clamp_rad": 0.05,

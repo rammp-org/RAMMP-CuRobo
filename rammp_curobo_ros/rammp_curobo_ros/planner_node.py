@@ -144,6 +144,18 @@ class RammpCuroboNode(Node):
             overrides["collision_activation_distance"] = act
         if pad > 0.0:
             overrides["world_padding"] = pad
+        # Workspace sector, in degrees of BASE yaw either side of straight
+        # ahead. The arm's azimuth is -joint_1 (verified on hardware), so
+        # "75 left / 90 right" is joint_1 in [-75, +90]. 0 = no limit.
+        # This bounds where the BASE can point, not where the fingertip
+        # can reach: the arm can still bend past the sector for a goal
+        # just outside it. Goals well outside are refused.
+        left = float(self.declare_parameter("max_left_deg", 0.0).value)
+        right = float(self.declare_parameter("max_right_deg", 0.0).value)
+        if left > 0.0 or right > 0.0:
+            overrides["joint_limits_deg"] = {
+                "joint_1": [-(left or 180.0), (right or 180.0)]
+            }
         self.get_logger().info(
             "Loading cuRobo planner (%s)%s..."
             % (self.config, (" with %s" % overrides) if overrides else "")

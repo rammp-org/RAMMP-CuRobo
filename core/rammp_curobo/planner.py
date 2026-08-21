@@ -64,6 +64,7 @@ class CuRoboPlanner:
         self.collision_cache_mesh = int(p["collision_cache_mesh"])
         self.collision_activation_distance = float(p["collision_activation_distance"])
         self.world_padding = float(p["world_padding"])
+        self.joint_limits_deg = dict(p["joint_limits_deg"] or {})
         self.no_pad_names = frozenset(p["no_pad_names"] or [])
         self.joint_space_method = str(p["joint_space_method"])
         self.limit_clamp_rad = float(p["limit_clamp_rad"])
@@ -145,10 +146,52 @@ class CuRoboPlanner:
                 "cuRobo joints %s != configured joints %s"
                 % (self._curobo_joint_names, self.joint_names)
             )
+        # before warmup, and after the joint-name check it depends on
+        self._apply_joint_limit_overrides()
         if warmup:
             log.info("Warming up cuRobo (first-run kernel compile)...")
             self._motion_gen.warmup(enable_graph=self.enable_graph)
             log.info("cuRobo warmup complete.")
+
+    def _apply_joint_limit_overrides(self):
+        """Truncate joint ranges — BEFORE warmup, which is why this lives
+        here and not in a service.
+
+        cuRobo's solvers read the limit tensors once and cache them. Edit
+        them after the first solve and the planner keeps using the old
+        ranges: our own validator still sees the new ones, so plans come
+        back LIBRARY_VALIDATION_FAILED instead of being routed inside the
+        limit (measured 2026-08-21). Set here, the planner genuinely
+        plans within them.
+
+        Only ever tightens: a config cannot widen past the URDF.
+        """
+        if not self.joint_limits_deg:
+            return
+        lim = self._motion_gen.kinematics.get_joint_limits()
+        for name, span in self.joint_limits_deg.items():
+            if name not in self._curobo_joint_names:
+                raise KeyError("joint_limits_deg: unknown joint %r" % name)
+            lo_deg, hi_deg = (float(v) for v in span)
+            if lo_deg >= hi_deg:
+                raise ValueError(
+                    "joint_limits_deg[%s]: lo %.1f >= hi %.1f" % (name, lo_deg, hi_deg)
+                )
+            i = self._curobo_joint_names.index(name)
+            lo = max(float(lim.position[0, i]), math.radians(lo_deg))
+            hi = min(float(lim.position[1, i]), math.radians(hi_deg))
+            home = self.home_pose[self.joint_names.index(name)]
+            if not lo <= home <= hi:
+                raise ValueError(
+                    "joint_limits_deg[%s] = [%.1f, %.1f] deg excludes the home "
+                    "pose (%.1f deg) — warmup and every retract seed would "
+                    "fail" % (name, lo_deg, hi_deg, math.degrees(home))
+                )
+            lim.position[0, i], lim.position[1, i] = lo, hi
+            log.info(
+                "joint %s limited to %.1f..%.1f deg", name,
+                math.degrees(lo), math.degrees(hi),
+            )
 
     # ---------------------------------------------------------------- planning
     def plan_to_pose(
