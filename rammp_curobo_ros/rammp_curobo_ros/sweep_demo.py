@@ -145,18 +145,36 @@ class SweepDemo(Node):
             time.sleep(0.005)
         return future.result()
 
-    def wait_for_servers(self, timeout=30.0):
-        for name, ready in (
-            ("plan_to_pose", self.plan_cli.wait_for_server(timeout_sec=timeout)),
-            ("check_trajectory", self.check_cli.wait_for_service(timeout_sec=5.0)),
+    def _wait(self, ready_fn, timeout):
+        """Poll in short slices so Ctrl+C is honoured while waiting.
+
+        A single wait_for_server(30.0) ignores the stop flag, so launch
+        escalates SIGINT to SIGTERM after 5 s and the node dies ugly while
+        the planner is still warming up.
+        """
+        end = time.monotonic() + timeout
+        while time.monotonic() < end and not self.stop and rclpy.ok():
+            if ready_fn(timeout_sec=0.25):
+                return True
+        return False
+
+    def wait_for_servers(self, timeout=120.0):
+        # the planner spends ~20 s in cuRobo warmup before its servers
+        # appear, and longer on a cold GPU — wait it out rather than
+        # failing the demo on a slow start
+        for name, fn in (
+            ("plan_to_pose", self.plan_cli.wait_for_server),
+            ("check_trajectory", self.check_cli.wait_for_service),
         ):
-            if not ready:
+            if not self._wait(fn, timeout):
+                if self.stop:
+                    return False
                 self.get_logger().error(
                     "%s not available — is the planner node running? "
                     "(check_trajectory is new: rebuild the interfaces)" % name
                 )
                 return False
-        if self.execute and not self.exec_cli.wait_for_server(timeout_sec=5.0):
+        if self.execute and not self._wait(self.exec_cli.wait_for_server, 10.0):
             self.get_logger().error("execute_trajectory not available")
             return False
         return True

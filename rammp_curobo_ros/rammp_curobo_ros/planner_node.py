@@ -21,6 +21,7 @@ expose the same controller names (do not run both — they share
 /controller_manager and the same physical arm).
 """
 
+import os
 import signal
 import threading
 import time
@@ -640,17 +641,27 @@ def main(args=None):
     # just stops watching it, and the controller drives the trajectory to
     # the end.
     rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
-    node = RammpCuroboNode()
-    executor = MultiThreadedExecutor()
-    executor.add_node(node)
     stopping = threading.Event()
+    built = {}
 
     def _stop(*_args):
+        node = built.get("node")
+        if node is None:
+            # still in cuRobo warmup (~20 s): no servers, no goals, nothing
+            # can be moving. Leave now instead of unwinding a KeyboardInterrupt
+            # through the optimiser's internals.
+            print("\ninterrupted during planner warmup — nothing was running",
+                  flush=True)   # os._exit skips the flush
+            os._exit(0)
         node.request_abort()
         stopping.set()
 
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
+    node = RammpCuroboNode()
+    built["node"] = node
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
     spin = threading.Thread(target=executor.spin, daemon=True)
     spin.start()
     try:

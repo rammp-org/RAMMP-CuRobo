@@ -381,6 +381,26 @@ class CamerasNode(Node):
         self._tick_count = 0
         cam_names = list(p("cameras", ["camera_d405_wrist.yaml"]).value)
 
+        # Two nodes of this name silently break each other's subscriptions:
+        # the second one's arrival makes the first report "no fresh depth
+        # frames" while the driver is happily publishing at 30 Hz (field
+        # 2026-08-21, an hour lost to it). The planner node has guarded
+        # this since 2026-08-13; so does this one now.
+        time.sleep(1.0)  # let discovery see an already-running peer
+        peers = [
+            name
+            for name, _ns in self.get_node_names_and_namespaces()
+            if name == self.get_name()
+        ]
+        if len(peers) > 1:
+            raise SystemExit(
+                "another '%s' node is already running — two of them break "
+                "each other's depth subscriptions (the symptom is 'no fresh "
+                "depth frames' while the driver is fine). Stop the other one "
+                "first: ros2 node list. NOTE sweep_demo.launch.py starts a "
+                "cameras node of its own." % self.get_name()
+            )
+
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.cams = [_CameraInput(self, load_camera_config(n)) for n in cam_names]
