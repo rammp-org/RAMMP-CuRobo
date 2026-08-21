@@ -367,6 +367,30 @@ perception 0.28-0.48 + watchdog notice <=0.20 + check 0.04
           + cancel & settle (MEASURED AND LOGGED EACH TIME) + replan 0.26
 ```
 
+**Standoff is bimodal — do not tune it as if it were a dial.** Measured
+on this bench against a raised slab across the sweep corridor:
+
+| `activation_distance` | route | gap | tool z |
+|---|---|---|---|
+| 0.03 (default) | under | 0.053 | 0.08–0.35 |
+| 0.06 | under | 0.067 | 0.07–0.35 |
+| **0.07** | **under** | **0.084** | 0.08–0.35 |
+| 0.08 | OVER | 0.143 | 0.35–**1.12** |
+
+Between 0.07 and 0.08 the planner stops squeezing underneath and starts
+lifting over the top, and the tool excursion jumps to 1.12 m — a
+completely different, much larger manoeuvre, not a wider version of the
+same one. `world_padding` >= 0.04 flips it the same way. So 0.07 with
+padding left at 0.02 is the working point: the widest clearance that
+still takes the tight route, and the highest the arm stays above the
+table (0.084 m) of any of the under-routes.
+
+Clearance otherwise tracks the knob linearly (`gap ~= activation +
+0.027`). `activation_distance` is safe to raise — a cost term, so no
+state becomes infeasible. `world_padding` hard-inflates every box except
+`no_pad_names`, so 0.08 puts the arm inside the modelled table and
+nothing plans at all.
+
 **Where the watchdog actually trips.** cuRobo's hard verdict flips when
 the planned path comes within **0.020 m** of a perceived box — that is
 `world_padding`, measured by bisection, NOT `collision_activation_distance`
