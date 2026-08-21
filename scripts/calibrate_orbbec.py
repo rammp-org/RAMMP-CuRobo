@@ -5,11 +5,17 @@
     python3 scripts/make_tag.py --id 0 --size 0.06 --out tag0.png
     python3 scripts/calibrate_orbbec.py --marker-size 0.06 --execute
 
-The arm sweeps a set of deliberately ROTATION-DIVERSE poses; wherever
-the camera sees the tag, we pair the tag's pose in the camera with the
-arm's own FK and solve the eye-to-hand problem. Neither the camera's
-pose NOR the tag's placement on the gripper needs measuring — tape it
-on crooked and it still solves.
+The arm first probes which way it can roll the tool without hiding the
+tag, then sweeps a set of deliberately ROTATION-DIVERSE poses on that
+side; wherever the camera sees the tag, we pair the tag's pose in the
+camera with the arm's own FK and solve the eye-to-hand problem. Neither
+the camera's pose NOR the tag's placement on the gripper needs
+measuring — tape it on crooked and it still solves.
+
+Every sweep is dumped alongside the config, so a solve can be revisited
+(or a bad view dropped) without moving the arm again:
+
+    python3 scripts/calibrate_orbbec.py --solve-from <...>_views.npz --drop 7
 
 Writes rammp_curobo_ros/config/camera_orbbec_bench.yaml (the DEPTH
 optical frame, which is what the cameras node deprojects), then:
@@ -43,21 +49,48 @@ CONFIG = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "rammp_curobo_ros", "config", "camera_orbbec_bench.yaml",
 )
+DUMP = CONFIG.replace(".yaml", "_views.npz")
 
 
-def sweep_poses(radius, z_lo, z_hi):
-    """Rotation-diverse presentation poses. Hand-eye NEEDS varied
-    orientation — pure translation is degenerate."""
-    out = []
-    for bearing in (-0.45, 0.0, 0.45):
-        for pitch, z in ((0.35, z_hi), (0.75, z_lo)):
-            for roll in (0.0, 1.0, -1.0):
-                pos = [radius * np.cos(bearing), radius * np.sin(bearing), z]
-                quat = list(roll_about_tool_z(
-                    yaw_about_world_z(rot_about_world_y(HOME_QUAT_XYZW, pitch),
-                                      bearing), roll))
-                out.append((pos, quat))
-    return out
+def pose_at(radius, bearing, pitch, z, roll):
+    pos = [radius * np.cos(bearing), radius * np.sin(bearing), z]
+    quat = roll_about_tool_z(
+        yaw_about_world_z(rot_about_world_y(HOME_QUAT_XYZW, pitch), bearing),
+        roll)
+    return pos, list(quat)
+
+
+def sweep_poses(roll_sign, z_lo, z_hi):
+    """(bearing, pitch, z, roll) tuples. Hand-eye NEEDS varied ORIENTATION
+    — pure translation is degenerate — so this varies three separate axes:
+    bearing (world z), pitch (world y), roll (tool z)."""
+    return [(b, p, z, r * roll_sign)
+            for b in (-0.45, 0.0, 0.45)
+            for p, z in ((0.25, z_hi), (0.80, z_lo))
+            for r in (0.0, 0.70, 1.40)]
+
+
+def probe_roll_sign(demo, cap, args):
+    """Which way can the tool roll and still show the tag to the camera?
+
+    The tag is taped to ONE side of the gripper, so rolling away from the
+    camera hides it. On the first bench run that silently cost every
+    roll=+1 pose — 6 of 18 views and a third of the rotation spread. Ask
+    the arm which side works instead of guessing."""
+    for sign in (1.0, -1.0):
+        pos, quat = pose_at(args.radius, 0.0, 0.25, args.z_hi, sign * 1.40)
+        plan = demo.plan_pose_from(pos, quat, None)
+        if plan is None or not plan.success:
+            continue
+        if not demo.run(plan.trajectory, args.speed):
+            continue
+        time.sleep(0.6)
+        if cap.detect(tries=4) is not None:
+            print("roll probe: tag stays visible rolling %+.0f" % sign)
+            return sign
+    print("roll probe: tag hidden at BOTH rolls — re-tape it facing the "
+          "camera. Continuing with +1; expect missed views.")
+    return 1.0
 
 
 class Capture:
@@ -181,76 +214,38 @@ def preview(cap, node, args):
             last = msg
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--marker-size", type=float, required=True, help="metres")
-    ap.add_argument("--dictionary", default="DICT_4X4_50")
-    ap.add_argument("--tag-id", type=int, default=-1)
-    ap.add_argument("--radius", type=float, default=0.58)
-    ap.add_argument("--z-lo", type=float, default=0.28)
-    ap.add_argument("--z-hi", type=float, default=0.45)
-    ap.add_argument("--speed", type=float, default=0.2)
-    ap.add_argument("--execute", action="store_true", help="allow motion")
-    ap.add_argument("--preview", action="store_true",
-                    help="no motion: stream the camera with tag detection to "
-                    ":8769 so you can place the tag and SEE it get found")
-    args = ap.parse_args()
-
-    rclpy.init()
-    node = rclpy.create_node("calibrate_orbbec")
-    demo = TourDemo(node)
-    cap = Capture(node, args.marker_size, args.dictionary, args.tag_id)
-
-    if args.preview:
-        preview(cap, node, args)
-        return
-
-    poses = sweep_poses(args.radius, args.z_lo, args.z_hi)
-    print("%d sweep poses; tag %.0f mm, dict %s"
-          % (len(poses), args.marker_size * 1000, args.dictionary))
-    if not args.execute:
-        sys.exit("dry run — add --execute (the arm will move; e-stop in "
-                 "hand), or --preview to place the tag first")
-
-    base_T_ee, cam_T_tag = [], []
-    for i, (pos, quat) in enumerate(poses):
-        plan = demo.plan_pose_from(pos, quat, None)
-        if plan is None or not plan.success:
-            print("  pose %2d/%d unplannable — skipped" % (i + 1, len(poses)))
-            continue
-        if not demo.run(plan.trajectory, args.speed):
-            print("  pose %2d/%d motion refused — skipped" % (i + 1, len(poses)))
-            continue
-        time.sleep(0.6)                      # settle before looking
-        tag = cap.detect()
-        ee = cap.frame_pose("base_link", "end_effector_link")
-        if tag is None or ee is None:
-            print("  pose %2d/%d: tag not seen" % (i + 1, len(poses)))
-            continue
-        base_T_ee.append(ee)
-        cam_T_tag.append(tag)
-        print("  pose %2d/%d: tag at %s m in camera"
-              % (i + 1, len(poses), np.round(tag[:3, 3], 3)))
-
-    if len(base_T_ee) < 4:
+def report(base_T_ee, cam_T_tag, depth_T_color, drop=()):
+    """Solve, print the diagnostics, write the config. No hardware."""
+    keep = [i for i in range(len(base_T_ee)) if i not in set(drop)]
+    if drop:
+        print("dropping views %s" % list(drop))
+    be = [base_T_ee[i] for i in keep]
+    ct = [cam_T_tag[i] for i in keep]
+    if len(be) < 4:
         sys.exit("only %d usable views — aim the camera at the arm's "
                  "workspace, or re-tape the tag so it faces the camera"
-                 % len(base_T_ee))
-    spread = pose_spread(base_T_ee)
-    print("\n%d views, rotation spread %.2f rad" % (len(base_T_ee), spread))
+                 % len(be))
+    spread = pose_spread(be)
+    print("\n%d views, rotation spread %.2f rad" % (len(be), spread))
     if spread < 0.5:
         sys.exit("poses are too similar in ORIENTATION — the hand-eye "
                  "solve is degenerate here; widen the sweep")
 
-    base_T_color, residual = solve_eye_to_hand(base_T_ee, cam_T_tag)
+    base_T_color, residual = solve_eye_to_hand(be, ct)
     print("residual (tag scatter on the gripper): %.4f m" % residual)
+    if len(be) > 4 and residual > 0.005:
+        # one bad detection can dominate the residual; name it rather than
+        # leaving a vague "rough" warning
+        los = [solve_eye_to_hand([be[j] for j in range(len(be)) if j != i],
+                                 [ct[j] for j in range(len(be)) if j != i])[1]
+               for i in range(len(be))]
+        i = int(np.argmin(los))
+        if los[i] < residual * 0.7:
+            print("view %d is an outlier: without it, residual %.4f m "
+                  "(re-solve with --drop %d)" % (keep[i], los[i], keep[i]))
     if residual > 0.03:
         print("WARNING: >3 cm — treat the result as rough; inflate obstacles")
 
-    depth_T_color = cap.frame_pose("camera_depth_optical_frame",
-                                   "camera_color_optical_frame")
-    if depth_T_color is None:
-        sys.exit("no camera_depth_optical_frame <- camera_color_optical_frame TF")
     base_T_depth = base_T_color @ invert(depth_T_color)
     xyz = base_T_depth[:3, 3]
     quat = mat_to_quat_xyzw(base_T_depth[:3, :3])
@@ -268,10 +263,85 @@ def main():
             "mount_quat_xyzw: [%.6f, %.6f, %.6f, %.6f]\n"
             "min_range: 0.2\n"
             "max_range: 2.0\n"
-            % (len(base_T_ee), spread, residual, xyz[0], xyz[1], xyz[2],
+            % (len(be), spread, residual, xyz[0], xyz[1], xyz[2],
                quat[0], quat[1], quat[2], quat[3])
         )
     print("wrote %s" % CONFIG)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--marker-size", type=float, help="metres")
+    ap.add_argument("--dictionary", default="DICT_4X4_50")
+    ap.add_argument("--tag-id", type=int, default=-1)
+    ap.add_argument("--radius", type=float, default=0.58)
+    ap.add_argument("--z-lo", type=float, default=0.28)
+    ap.add_argument("--z-hi", type=float, default=0.45)
+    ap.add_argument("--speed", type=float, default=0.2)
+    ap.add_argument("--execute", action="store_true", help="allow motion")
+    ap.add_argument("--preview", action="store_true",
+                    help="no motion: stream the camera with tag detection to "
+                    ":8769 so you can place the tag and SEE it get found")
+    ap.add_argument("--solve-from", metavar="NPZ",
+                    help="re-solve from a saved sweep — no arm, no camera")
+    ap.add_argument("--drop", type=int, nargs="*", default=[], metavar="I",
+                    help="exclude these view indices from the solve")
+    args = ap.parse_args()
+
+    if args.solve_from:
+        d = np.load(args.solve_from)
+        report(list(d["base_T_ee"]), list(d["cam_T_tag"]),
+               d["depth_T_color"], drop=args.drop)
+        return
+    if args.marker_size is None:
+        ap.error("--marker-size is required (or use --solve-from)")
+
+    rclpy.init()
+    node = rclpy.create_node("calibrate_orbbec")
+    demo = TourDemo(node)
+    cap = Capture(node, args.marker_size, args.dictionary, args.tag_id)
+
+    if args.preview:
+        preview(cap, node, args)
+        return
+    if not args.execute:
+        sys.exit("dry run — add --execute (the arm will move; e-stop in "
+                 "hand), or --preview to place the tag first")
+
+    sign = probe_roll_sign(demo, cap, args)
+    poses = sweep_poses(sign, args.z_lo, args.z_hi)
+    print("%d sweep poses; tag %.0f mm, dict %s"
+          % (len(poses), args.marker_size * 1000, args.dictionary))
+
+    base_T_ee, cam_T_tag = [], []
+    for i, (b, p, z, roll) in enumerate(poses):
+        pos, quat = pose_at(args.radius, b, p, z, roll)
+        plan = demo.plan_pose_from(pos, quat, None)
+        if plan is None or not plan.success:
+            print("  pose %2d/%d unplannable — skipped" % (i + 1, len(poses)))
+            continue
+        if not demo.run(plan.trajectory, args.speed):
+            print("  pose %2d/%d motion refused — skipped" % (i + 1, len(poses)))
+            continue
+        time.sleep(0.6)                      # settle before looking
+        tag = cap.detect()
+        ee = cap.frame_pose("base_link", "end_effector_link")
+        if tag is None or ee is None:
+            print("  pose %2d/%d: tag not seen" % (i + 1, len(poses)))
+            continue
+        print("  pose %2d/%d -> view %2d: tag at %s m in camera"
+              % (i + 1, len(poses), len(base_T_ee), np.round(tag[:3, 3], 3)))
+        base_T_ee.append(ee)
+        cam_T_tag.append(tag)
+
+    depth_T_color = cap.frame_pose("camera_depth_optical_frame",
+                                   "camera_color_optical_frame")
+    if depth_T_color is None:
+        sys.exit("no camera_depth_optical_frame <- camera_color_optical_frame TF")
+    np.savez(DUMP, base_T_ee=np.array(base_T_ee), cam_T_tag=np.array(cam_T_tag),
+             depth_T_color=depth_T_color)
+    print("raw sweep saved to %s (re-solve with --solve-from)" % DUMP)
+    report(base_T_ee, cam_T_tag, depth_T_color)
 
 
 if __name__ == "__main__":

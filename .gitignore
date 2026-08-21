@@ -20,3 +20,6 @@ docs/license_*/
 
 # generated fiducials (scripts/make_tag.py)
 tag*.png
+
+# raw hand-eye sweeps (re-solvable data, not source)
+*_views.npz
