@@ -33,8 +33,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get update && apt-get install -y --no-install-recommends \
         ros-humble-ros-base \
         ros-humble-control-msgs \
-        ros-humble-controller-manager-msgs \
-        ros-humble-example-interfaces \
         python3-colcon-common-extensions \
         python3-pip \
     && rm -rf /var/lib/apt/lists/*
