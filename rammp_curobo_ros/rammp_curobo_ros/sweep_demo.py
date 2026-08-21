@@ -348,7 +348,8 @@ def main(args=None):
     node = SweepDemo()
     executor = MultiThreadedExecutor()
     executor.add_node(node)
-    threading.Thread(target=executor.spin, daemon=True).start()
+    spin = threading.Thread(target=executor.spin, daemon=True)
+    spin.start()
     signal.signal(signal.SIGINT, lambda *_: node.request_stop())
     try:
         node.run()
@@ -356,7 +357,15 @@ def main(args=None):
         try:
             node.shutdown()
             executor.shutdown()
-            node.destroy_node()
+            # Join BEFORE destroying. Tearing the node down while the
+            # executor thread is still in spin() aborts the process
+            # ("terminate called without an active exception", SIGABRT) —
+            # reproduced 1 run in 3 with execute:=true. If the thread will
+            # not stop, leave the node alone and just exit: a tidy
+            # destroy_node is not worth a crash.
+            spin.join(timeout=5.0)
+            if not spin.is_alive():
+                node.destroy_node()
         except KeyboardInterrupt:
             pass
         if rclpy.ok():
