@@ -217,8 +217,9 @@ frame coincides with our `end_effector_link`, so the handoff is one
 The `cameras` node gives the planner live spatial awareness from the
 **wrist-mounted D405**: depth is deprojected to base_link using TF *at
 each frame's timestamp* (no extrinsic calibration — the camera rides the
-arm; frames captured mid-motion are dropped), the arm erases itself via a
-capsule self-filter, a voxel accumulator with hysteresis kills flicker,
+arm; frames captured mid-motion are dropped), the arm erases itself with
+its own collision-sphere model (the same 47 spheres cuRobo plans against,
+placed by TF), a voxel accumulator with hysteresis kills flicker,
 and surviving clusters become named cuboid obstacles pushed to the
 planner at ~2 Hz — merged on top of the static `world_real_bench.yaml`
 baseline. Decay is **frustum-scoped**: a voxel is only forgotten when the

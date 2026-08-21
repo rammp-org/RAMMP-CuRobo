@@ -465,8 +465,8 @@ the dry run.
 
 Every cancel logs `arm still after N s`. That term could not be measured
 off-hardware; watch it on the first run. If it exceeds ~1 s the demo will
-look frozen rather than reactive — shorten the stroke (move `pose_a` /
-`pose_b` closer) rather than raising the speed.
+look frozen rather than reactive — shorten the stroke (lower `sweep_deg`)
+rather than raising the speed.
 
 ### Parking it
 
