@@ -42,6 +42,23 @@ scan pipeline was deliberately REVIVED 2026-08-17 as `perception.py` +
 - cuRobo v0.7.8: WorldConfig cylinders/spheres silently DROPPED (cuboids
   only); `update_world` with zero cuboids silently keeps the old world;
   more cuboids than `collision_cache_obb` raises. `world.py` guards all.
+- Collision re-checking: `validate_goal_msg` checks names/limits/velocity/
+  timing/continuity/start-match and NEVER collision, so a trajectory
+  planned before an obstacle appeared passes every gate. `~/check_trajectory`
+  (read-only) is the only thing that catches it — a reactive client must
+  poll it. Its verdict flips at `world_padding` (MEASURED 0.020 m), NOT
+  `collision_activation_distance` (0.03): that knob feeds the IK/trajopt
+  COST terms and never reaches `check_constraints`.
+- `planner_node` OWNS SIGINT (`SignalHandlerOptions.NO`). rclpy's default
+  handler kills the context synchronously, and the cancel path is
+  delivered by polling `is_cancel_requested` from the executor thread —
+  so with the default handler Ctrl+C during motion did not stop the arm,
+  it stopped watching it. `scripts/abort_checks.py` is the tripwire; never
+  hand SIGINT back to rclpy in a node that can command motion.
+- `colcon build --symlink-install` symlinks `config/*.yaml` but COPIES the
+  Python sources into `build/`. pytest reads the source tree, `ros2 run`
+  reads the copy — always rebuild before running a node, or you will test
+  code that is not running.
 - Publish/consume ONLY the trimmed interpolated plan — result buffers are
   padded; a stale tail caused violent motion in the field. `validate.py`'s
   continuity check is the tripwire; never bypass it.
