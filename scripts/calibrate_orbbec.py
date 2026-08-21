@@ -139,6 +139,43 @@ class Capture:
         return None
 
 
+def preview(cap, node, args):
+    """Live tag-placement helper: browser view + a running verdict.
+
+    Answers 'where should I put the tag' by showing you. Jog the arm by
+    hand through the poses you care about and watch the readout."""
+    import cv2
+
+    from rammp_curobo_ros.cameras import _ViewServer
+
+    view = _ViewServer(8769)
+    print("preview: http://<this-host>:8769/   (Ctrl+C to stop)\n"
+          "place the tag, move the arm by hand, and watch 'seen'.")
+    last = ""
+    while rclpy.ok():
+        rclpy.spin_once(node, timeout_sec=0.05)
+        if cap.color is None or cap.k is None:
+            continue
+        img = cap.color.copy()
+        corners, ids, _ = cap.detector.detectMarkers(img)
+        msg = "NO TAG — is it in view, flat, and unoccluded?"
+        if ids is not None and len(ids):
+            cv2.aruco.drawDetectedMarkers(img, corners, ids)
+            c = corners[0].reshape(4, 2)
+            px = float(np.linalg.norm(c[0] - c[1]))
+            tag = cap.detect(tries=1)
+            rng = float(tag[2, 3]) if tag is not None else float("nan")
+            msg = ("seen id=%d  %.0f px  %.2f m  %s"
+                   % (int(ids.ravel()[0]), px, rng,
+                      "GOOD" if px >= 60 else "SMALL — print a bigger tag"))
+        cv2.putText(img, msg, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                    (0, 255, 0) if "seen" in msg else (0, 0, 255), 2)
+        view.update(img)
+        if msg.split("  ")[0] != last.split("  ")[0]:
+            print("  " + msg)
+            last = msg
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--marker-size", type=float, required=True, help="metres")
@@ -149,6 +186,9 @@ def main():
     ap.add_argument("--z-hi", type=float, default=0.45)
     ap.add_argument("--speed", type=float, default=0.2)
     ap.add_argument("--execute", action="store_true", help="allow motion")
+    ap.add_argument("--preview", action="store_true",
+                    help="no motion: stream the camera with tag detection to "
+                    ":8769 so you can place the tag and SEE it get found")
     args = ap.parse_args()
 
     rclpy.init()
@@ -156,11 +196,16 @@ def main():
     demo = TourDemo(node)
     cap = Capture(node, args.marker_size, args.dictionary, args.tag_id)
 
+    if args.preview:
+        preview(cap, node, args)
+        return
+
     poses = sweep_poses(args.radius, args.z_lo, args.z_hi)
     print("%d sweep poses; tag %.0f mm, dict %s"
           % (len(poses), args.marker_size * 1000, args.dictionary))
     if not args.execute:
-        sys.exit("dry run — add --execute (the arm will move; e-stop in hand)")
+        sys.exit("dry run — add --execute (the arm will move; e-stop in "
+                 "hand), or --preview to place the tag first")
 
     base_T_ee, cam_T_tag = [], []
     for i, (pos, quat) in enumerate(poses):
