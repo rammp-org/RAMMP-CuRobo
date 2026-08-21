@@ -432,6 +432,16 @@ off-hardware; watch it on the first run. If it exceeds ~1 s the demo will
 look frozen rather than reactive — shorten the stroke (move `pose_a` /
 `pose_b` closer) rather than raising the speed.
 
+### Parking it
+
+```bash
+python3 scripts/go_home.py --execute        # --speed 0.25 by default
+```
+
+Plans home from the arm's LIVE state through the normal gate chain, so
+it is safe from wherever the demo left it. Without `--execute` it plans
+and prints, and nothing moves.
+
 ### Behaviour notes worth knowing before you demo it
 
 - **Depth only.** No object detection is involved; a hand, a box and a

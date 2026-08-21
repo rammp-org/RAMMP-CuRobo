@@ -26,6 +26,7 @@ import time
 
 import rclpy
 from rclpy.action import ActionClient
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
 
 from rammp_curobo.geometry import ang_diff, yaw_about_world_z
@@ -63,7 +64,14 @@ class TourDemo:
     def __init__(self, node):
         self.node = node
         self._q = None
-        node.create_subscription(JointState, "/joint_states", self._js_cb, 10)
+        # sensor-data QoS, not the reliable default: the Kinova driver
+        # publishes /joint_states BEST_EFFORT, and a reliable subscriber
+        # is QoS-incompatible with it — receives nothing at all, and
+        # every .joints() call then reports the bringup as missing
+        # (same trap planner_node documents).
+        node.create_subscription(
+            JointState, "/joint_states", self._js_cb, qos_profile_sensor_data
+        )
         self.plan_pose = ActionClient(
             node, PlanToPose, NODE_NAMESPACE + "/plan_to_pose"
         )
