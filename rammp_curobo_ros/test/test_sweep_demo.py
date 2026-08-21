@@ -65,3 +65,24 @@ def test_traj_index_tracks_dilated_time():
     assert traj_index(times, 1.0, 0.5) < traj_index(times, 1.0, 1.0)
     # past the end clamps to len(times), i.e. an empty remaining span
     assert traj_index(times, 100.0, 1.0) == len(times)
+
+
+def test_report_can_change_severity(monkeypatch):
+    """rclpy caches a logger context per CALL SITE with the first call's
+    severity; logging warning then error from one line raises. The demo
+    died on the bench exactly that way: HOLD (warning), then a plan
+    failure (error)."""
+    import rclpy
+
+    from rammp_curobo_ros.sweep_demo import SweepDemo
+
+    rclpy.init()
+    try:
+        node = rclpy.create_node("report_probe")
+        d = types.SimpleNamespace(_last_report=("", 0.0), get_logger=node.get_logger)
+        SweepDemo.report(d, "warning", "HOLD")
+        SweepDemo.report(d, "error", "plan failed")      # must not raise
+        SweepDemo.report(d, "warning", "HOLD again")
+        node.destroy_node()
+    finally:
+        rclpy.shutdown()

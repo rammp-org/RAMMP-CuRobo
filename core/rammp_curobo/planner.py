@@ -65,6 +65,7 @@ class CuRoboPlanner:
         self.collision_activation_distance = float(p["collision_activation_distance"])
         self.world_padding = float(p["world_padding"])
         self.joint_limits_deg = dict(p["joint_limits_deg"] or {})
+        self.max_joint_span_rad = float(p["max_joint_span_rad"])
         self.no_pad_names = frozenset(p["no_pad_names"] or [])
         self.joint_space_method = str(p["joint_space_method"])
         self.limit_clamp_rad = float(p["limit_clamp_rad"])
@@ -640,6 +641,17 @@ class CuRoboPlanner:
             return PlanResult.failure(
                 "LIBRARY_VALIDATION_FAILED",
                 "plan rejected by post-validation: " + "; ".join(problems),
+                timing=time.monotonic() - t0,
+            )
+        span = pos.max(axis=0) - pos.min(axis=0)
+        if span.max() > self.max_joint_span_rad:
+            j = int(np.argmax(span))
+            return PlanResult.failure(
+                "WINDING",
+                "%s sweeps %.0f deg in one plan (limit %.0f) — a wound "
+                "trajectory, refused; the planner will re-seed on retry"
+                % (self.joint_names[j], np.degrees(span[j]),
+                   np.degrees(self.max_joint_span_rad)),
                 timing=time.monotonic() - t0,
             )
 

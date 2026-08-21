@@ -907,16 +907,24 @@ class CamerasNode(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
+    import signal
+    import threading
+
+    from rclpy.signals import SignalHandlerOptions
+
+    # Own the SIGINT. rclpy's default handler shuts the context down under
+    # the spinning executor, and spin() then dies inside a subscription
+    # take with a pybind RuntimeError ("Unable to convert call argument")
+    # — seen on every launch Ctrl+C on the bench. A flag we poll is clean.
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
+    stop = threading.Event()
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
     node = CamerasNode()
     try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
+        while not stop.is_set() and rclpy.ok():
+            rclpy.spin_once(node, timeout_sec=0.1)
     finally:
-        # Ctrl+C on a launch signals the group AND launch forwards SIGINT, so
-        # a second one lands mid-teardown; a clean exit should not print a
-        # traceback.
         try:
             node.destroy_node()
         except KeyboardInterrupt:

@@ -42,6 +42,10 @@ PLANNER_DEFAULTS = {
         # joint_1 is the base yaw and azimuth = -joint_1, so a workspace
         # of 75 deg left / 90 deg right is joint_1 [-75, +90].
         "joint_limits_deg": {},
+        # refuse any plan in which ONE joint sweeps more than this: a full
+        # turn (2*pi) is never a legitimate segment on this arm, and the
+        # continuous joints (1/3/5/7, +-6 rad) make it possible
+        "max_joint_span_rad": 4.71,
         "no_pad_names": ["pedestal"],
         "joint_space_method": "auto",
         "limit_clamp_rad": 0.05,

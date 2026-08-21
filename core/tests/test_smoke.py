@@ -268,6 +268,27 @@ def test_joint_limit_override_refuses_nonsense():
         )
 
 
+def test_winding_plan_is_refused(planner):
+    """A plan in which one joint sweeps more than max_joint_span_rad is
+    refused as WINDING rather than handed to the executor. Exercised by
+    dropping the threshold under an ordinary plan's own span — the real
+    code path, not a synthetic array."""
+    q_goal = list(planner.home_pose)
+    q_goal[0] += 0.4                      # ~23 deg on joint_1
+    old = planner.max_joint_span_rad
+    try:
+        planner.max_joint_span_rad = 0.2  # below that plan's span
+        res = planner.plan_to_joints(q_goal)
+        assert not res.success
+        assert res.status == "WINDING"
+        assert "sweeps" in res.error and "refused" in res.error
+        planner.max_joint_span_rad = old  # default: same plan is fine
+        res = planner.plan_to_joints(q_goal)
+        assert res.success, res.error
+    finally:
+        planner.max_joint_span_rad = old
+
+
 def test_park_pose_outside_model_limits_is_clamped(planner):
     # The real Gen3 parks with joint_4 ~0.8 deg past cuRobo's URDF bound
     # (found on first hardware contact) — tiny violations clamp inward,

@@ -51,6 +51,13 @@ from rammp_curobo_ros.conversions import msg_arrays
 STILL_RAD_S = 0.02          # below this the arm counts as stopped
 
 
+def joint_spans_deg(traj_msg):
+    """Per-joint travel (deg, max-min) of a JointTrajectory message — the
+    one-line answer to 'what did that plan actually move'."""
+    pos, _vel, _t = msg_arrays(traj_msg)
+    return np.degrees(pos.max(axis=0) - pos.min(axis=0))
+
+
 def traj_index(times, elapsed_s, speed_scale):
     """Which trajectory point the arm has reached after `elapsed_s` of wall
     clock. The executor dilates time by 1/speed_scale, so trajectory time
@@ -119,7 +126,17 @@ class SweepDemo(Node):
         if message == self._last_report[0] and now - self._last_report[1] < 5.0:
             return
         self._last_report = (message, now)
-        getattr(self.get_logger(), level)(message)
+        # one call site per severity: rclpy caches a logger context PER
+        # CALL SITE with the severity of its first call, and raises
+        # "Logger severity cannot be changed between calls" if the same
+        # line later logs at another level. A HOLD (warning) followed by
+        # any other plan failure (error) killed the demo on the bench.
+        if level == "error":
+            self.get_logger().error(message)
+        elif level == "warning":
+            self.get_logger().warning(message)
+        else:
+            self.get_logger().info(message)
 
     def request_stop(self):
         self.stop = True
@@ -195,6 +212,13 @@ class SweepDemo(Node):
             return None, "plan timed out"
         if not res.result.success:
             return None, res.result.message
+        spans = joint_spans_deg(res.result.trajectory)
+        self.get_logger().info(
+            "plan: %d pts, joint spans %s deg%s"
+            % (len(res.result.trajectory.points),
+               " ".join("j%d=%.0f" % (i + 1, d) for i, d in enumerate(spans)),
+               "   <-- big" if spans.max() > 120.0 else "")
+        )
         return res.result.trajectory, res.result.message
 
     def check(self, traj, start_index):

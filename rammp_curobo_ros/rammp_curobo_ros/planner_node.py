@@ -101,6 +101,8 @@ class RammpCuroboNode(Node):
         # set on SIGINT: any in-flight execution cancels itself (the arm
         # stops and holds) before the context is torn down
         self._abort = threading.Event()
+        self._inflight = 0                     # action callbacks running
+        self._inflight_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._plan_lock = threading.Lock()
         self._exec_lock = threading.Lock()
@@ -311,16 +313,23 @@ class RammpCuroboNode(Node):
         self._abort.set()
 
     def wait_for_idle(self, timeout_s=10.0):
-        """True once no execution is in flight."""
+        """True once nothing is in flight — no execution AND no plan.
+
+        Both matter: a plan callback still solving when the action server
+        is destroyed finishes, calls goal_handle.abort(), and dies with
+        "feedback publisher is invalid" (bench, 2026-08-21).
+        """
         end = time.monotonic() + timeout_s
         while time.monotonic() < end:
-            if self._exec_lock.acquire(blocking=False):
+            with self._inflight_lock:
+                plans = self._inflight
+            if plans == 0 and self._exec_lock.acquire(blocking=False):
                 self._exec_lock.release()
                 return True
             time.sleep(0.05)
         self.get_logger().error(
-            "an execution was still running %.0f s after shutdown was "
-            "requested — check the arm" % timeout_s
+            "work still in flight %.0f s after shutdown was requested "
+            "(plans=%d) — check the arm" % (timeout_s, self._inflight)
         )
         return False
 
@@ -329,7 +338,25 @@ class RammpCuroboNode(Node):
             return self._joint_msg
 
     # ---------------------------------------------------------------- planning
+    def _track(self, delta):
+        with self._inflight_lock:
+            self._inflight += delta
+
     def _plan_to_pose_cb(self, goal_handle):
+        self._track(+1)
+        try:
+            return self._plan_to_pose(goal_handle)
+        finally:
+            self._track(-1)
+
+    def _plan_to_joints_cb(self, goal_handle):
+        self._track(+1)
+        try:
+            return self._plan_to_joints(goal_handle)
+        finally:
+            self._track(-1)
+
+    def _plan_to_pose(self, goal_handle):
         result = PlanToPose.Result()
         req = goal_handle.request.target
         pos = [req.position.x, req.position.y, req.position.z]
@@ -345,7 +372,7 @@ class RammpCuroboNode(Node):
         )
         return self._finish_plan(goal_handle, result, res)
 
-    def _plan_to_joints_cb(self, goal_handle):
+    def _plan_to_joints(self, goal_handle):
         result = PlanToJoints.Result()
         target = list(goal_handle.request.target_joints)
         if len(target) != len(self.planner.joint_names):
@@ -424,6 +451,13 @@ class RammpCuroboNode(Node):
 
     # --------------------------------------------------------------- execution
     def _execute_cb(self, goal_handle):
+        self._track(+1)
+        try:
+            return self._execute(goal_handle)
+        finally:
+            self._track(-1)
+
+    def _execute(self, goal_handle):
         result = ExecuteTrajectory.Result()
 
         def refuse(message, canceled=False):
@@ -497,7 +531,13 @@ class RammpCuroboNode(Node):
             # lands on a live arm instead of a dead one. Partial-motion
             # failures (possible contact) never auto-reset.
             self._try_servoing_recovery()
-        return refuse(message, canceled=(status == "canceled"))
+        # only a goal the CLIENT cancelled may transition to CANCELED; a
+        # shutdown abort stopped the arm the same way but must report as
+        # aborted or rclpy raises "invalid transition from EXECUTING"
+        return refuse(
+            message,
+            canceled=(status == "canceled" and goal_handle.is_cancel_requested),
+        )
 
     def _try_servoing_recovery(self):
         """Clear faults, then bounce the JTC to resync + restore servoing.
