@@ -36,6 +36,9 @@ def main():
     ap.add_argument("--config", default="gen3_real.yaml")
     ap.add_argument("--near", type=float, default=0.05,
                     help="flag boxes closer than this to the arm (m)")
+    ap.add_argument("--apply", action="store_true",
+                    help="write the measured correction into the camera "
+                    "config (translation only; re-run to confirm)")
     ap.add_argument("--camera-config",
                     default="rammp_curobo_ros/config/camera_orbbec_bench.yaml",
                     help="read mount_xyz from here to print a corrected line")
@@ -190,10 +193,30 @@ def main():
                 print("    now:       mount_xyz: [%.5f, %.5f, %.5f]" % tuple(cur))
                 print("    corrected: mount_xyz: [%.5f, %.5f, %.5f]"
                       % tuple(cur - mean))
-                print("  Re-run this script after editing: the ON-ARM boxes")
-                print("  should be gone. This is a measured patch, not a")
-                print("  calibration — re-run scripts/calibrate_orbbec.py when")
-                print("  you want the rotation checked too.")
+                if args.apply:
+                    fixed = cur - mean
+                    with open(args.camera_config) as f:
+                        text = f.read()
+                    line = "mount_xyz: [%.5f, %.5f, %.5f]" % tuple(fixed)
+                    out, done = [], False
+                    for ln in text.splitlines():
+                        if ln.startswith("mount_xyz:") and not done:
+                            out.append("# patched from the arm's own position "
+                                       "by perception_debug --apply")
+                            out.append("# (was %s)" % ln.strip())
+                            out.append(line)
+                            done = True
+                        else:
+                            out.append(ln)
+                    with open(args.camera_config, "w") as f:
+                        f.write("\n".join(out) + "\n")
+                    print("\n  APPLIED to %s" % args.camera_config)
+                    print("  Restart the cameras node and re-run this script:")
+                    print("  the ON-ARM boxes should be gone.")
+                else:
+                    print("  Re-run with --apply to write it, then restart the")
+                    print("  cameras node. Translation only: a rotation error")
+                    print("  would need scripts/calibrate_orbbec.py.")
             except Exception as exc:
                 print("  (could not read %s: %s)" % (args.camera_config, exc))
         else:
