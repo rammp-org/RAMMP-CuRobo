@@ -72,9 +72,16 @@ class SweepDemo(Node):
         self.quat = [float(v) for v in p("orientation", [0.5, 0.5, 0.5, 0.5]).value]
         self.speed_scale = float(p("speed_scale", 0.25).value)
         self.watchdog_hz = float(p("watchdog_hz", 5.0).value)
-        # extra margin ON TOP of cuRobo's collision_activation_distance
-        # (0.03 m), which already makes collision_free go false at 3 cm.
-        # 0 = trust cuRobo's verdict alone.
+        # Extra standoff on top of cuRobo's hard verdict. That verdict
+        # flips at world_padding — MEASURED 0.020 m, not the
+        # collision_activation_distance (0.03) you might expect: that knob
+        # feeds the IK/trajopt COST terms and never reaches
+        # check_constraints, so raising it buys nothing here. min_clearance
+        # is measured against the UNPADDED boxes, so this is a real margin.
+        # 0 = trust cuRobo alone, and only 0 is livelock-free: a margin
+        # wider than a legitimate plan's own clearance would trip on every
+        # fresh plan, so run() drops it for any stroke it would block
+        # outright.
         self.margin = float(p("clearance_margin", 0.0).value)
         self.hold_retry_s = float(p("hold_retry_s", 0.5).value)
         self.settle_timeout = float(p("settle_timeout_s", 3.0).value)
@@ -123,11 +130,17 @@ class SweepDemo(Node):
         while time.monotonic() < end and not self.stop and rclpy.ok():
             time.sleep(0.01)
 
-    def _await(self, future, timeout):
-        """The executor spins on its own thread — just watch the future."""
+    def _await(self, future, timeout, honor_stop=True):
+        """The executor spins on its own thread — just watch the future.
+
+        honor_stop=False is for the one case where giving up early is
+        unsafe: finding out whether an execution goal was accepted.
+        """
         end = time.monotonic() + timeout
         while not future.done():
-            if time.monotonic() > end or self.stop or not rclpy.ok():
+            if time.monotonic() > end or not rclpy.ok():
+                return None
+            if honor_stop and self.stop:
                 return None
             time.sleep(0.005)
         return future.result()
@@ -172,12 +185,12 @@ class SweepDemo(Node):
         req.start_index = int(start_index)
         return self._await(self.check_cli.call_async(req), 2.0)
 
-    def tripped(self, verdict):
+    def tripped(self, verdict, use_margin=True):
         """Should the watchdog interrupt this stroke?"""
         if verdict is None:
             return False                      # a dropped check is not evidence
         return not verdict.collision_free or (
-            self.margin > 0.0 and verdict.min_clearance < self.margin
+            use_margin and self.margin > 0.0 and verdict.min_clearance < self.margin
         )
 
     def wait_until_still(self):
@@ -212,15 +225,30 @@ class SweepDemo(Node):
                     return
             self._nap(1.0 / self.watchdog_hz)
 
-    def drive(self, traj):
+    def drive(self, traj, use_margin=True):
         """Execute one stroke under the watchdog. -> arrived|blocked|<error>."""
         _pos, _vel, times = msg_arrays(traj)
         goal = ExecuteTrajectory.Goal()
         goal.trajectory = traj
         goal.speed_scale = self.speed_scale
-        send = self._await(self.exec_cli.send_goal_async(goal), 10.0)
-        if send is None or not send.accepted:
-            return "execution goal not accepted (execute:=true on the planner?)"
+        sent = self.exec_cli.send_goal_async(goal)
+        send = self._await(sent, 10.0)
+        if send is None:
+            # We stopped waiting — but the server may have accepted it and
+            # the arm may already be moving. Never walk away from a goal
+            # whose fate we do not know.
+            send = self._await(sent, 3.0, honor_stop=False)
+            if send is not None and send.accepted:
+                self.get_logger().warning(
+                    "execution goal was accepted late — cancelling it"
+                )
+                self._active = send
+                send.cancel_goal_async()
+                self.wait_until_still()
+                self._active = None
+            return "gave up waiting for the execution goal"
+        if not send.accepted:
+            return "execution goal rejected (is execute:=true on the planner?)"
         self._active = send
         result_future = send.get_result_async()
         t0 = time.monotonic()
@@ -229,7 +257,7 @@ class SweepDemo(Node):
                 if self.stop or not rclpy.ok():
                     return self._cancel(send, result_future, "stopped")
                 idx = traj_index(times, time.monotonic() - t0, self.speed_scale)
-                if self.tripped(self.check(traj, idx)):
+                if self.tripped(self.check(traj, idx), use_margin):
                     self.get_logger().warning("watchdog: path blocked ahead")
                     return self._cancel(send, result_future, "blocked")
                 self._nap(1.0 / self.watchdog_hz)
@@ -280,7 +308,19 @@ class SweepDemo(Node):
                 self.watch(traj)
                 i += 1
                 continue
-            outcome = self.drive(traj)
+            # A margin wider than what this plan actually achieves would
+            # trip the instant the stroke starts, cancel, replan, and trip
+            # again — forever. Check the fresh plan against its own margin
+            # and drop the margin rather than livelock.
+            use_margin = True
+            if self.margin > 0.0 and self.tripped(self.check(traj, 0)):
+                self.report(
+                    "warning",
+                    "clearance_margin %.3f m is wider than this plan's own "
+                    "clearance — ignoring it for this stroke" % self.margin,
+                )
+                use_margin = False
+            outcome = self.drive(traj, use_margin)
             if outcome == "arrived":
                 i += 1
             elif outcome == "blocked":

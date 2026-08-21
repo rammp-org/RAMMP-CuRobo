@@ -330,6 +330,21 @@ is what closes that hole, so if it is not running, the demo is not safe.
    python3 scripts/sweep_demo_checks.py     # 12 checks, must all PASS
    ```
 
+4. **Check that Ctrl+C stops a moving arm** (stub controller, no hardware):
+
+   ```bash
+   python3 scripts/abort_checks.py          # must print PASS
+   ```
+
+   This one is not ceremony. rclpy's default SIGINT handler tears the
+   context down synchronously, and `executor.run()` delivers a cancel by
+   polling `goal_handle.is_cancel_requested` — which only advances while
+   the node's executor is spinning. Before this was fixed, Ctrl+C during
+   motion did not stop the arm, it stopped *watching* it, and the
+   controller drove the trajectory to its end. `planner_node` now owns
+   SIGINT: it cancels the controller goal (arm stops and holds), waits
+   for the execution to end, and only then exits.
+
 ### Running it
 
 Arm bringup and the Orbbec driver first, in their own terminals (§2), then:
@@ -351,6 +366,19 @@ The reaction budget, at the launch file's 5 Hz / `occupied_at` 2:
 perception 0.28-0.48 + watchdog notice <=0.20 + check 0.04
           + cancel & settle (MEASURED AND LOGGED EACH TIME) + replan 0.26
 ```
+
+**Where the watchdog actually trips.** cuRobo's hard verdict flips when
+the planned path comes within **0.020 m** of a perceived box — that is
+`world_padding`, measured by bisection, NOT `collision_activation_distance`
+(0.03), which feeds the IK/trajopt cost terms and never reaches the
+constraint checker that `check_trajectory` uses. Raising that config knob
+buys no standoff here. What does is `clearance_margin`, which is measured
+against the *unpadded* boxes. It defaults to 0 because only 0 is
+livelock-free: a margin wider than a legitimate plan's own clearance
+(typically ~0.055 m) would trip the instant every fresh stroke began. The
+demo detects that case, warns, and ignores the margin for that stroke
+rather than stuttering forever — but pick the value from what you see in
+the dry run.
 
 Every cancel logs `arm still after N s`. That term could not be measured
 off-hardware; watch it on the first run. If it exceeds ~1 s the demo will

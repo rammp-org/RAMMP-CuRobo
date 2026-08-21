@@ -41,9 +41,19 @@ def test_margin_trips_before_contact():
 
 
 def test_zero_margin_defers_to_curobo():
-    # cuRobo's collision_activation_distance (0.03) already fires
-    # collision_free=False at 3 cm; the margin is opt-in on top of that
+    # cuRobo's own verdict flips at world_padding (measured 0.020 m); the
+    # margin is opt-in on top of that, and 0 means "trust cuRobo"
     assert SweepDemo.tripped(demo(0.0), verdict(min_clearance=0.001)) is False
+
+
+def test_margin_can_be_suppressed_for_one_stroke():
+    # a margin wider than a legitimate plan's own clearance would trip on
+    # every fresh plan; run() disables it for that stroke rather than
+    # livelocking, but a real collision must still trip
+    assert SweepDemo.tripped(demo(0.05), verdict(min_clearance=0.04),
+                             use_margin=False) is False
+    assert SweepDemo.tripped(demo(0.05), verdict(collision_free=False),
+                             use_margin=False) is True
 
 
 def test_traj_index_tracks_dilated_time():

@@ -121,6 +121,7 @@ class TrajectoryExecutor:
         feedback_cb=None,
         get_current_q=None,
         tracking_tolerance_rad=0.08,
+        abort_cb=None,
     ):
         """Execute `msg` scaled by `speed_scale`. Blocks until terminal.
 
@@ -128,6 +129,13 @@ class TrajectoryExecutor:
         'failed'}. goal_handle (ours, not the controller's) is polled for
         cancel requests; cancelling maps to controller-goal cancel — the
         JTC stops and holds position.
+
+        abort_cb is the SHUTDOWN path and exists because the normal one
+        cannot serve it: a cancel goal only reaches is_cancel_requested if
+        this node's executor is still spinning, so on SIGINT the context
+        dies first and the arm drives on to the end of the trajectory.
+        abort_cb is polled from inside this loop, on the thread that is
+        already running, so it works while the node is shutting down.
         """
         scaled = scaled_msg(msg, speed_scale)
         duration = (
@@ -162,10 +170,11 @@ class TrajectoryExecutor:
         deadline = duration * 1.5 + 5.0
         while not done.wait(0.1):
             elapsed = (clock.now() - t0).nanoseconds * 1e-9
-            if goal_handle is not None and goal_handle.is_cancel_requested:
+            aborting = abort_cb is not None and abort_cb()
+            if (goal_handle is not None and goal_handle.is_cancel_requested) or aborting:
                 self._log.warning(
-                    "Cancel requested — cancelling controller "
-                    "goal (arm stops and holds)."
+                    "%s — cancelling controller goal (arm stops and holds)."
+                    % ("Shutting down" if aborting else "Cancel requested")
                 )
                 await_future(send.cancel_goal_async(), 2.0)
                 await_future(result_future, 5.0)

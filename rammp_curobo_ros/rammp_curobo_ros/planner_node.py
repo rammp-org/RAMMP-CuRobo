@@ -21,6 +21,7 @@ expose the same controller names (do not run both — they share
 /controller_manager and the same physical arm).
 """
 
+import signal
 import threading
 import time
 
@@ -96,6 +97,9 @@ class RammpCuroboNode(Node):
                 "(ros2 node list)." % self.get_name()
             )
 
+        # set on SIGINT: any in-flight execution cancels itself (the arm
+        # stops and holds) before the context is torn down
+        self._abort = threading.Event()
         self._state_lock = threading.Lock()
         self._plan_lock = threading.Lock()
         self._exec_lock = threading.Lock()
@@ -261,6 +265,33 @@ class RammpCuroboNode(Node):
         except (KeyError, IndexError):
             return None
 
+    def request_abort(self):
+        """Stop any motion, then let the process exit.
+
+        Called from the SIGINT handler. It must NOT tear the context down:
+        the executor thread needs a live context to deliver the controller
+        cancel, so we only raise the flag and wait for that thread.
+        """
+        if not self._abort.is_set():
+            self.get_logger().warning(
+                "shutdown requested — stopping any motion before exit"
+            )
+        self._abort.set()
+
+    def wait_for_idle(self, timeout_s=10.0):
+        """True once no execution is in flight."""
+        end = time.monotonic() + timeout_s
+        while time.monotonic() < end:
+            if self._exec_lock.acquire(blocking=False):
+                self._exec_lock.release()
+                return True
+            time.sleep(0.05)
+        self.get_logger().error(
+            "an execution was still running %.0f s after shutdown was "
+            "requested — check the arm" % timeout_s
+        )
+        return False
+
     def _joint_state_snapshot(self):
         with self._state_lock:
             return self._joint_msg
@@ -378,6 +409,8 @@ class RammpCuroboNode(Node):
                 "execution disabled (dry-run node). Relaunch with "
                 "execute:=true — and only with a human on the e-stop."
             )
+        if self._abort.is_set():
+            return refuse("node is shutting down")
         if not self._exec_lock.acquire(blocking=False):
             return refuse("an execution is already running")
         try:
@@ -415,6 +448,7 @@ class RammpCuroboNode(Node):
                 feedback_cb=feedback,
                 get_current_q=self.current_q,
                 tracking_tolerance_rad=self.tracking_tolerance,
+                abort_cb=self._abort.is_set,
             )
         finally:
             self._exec_lock.release()
@@ -597,16 +631,34 @@ class RammpCuroboNode(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
+    from rclpy.signals import SignalHandlerOptions
+
+    # Own the SIGINT. rclpy's default handler shuts the context down
+    # synchronously, and an in-flight execution can only be stopped from
+    # the executor thread while the context is still alive — with the
+    # default handler a Ctrl+C during motion does not stop the arm, it
+    # just stops watching it, and the controller drives the trajectory to
+    # the end.
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
     node = RammpCuroboNode()
     executor = MultiThreadedExecutor()
     executor.add_node(node)
+    stopping = threading.Event()
+
+    def _stop(*_args):
+        node.request_abort()
+        stopping.set()
+
+    signal.signal(signal.SIGINT, _stop)
+    signal.signal(signal.SIGTERM, _stop)
+    spin = threading.Thread(target=executor.spin, daemon=True)
+    spin.start()
     try:
-        executor.spin()
-    except KeyboardInterrupt:
-        pass
+        while not stopping.wait(0.2):
+            if not spin.is_alive():
+                break
+        node.wait_for_idle()
     finally:
-        # see cameras.main: a second SIGINT arrives during teardown
         try:
             executor.shutdown()
             node.destroy_node()

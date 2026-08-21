@@ -31,7 +31,7 @@ ARGS = [
     ("occupied_at", "2", "ticks before a voxel counts as an obstacle"),
     ("self_radius", "0.16", "arm self-filter radius (m)"),
     ("watchdog_hz", "5.0", "how often the in-flight path is re-checked"),
-    ("clearance_margin", "0.0", "extra margin over cuRobo's 0.03 m"),
+    ("clearance_margin", "0.0", "extra standoff over cuRobo's measured 0.02 m"),
 ]
 
 
