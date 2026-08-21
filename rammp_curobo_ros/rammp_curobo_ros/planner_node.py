@@ -606,8 +606,12 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        executor.shutdown()
-        node.destroy_node()
+        # see cameras.main: a second SIGINT arrives during teardown
+        try:
+            executor.shutdown()
+            node.destroy_node()
+        except KeyboardInterrupt:
+            pass
         if rclpy.ok():
             rclpy.shutdown()
 

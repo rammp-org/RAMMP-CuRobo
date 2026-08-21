@@ -894,7 +894,13 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.destroy_node()
+        # Ctrl+C on a launch signals the group AND launch forwards SIGINT, so
+        # a second one lands mid-teardown; a clean exit should not print a
+        # traceback.
+        try:
+            node.destroy_node()
+        except KeyboardInterrupt:
+            pass
         rclpy.try_shutdown()
 
 

@@ -17,7 +17,7 @@ TF/depth skew while the arm is sweeping.
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -35,8 +35,25 @@ ARGS = [
 ]
 
 
-def generate_launch_description():
-    lc = LaunchConfiguration
+def _nodes(context, *_args, **_kwargs):
+    """Resolve every argument to a real Python value before building the
+    nodes.
+
+    Substitutions are strings, and a parameter's type is inferred from
+    what it is given: `{"cameras": [LaunchConfiguration("camera")]}` does
+    NOT produce a STRING_ARRAY, it produces a STRING, and the cameras
+    node dies at startup with InvalidParameterTypeException. Resolving
+    here instead makes every parameter's type explicit.
+    """
+    def val(name):
+        return LaunchConfiguration(name).perform(context)
+
+    def flag(name):
+        return val(name).strip().lower() in ("1", "true", "yes", "on")
+
+    execute = flag("execute")
+    world = val("world")
+    speed = float(val("speed_scale"))
     planner = Node(
         package="rammp_curobo_ros",
         executable="planner_node",
@@ -44,10 +61,10 @@ def generate_launch_description():
         output="screen",
         emulate_tty=True,
         parameters=[{
-            "config": lc("config"),
-            "world": lc("world"),
-            "execute": lc("execute"),
-            "speed_scale": lc("speed_scale"),
+            "config": val("config"),
+            "world": world,
+            "execute": execute,
+            "speed_scale": speed,
         }],
     )
     cameras = Node(
@@ -57,11 +74,11 @@ def generate_launch_description():
         output="screen",
         emulate_tty=True,
         parameters=[{
-            "cameras": [lc("camera")],
-            "baseline": lc("world"),
-            "rate_hz": lc("rate_hz"),
-            "occupied_at": lc("occupied_at"),
-            "self_radius": lc("self_radius"),
+            "cameras": [val("camera")],          # a real list of str
+            "baseline": world,
+            "rate_hz": float(val("rate_hz")),
+            "occupied_at": int(val("occupied_at")),
+            "self_radius": float(val("self_radius")),
         }],
     )
     demo = Node(
@@ -71,13 +88,17 @@ def generate_launch_description():
         output="screen",
         emulate_tty=True,
         parameters=[{
-            "execute": lc("execute"),
-            "speed_scale": lc("speed_scale"),
-            "watchdog_hz": lc("watchdog_hz"),
-            "clearance_margin": lc("clearance_margin"),
+            "execute": execute,
+            "speed_scale": speed,
+            "watchdog_hz": float(val("watchdog_hz")),
+            "clearance_margin": float(val("clearance_margin")),
         }],
     )
+    return [planner, cameras, demo]
+
+
+def generate_launch_description():
     return LaunchDescription(
         [DeclareLaunchArgument(n, default_value=d, description=h) for n, d, h in ARGS]
-        + [planner, cameras, demo]
+        + [OpaqueFunction(function=_nodes)]
     )

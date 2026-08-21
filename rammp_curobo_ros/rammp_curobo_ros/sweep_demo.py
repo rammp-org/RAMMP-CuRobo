@@ -313,9 +313,12 @@ def main(args=None):
     try:
         node.run()
     finally:
-        node.shutdown()
-        executor.shutdown()
-        node.destroy_node()
+        try:
+            node.shutdown()
+            executor.shutdown()
+            node.destroy_node()
+        except KeyboardInterrupt:
+            pass
         if rclpy.ok():
             rclpy.shutdown()
 
