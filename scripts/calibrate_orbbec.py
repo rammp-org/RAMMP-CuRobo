@@ -165,9 +165,14 @@ def preview(cap, node, args):
             px = float(np.linalg.norm(c[0] - c[1]))
             tag = cap.detect(tries=1)
             rng = float(tag[2, 3]) if tag is not None else float("nan")
+            # px, not metres, is what pose accuracy tracks. This Orbbec's
+            # colour lens is WIDE (fx 613 @ 1280x720, ~92 deg HFOV), so a
+            # 60 mm tag is only ~40 px at 0.9 m.
+            grade = ("GOOD" if px >= 60 else
+                     "OK" if px >= 45 else
+                     "TOO SMALL — move the camera closer or print bigger")
             msg = ("seen id=%d  %.0f px  %.2f m  %s"
-                   % (int(ids.ravel()[0]), px, rng,
-                      "GOOD" if px >= 60 else "SMALL — print a bigger tag"))
+                   % (int(ids.ravel()[0]), px, rng, grade))
         cv2.putText(img, msg, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
                     (0, 255, 0) if "seen" in msg else (0, 0, 255), 2)
         view.update(img)
