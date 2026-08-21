@@ -36,6 +36,9 @@ def main():
     ap.add_argument("--config", default="gen3_real.yaml")
     ap.add_argument("--near", type=float, default=0.05,
                     help="flag boxes closer than this to the arm (m)")
+    ap.add_argument("--camera-config",
+                    default="rammp_curobo_ros/config/camera_orbbec_bench.yaml",
+                    help="read mount_xyz from here to print a corrected line")
     args = ap.parse_args()
 
     from rammp_curobo import CuRoboPlanner
@@ -74,6 +77,7 @@ def main():
     detail = {}
     counts = collections.Counter()
     worst_gap = {}
+    offsets = []
     ticks = 0
     last = -1.0
     end = time.monotonic() + args.seconds
@@ -98,6 +102,14 @@ def main():
             seen[key] += 1
             detail[key] = (c, d)
             worst_gap[key] = min(worst_gap.get(key, 1e9), gap)
+            if gap < args.near:
+                # A box sitting on the arm IS the arm, mis-placed. The
+                # vector from the nearest arm sphere to the box centre is
+                # the camera-pose error, measured against the one object
+                # whose true position we know exactly.
+                j = int(np.argmin(np.linalg.norm(spheres[:, :3] - np.array(c),
+                                                 axis=1)))
+                offsets.append(np.array(c) - spheres[j, :3])
             tag = ("ON-ARM" if gap < 0 else
                    "near" if gap < args.near else "ok")
             line.append("%s@%s %s(%.3f)" % (name, np.round(c, 2), tag, gap))
@@ -134,6 +146,41 @@ def main():
             note += "  UNSTABLE"
         print("%-26s %-22s %-8d %-8.0f%% %.3f m %s"
               % (np.round(c, 3), np.round(d, 3), n, duty * 100, gap, note))
+
+    if offsets:
+        off = np.array(offsets)
+        mean = off.mean(axis=0)
+        spread = off.std(axis=0)
+        print("\nAPPARENT CAMERA-POSE ERROR")
+        print("  Measured from the arm itself: where its own body is drawn,")
+        print("  minus where TF says it is. %d samples." % len(off))
+        print("  offset  %s m   (spread %s)"
+              % (np.round(mean, 3), np.round(spread, 3)))
+        print("  magnitude %.3f m" % float(np.linalg.norm(mean)))
+        if spread.max() < 0.05:
+            print("  Consistent across samples -> looks like a TRANSLATION")
+            print("  error in the camera mount, not a rotation. Subtracting")
+            print("  it from mount_xyz should land the arm back on itself.")
+            try:
+                import yaml
+
+                with open(args.camera_config) as f:
+                    cfg = yaml.safe_load(f)
+                cur = np.array(cfg["mount_xyz"], dtype=float)
+                print("\n  %s" % args.camera_config)
+                print("    now:       mount_xyz: [%.5f, %.5f, %.5f]" % tuple(cur))
+                print("    corrected: mount_xyz: [%.5f, %.5f, %.5f]"
+                      % tuple(cur - mean))
+                print("  Re-run this script after editing: the ON-ARM boxes")
+                print("  should be gone. This is a measured patch, not a")
+                print("  calibration — re-run scripts/calibrate_orbbec.py when")
+                print("  you want the rotation checked too.")
+            except Exception as exc:
+                print("  (could not read %s: %s)" % (args.camera_config, exc))
+        else:
+            print("  Varies with position -> a ROTATION error is in play;")
+            print("  a translation fix will not fully correct it. Re-run")
+            print("  scripts/calibrate_orbbec.py.")
 
     print("\nVERDICT")
     if on_arm:
