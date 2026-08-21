@@ -3,10 +3,11 @@
     ros2 launch rammp_curobo_ros sweep_demo.launch.py                  # dry run
     ros2 launch rammp_curobo_ros sweep_demo.launch.py execute:=true    # it moves
 
-The arm ping-pongs between two tool poses. While a stroke is in flight a
-watchdog asks the planner, at watchdog_hz, whether the REMAINING part of
-that trajectory is still collision-free in the world the cameras node is
-publishing. Nothing in the execution gate chain re-checks collision, so
+The base yaws +-sweep_deg about the home configuration (or, with pose_a
+and pose_b set, the tool ping-pongs between two poses). While a stroke
+is in flight a watchdog asks the planner, at watchdog_hz, whether the
+REMAINING part of that trajectory is still collision-free in the world
+the cameras node is publishing. Nothing in the execution gate chain re-checks collision, so
 this service call is the only thing standing between a trajectory planned
 before an obstacle appeared and the obstacle.
 
@@ -44,9 +45,10 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
 
-from rammp_curobo_interfaces.action import ExecuteTrajectory, PlanToPose
+from rammp_curobo_interfaces.action import ExecuteTrajectory, PlanToJoints, PlanToPose
 from rammp_curobo_interfaces.srv import CheckTrajectory
 from rammp_curobo_ros.conversions import msg_arrays
+from rammp_curobo_ros.tour_demo import HOME
 
 STILL_RAD_S = 0.02          # below this the arm counts as stopped
 
@@ -71,11 +73,21 @@ class SweepDemo(Node):
         super().__init__("sweep_demo")
         cb = ReentrantCallbackGroup()
         p = self.declare_parameter
-        self.pose_a = [float(v) for v in p("pose_a", [0.55, -0.30, 0.35]).value]
-        self.pose_b = [float(v) for v in p("pose_b", [0.55, 0.30, 0.35]).value]
-        # wrist flat, tool along +x. Keep both waypoints outside ~0.5 m
-        # radius: tool_frame sits 0.12 m ahead of the flange, so a flat
-        # wrist closer in folds the arm into itself and IK_FAILs.
+        # The sweep. Default: the BASE yaws +-sweep_deg about the home
+        # configuration, planned in JOINT space with both endpoints pinned
+        # from the start. Measured: a free stroke moves j1 alone (60 deg,
+        # every other joint 0), a dodge lifts the elbow ~20 deg and comes
+        # back. The earlier pose waypoints with a world-fixed tool made
+        # cuRobo's IK free to pick a different wrist/elbow family at each
+        # end — j1=103, j5=105 on a FREE stroke, half-turn contortions
+        # when dodging. Pose mode stays available: set pose_a AND pose_b.
+        self.sweep_deg = float(p("sweep_deg", 30.0).value)
+        self.pose_a = [float(v) for v in p("pose_a", [0.0, 0.0, 0.0]).value]
+        self.pose_b = [float(v) for v in p("pose_b", [0.0, 0.0, 0.0]).value]
+        self.pose_mode = any(self.pose_a) and any(self.pose_b)
+        # pose mode only: wrist flat, tool along +x. Keep waypoints
+        # outside ~0.5 m radius: tool_frame sits 0.12 m ahead of the
+        # flange, a flat wrist closer in folds the arm into itself.
         self.quat = [float(v) for v in p("orientation", [0.5, 0.5, 0.5, 0.5]).value]
         self.speed_scale = float(p("speed_scale", 0.25).value)
         self.watchdog_hz = float(p("watchdog_hz", 5.0).value)
@@ -91,6 +103,11 @@ class SweepDemo(Node):
         # outright.
         self.margin = float(p("clearance_margin", 0.0).value)
         self.hold_retry_s = float(p("hold_retry_s", 0.5).value)
+        # A sweep stroke never needs any single joint to move more than
+        # this. Plans that do are contortions — the shoulder arcing over
+        # the top (j2 193 deg on the bench), the wrist rolling half a turn
+        # — and are refused and re-planned rather than executed.
+        self.max_span_deg = float(p("max_joint_span_deg", 120.0).value)
         self.settle_timeout = float(p("settle_timeout_s", 3.0).value)
         self.execute = bool(p("execute", False).value)
         ns = str(p("planner_ns", "/rammp_curobo").value)
@@ -98,6 +115,19 @@ class SweepDemo(Node):
         self.stop = False
         self._vel = None
         self._active = None
+        # joint configurations for A and B. Yaw mode: pinned now (home
+        # with j1 = +-sweep; azimuth is -j1, so + is the RIGHT end). Pose
+        # mode: pinned the first time each pose is reached, so later
+        # strokes plan to JOINTS and cuRobo's IK can never pick the other
+        # elbow/wrist family for the same pose and connect them with a
+        # half-turn reconfiguration.
+        if self.pose_mode:
+            self._pinned = [None, None]
+        else:
+            half = float(np.radians(self.sweep_deg))
+            right, left = list(HOME), list(HOME)
+            right[0], left[0] = +half, -half
+            self._pinned = [right, left]
         self._last_report = ("", 0.0)
 
         self.create_subscription(
@@ -106,6 +136,9 @@ class SweepDemo(Node):
         )
         self.plan_cli = ActionClient(
             self, PlanToPose, ns + "/plan_to_pose", callback_group=cb
+        )
+        self.joint_cli = ActionClient(
+            self, PlanToJoints, ns + "/plan_to_joints", callback_group=cb
         )
         self.exec_cli = ActionClient(
             self, ExecuteTrajectory, ns + "/execute_trajectory", callback_group=cb
@@ -181,6 +214,7 @@ class SweepDemo(Node):
         # failing the demo on a slow start
         for name, fn in (
             ("plan_to_pose", self.plan_cli.wait_for_server),
+            ("plan_to_joints", self.joint_cli.wait_for_server),
             ("check_trajectory", self.check_cli.wait_for_service),
         ):
             if not self._wait(fn, timeout):
@@ -197,29 +231,62 @@ class SweepDemo(Node):
         return True
 
     # ---------------------------------------------------------------- pieces
-    def plan(self, xyz):
-        """(trajectory, message). trajectory is None on failure."""
-        goal = PlanToPose.Goal()
-        goal.target = Pose()
-        goal.target.position.x, goal.target.position.y, goal.target.position.z = xyz
-        (goal.target.orientation.x, goal.target.orientation.y,
-         goal.target.orientation.z, goal.target.orientation.w) = self.quat
-        send = self._await(self.plan_cli.send_goal_async(goal), 10.0)
+    def _send(self, client, goal):
+        """(result or None, message)."""
+        send = self._await(client.send_goal_async(goal), 10.0)
         if send is None or not send.accepted:
             return None, "plan goal not accepted"
         res = self._await(send.get_result_async(), 30.0)
         if res is None:
             return None, "plan timed out"
-        if not res.result.success:
-            return None, res.result.message
-        spans = joint_spans_deg(res.result.trajectory)
+        return res.result, res.result.message
+
+    def plan(self, idx):
+        """Plan to waypoint idx (0 = A, 1 = B). -> (trajectory|None, message).
+
+        First visit: plan to the POSE and remember the joints it landed
+        on. After that: plan to those JOINTS. Either way, a plan whose
+        largest joint travel exceeds max_joint_span_deg is a contortion
+        and is refused — the caller waits and tries again (cuRobo
+        re-seeds, and the world may have moved on).
+        """
+        pinned = self._pinned[idx]
+        if pinned is not None:
+            goal = PlanToJoints.Goal()
+            goal.target_joints = [float(v) for v in pinned]
+            res, message = self._send(self.joint_cli, goal)
+            if res is None or not res.success:
+                return None, message
+            if float(res.goal_mismatch_rad) > 0.5:
+                return None, ("joint plan landed %.2f rad from the pinned "
+                              "configuration (family flip) — refused"
+                              % res.goal_mismatch_rad)
+        else:
+            goal = PlanToPose.Goal()
+            goal.target = Pose()
+            xyz = (self.pose_a, self.pose_b)[idx]
+            goal.target.position.x, goal.target.position.y, goal.target.position.z = xyz
+            (goal.target.orientation.x, goal.target.orientation.y,
+             goal.target.orientation.z, goal.target.orientation.w) = self.quat
+            res, message = self._send(self.plan_cli, goal)
+            if res is None or not res.success:
+                return None, message
+        traj = res.trajectory
+        spans = joint_spans_deg(traj)
+        worst = int(np.argmax(spans))
         self.get_logger().info(
             "plan: %d pts, joint spans %s deg%s"
-            % (len(res.result.trajectory.points),
+            % (len(traj.points),
                " ".join("j%d=%.0f" % (i + 1, d) for i, d in enumerate(spans)),
-               "   <-- big" if spans.max() > 120.0 else "")
+               "   <-- big" if spans.max() > self.max_span_deg else "")
         )
-        return res.result.trajectory, res.result.message
+        if spans.max() > self.max_span_deg:
+            return None, ("contorted: joint_%d sweeps %.0f deg (limit %.0f) — "
+                          "refused, replanning" % (worst + 1, spans[worst],
+                                                   self.max_span_deg))
+        if pinned is None:
+            self._pinned[idx] = [float(v) for v in traj.points[-1].positions]
+        return traj, message
 
     def check(self, traj, start_index):
         req = CheckTrajectory.Request()
@@ -325,16 +392,17 @@ class SweepDemo(Node):
     def run(self):
         if not self.wait_for_servers():
             return
+        where = ("%s <-> %s" % (np.round(self.pose_a, 2), np.round(self.pose_b, 2))
+                 if self.pose_mode else
+                 "base yaw +-%.0f deg about home (joint space)" % self.sweep_deg)
         self.get_logger().info(
-            "sweeping %s <-> %s at speed %.2f, watchdog %.1f Hz%s"
-            % (np.round(self.pose_a, 2), np.round(self.pose_b, 2),
-               self.speed_scale, self.watchdog_hz,
+            "sweeping %s at speed %.2f, watchdog %.1f Hz%s"
+            % (where, self.speed_scale, self.watchdog_hz,
                "" if self.execute else " (DRY RUN — nothing will move)")
         )
-        targets = [self.pose_a, self.pose_b]
         i = 0
         while rclpy.ok() and not self.stop:
-            traj, message = self.plan(targets[i % 2])
+            traj, message = self.plan(i % 2)
             if traj is None:
                 if "INVALID_START" in message:
                     self.report(
@@ -342,6 +410,8 @@ class SweepDemo(Node):
                         "HOLD — something is too close to plan around; "
                         "waiting for it to clear",
                     )
+                elif "contorted" in message or "family flip" in message:
+                    self.report("warning", message)
                 else:
                     self.report("error", "plan failed: %s" % message)
                 self._nap(self.hold_retry_s)

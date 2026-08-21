@@ -55,6 +55,20 @@ scan pipeline was deliberately REVIVED 2026-08-17 as `perception.py` +
   so with the default handler Ctrl+C during motion did not stop the arm,
   it stopped watching it. `scripts/abort_checks.py` is the tripwire; never
   hand SIGINT back to rclpy in a node that can command motion.
+- The arm's SELF-MODEL for perception is cuRobo's own collision spheres
+  (`self_model_gen3_2f85.yaml`, baked — never hand-edit), placed by TF.
+  Arm-link frames are identical between cuRobo's URDF and ros2_kortex's
+  (verified, all 8 joints); the gripper is expressed in end_effector_link
+  (the URDFs attach it with different yaw and names). `self_radius` is a
+  MARGIN over the sphere radii, not a capsule radius.
+- Camera-pose error is solved OFF THE ARM (SelfRegistrar: coarse grid +
+  point-to-plane ICP on the camera-facing surface of the spheres, raw
+  frames BEFORE masking). Never estimate it from perceived boxes: the
+  self-filter leaves only the fringe of a displaced arm, and a
+  box-centroid estimate measures the fringe (over-corrected 5 cm on the
+  bench). Local ICP alone is not enough either — errors beyond one arm
+  radius push the drawn arm into its model and the far surface is a
+  perfectly good local minimum.
 - `colcon build --symlink-install` symlinks `config/*.yaml` but COPIES the
   Python sources into `build/`. pytest reads the source tree, `ros2 run`
   reads the copy — always rebuild before running a node, or you will test

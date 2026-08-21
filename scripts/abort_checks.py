@@ -29,6 +29,7 @@ HOME = [0.0, 0.262, 3.142, -2.269, 0.0, 0.96, 1.571]
 
 STUB = '''
 import time
+import numpy as np
 import rclpy
 from control_msgs.action import FollowJointTrajectory
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -75,8 +76,12 @@ class Stub(Node):
         pts = goal_handle.request.trajectory.points
         dur = pts[-1].time_from_start.sec + pts[-1].time_from_start.nanosec * 1e-9
         print("goal accepted, %%d points over %%.1f s" %% (len(pts), dur), flush=True)
+        times = [p.time_from_start.sec + p.time_from_start.nanosec * 1e-9 for p in pts]
         t0 = time.monotonic()
         while time.monotonic() - t0 < dur:
+            # track the trajectory: a real controller's joint state moves
+            k = min(int(np.searchsorted(times, time.monotonic() - t0)), len(pts) - 1)
+            self.q = list(pts[k].positions)
             if goal_handle.is_cancel_requested:
                 print("STOPPED at %%.1f s of %%.1f" %% (time.monotonic() - t0, dur),
                       flush=True)

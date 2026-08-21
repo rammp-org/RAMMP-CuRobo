@@ -311,18 +311,54 @@ never re-checks *collision*. A trajectory planned before an obstacle
 appeared passes every gate and drives through it. `~/check_trajectory`
 is what closes that hole, so if it is not running, the demo is not safe.
 
+### How the arm stays out of its own map
+
+The cameras node erases the arm from the depth cloud with **cuRobo's own
+47 collision spheres** (`self_model_gen3_2f85.yaml`, baked by
+`scripts/bake_self_model.py`), placed by TF at each depth frame's stamp.
+The arm-link frames are identical between cuRobo's URDF and
+ros2_kortex's (verified, all eight joints); the gripper is expressed in
+`end_effector_link` because the two URDFs attach it with a different yaw.
+`self_radius` is now the MARGIN added to every sphere radius (default
+0.08 m), not a capsule radius — it only has to absorb camera-pose error
+and TF/depth skew.
+
+At startup the node also **registers each fixed camera off the arm**
+(`auto_register`, default on): eight still depth frames are fitted to
+the sphere model — coarse grid search, then point-to-plane ICP,
+translation only, camera-facing surfaces only — and the solved shift is
+applied to the mount in memory for the session, with the corrected
+`mount_xyz` line logged for you to paste into the config. Gates: at
+least 300 arm points, residual under 2 cm, shift under 20 cm; otherwise
+it warns and leaves the calibration alone. Synthetic accuracy: 0.2 mm
+with obstacles touching the arm, errors up to 19 cm.
+
+Why: the tag calibration left the camera 7-9 cm off, and the first
+fix — `perception_debug --apply`, which measured the arm's BOXES — made
+it worse. Those boxes had already been through the self-filter, so only
+the far fringe of the displaced arm survived, and it measured the
+fringe. The registration reads the raw frames before any masking.
+
 ### Prerequisites (do not skip)
 
 1. **Measure the bench.** `world_real_bench.yaml` is still placeholder
    geometry. The cameras node *subtracts* baseline boxes from the depth
    cloud, so a wrong table does not just mis-model collision — the real
    table surface becomes one enormous perceived obstacle.
-2. **Prove the self-filter.** Sweep the arm with `execute:=false` in
-   front of the Orbbec with an EMPTY workspace and watch `:8766`.
-   Requirement: **zero perceived boxes on the arm.** If the arm grows a
-   trail of phantom obstacles it will spend the demo dodging itself.
-   `self_radius` (0.16 here) has to cover the camera-extrinsic residual
-   plus TF/depth skew; raise it before raising the speed.
+2. **Prove the self-filter.** With the arm, camera and cameras node up
+   and the workspace EMPTY:
+
+   ```bash
+   python3 scripts/perception_debug.py --seconds 20
+   ```
+
+   Requirement: **zero boxes overlap the arm**, and the camera
+   registration section reports a shift (ideally under 1 cm once the
+   config has been corrected; `--apply` writes it). If the arm grows
+   phantom obstacles it will spend the demo dodging itself — on the
+   bench that looked like the shoulder arcing 190 deg over the top and
+   the goal reporting IK_FAIL, because the map had filled with the
+   arm's own image.
 3. **Check the reactive chain**, no arm and no camera needed:
 
    ```bash
@@ -441,6 +477,18 @@ python3 scripts/go_home.py --execute        # --speed 0.25 by default
 Plans home from the arm's LIVE state through the normal gate chain, so
 it is safe from wherever the demo left it. Without `--execute` it plans
 and prints, and nothing moves.
+
+### Contortion guards in the demo
+
+- **Pinned joint goals.** A and B are planned to by POSE the first time
+  and the joints they land on are remembered; every later stroke plans
+  to those JOINTS, so cuRobo's IK cannot pick the other elbow/wrist
+  family for the same pose and connect them with a half-turn.
+- **`max_joint_span_deg`** (default 120): a plan in which one joint
+  travels more than that is a contortion for a sweep stroke and is
+  refused and re-planned. Every plan logs its per-joint spans.
+- The core planner refuses any plan with a joint span over 270 deg
+  (`WINDING`) regardless of caller.
 
 ### Behaviour notes worth knowing before you demo it
 

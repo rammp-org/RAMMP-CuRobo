@@ -34,9 +34,11 @@ ARGS = [
     ("rate_hz", "5.0", "perception tick rate"),
     ("occupied_at", "2", "ticks before a voxel counts as an obstacle"),
     ("min_z", "0.03", "ignore depth below this height (m, base_link)"),
-    ("self_radius", "0.16", "arm self-filter radius (m)"),
-    ("pose_a", "0.55,-0.30,0.35", "sweep waypoint A, tool xyz in base_link"),
-    ("pose_b", "0.55,0.30,0.35", "sweep waypoint B"),
+    ("self_radius", "0.08", "self-filter margin over the arm's collision spheres (m)"),
+    ("auto_register", "true", "solve the camera's translation error off the arm at startup"),
+    ("sweep_deg", "30", "base yaw each side of home (joint-space sweep)"),
+    ("pose_a", "", "optional: tool xyz for pose-mode sweep (needs pose_b too)"),
+    ("pose_b", "", "optional: tool xyz for pose-mode sweep"),
     ("watchdog_hz", "5.0", "how often the in-flight path is re-checked"),
     ("clearance_margin", "0.0", "extra standoff over cuRobo's measured 0.02 m"),
 ]
@@ -59,7 +61,10 @@ def _nodes(context, *_args, **_kwargs):
         return val(name).strip().lower() in ("1", "true", "yes", "on")
 
     def xyz(name):
-        parts = [float(v) for v in val(name).replace(" ", "").split(",")]
+        raw = val(name).replace(" ", "")
+        if not raw:
+            return [0.0, 0.0, 0.0]                # unset: yaw-sweep mode
+        parts = [float(v) for v in raw.split(",")]
         if len(parts) != 3:
             raise RuntimeError("%s must be 'x,y,z', got %r" % (name, val(name)))
         return parts
@@ -97,6 +102,7 @@ def _nodes(context, *_args, **_kwargs):
             "occupied_at": int(val("occupied_at")),
             "min_z": float(val("min_z")),
             "self_radius": float(val("self_radius")),
+            "auto_register": flag("auto_register"),
         }],
     )
     demo = Node(
@@ -108,6 +114,7 @@ def _nodes(context, *_args, **_kwargs):
         parameters=[{
             "execute": execute,
             "speed_scale": speed,
+            "sweep_deg": float(val("sweep_deg")),
             "pose_a": xyz("pose_a"),
             "pose_b": xyz("pose_b"),
             "watchdog_hz": float(val("watchdog_hz")),

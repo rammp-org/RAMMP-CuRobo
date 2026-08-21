@@ -35,13 +35,17 @@ from visualization_msgs.msg import Marker, MarkerArray
 from rammp_curobo.config import resolve_config
 from rammp_curobo.perception import (
     BoxTracker,
+    SelfRegistrar,
     VoxelAccumulator,
     boxes_changed,
     cluster_cells,
     depth_to_points,
     in_box_mask,
+    load_self_model,
     quat_to_mat,
     robot_mask,
+    robot_mask_spheres,
+    self_model_spheres,
     transform_points,
     visible_free_cells,
     workspace_crop,
@@ -158,6 +162,24 @@ def ensure_sensor_params(node, cfg, timeout_s=3.0):
         node.destroy_client(client)
 
 
+def cropped_points(depth, intr, rot, trans, stride, min_range, max_range,
+                   xy_extent, min_z, max_z):
+    """Deproject + transform + workspace crop. No masking — the raw view,
+    which is what camera registration needs to see the arm."""
+    pts = depth_to_points(
+        depth,
+        intr["fx"],
+        intr["fy"],
+        intr["cx"],
+        intr["cy"],
+        stride=stride,
+        min_range=min_range,
+        max_range=max_range,
+    )
+    pts = transform_points(pts, rot, trans)
+    return workspace_crop(pts, xy_extent=xy_extent, min_z=min_z, max_z=max_z)
+
+
 def process_camera_points(
     depth,
     intr,
@@ -173,21 +195,21 @@ def process_camera_points(
     self_radius,
     ignore_region,
     baseline_boxes,
+    self_spheres=None,
+    self_margin=0.08,
 ):
-    """One camera frame -> filtered base_link points. Pure (testable)."""
-    pts = depth_to_points(
-        depth,
-        intr["fx"],
-        intr["fy"],
-        intr["cx"],
-        intr["cy"],
-        stride=stride,
-        min_range=min_range,
-        max_range=max_range,
-    )
-    pts = transform_points(pts, rot, trans)
-    pts = workspace_crop(pts, xy_extent=xy_extent, min_z=min_z, max_z=max_z)
-    if len(pts) and link_pts is not None:
+    """One camera frame -> filtered base_link points. Pure (testable).
+
+    Self-filter: the SPHERE model when given (cuRobo's own collision
+    spheres in base_link; `self_margin` is added to every radius and only
+    has to absorb camera-pose error), else the link-origin capsules of
+    radius `self_radius`.
+    """
+    pts = cropped_points(depth, intr, rot, trans, stride, min_range, max_range,
+                         xy_extent, min_z, max_z)
+    if len(pts) and self_spheres is not None and len(self_spheres):
+        pts = pts[robot_mask_spheres(pts, self_spheres, self_margin)]
+    elif len(pts) and link_pts is not None:
         pts = pts[robot_mask(pts, link_pts, self_radius)]
     if len(pts) and ignore_region is not None:
         pts = pts[~in_box_mask(pts, ignore_region["center"], ignore_region["dims"])]
@@ -360,7 +382,17 @@ class CamerasNode(Node):
         self.rate_hz = float(p("rate_hz", 2.0).value)
         self.baseline = str(p("baseline", "world_real_bench.yaml").value)
         self.voxel = float(p("voxel", 0.03).value)
-        self.self_radius = float(p("self_radius", 0.11).value)
+        # Self-filter. With a self-model, `self_radius` is the MARGIN added
+        # to every collision-sphere radius (camera-pose error + TF/depth
+        # skew); without one it is the old capsule radius. "" disables
+        # the sphere model.
+        self.self_radius = float(p("self_radius", 0.08).value)
+        self.self_model_name = str(p("self_model", "self_model_gen3_2f85.yaml").value)
+        # Solve each FIXED camera's translation error off the arm at
+        # startup, from a few still frames, and apply it in memory. The
+        # config on disk is untouched; the corrected line is logged.
+        self.auto_register = bool(p("auto_register", True).value)
+        self.register_frames = int(p("register_frames", 8).value)
         # 20 was sized for the WRIST camera's handful of clusters. A fixed
         # ENVIRONMENT camera sees the whole bench: 60-70 clusters, of which
         # 20 threw two-thirds of the scene away — obstacles the planner
@@ -403,7 +435,31 @@ class CamerasNode(Node):
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        self.cams = [_CameraInput(self, load_camera_config(n)) for n in cam_names]
+        self.cams = []
+        for n in cam_names:
+            cfg = load_camera_config(n)
+            cfg["_name"] = n                     # for log lines that name the file
+            self.cams.append(_CameraInput(self, cfg))
+        self.self_model = None
+        if self.self_model_name:
+            try:
+                self.self_model = load_self_model(resolve_config(self.self_model_name))
+                self.get_logger().info(
+                    "self-model %s: %d spheres over %d frames, margin %.2f m"
+                    % (self.self_model_name,
+                       sum(len(v) for v in self.self_model.values()),
+                       len(self.self_model), self.self_radius)
+                )
+            except Exception as exc:
+                self.get_logger().warn(
+                    "self-model %s unavailable (%s) — falling back to %.2f m "
+                    "link capsules" % (self.self_model_name, exc, self.self_radius)
+                )
+        self._registrars = {
+            id(cam): SelfRegistrar(frames=self.register_frames)
+            for cam in self.cams
+            if self.auto_register and cam.cfg.get("parent_frame") == "base_link"
+        }
         self.acc = VoxelAccumulator(
             voxel=self.voxel, occupied_at=self.occupied_at
         )
@@ -641,6 +697,51 @@ class CamerasNode(Node):
         pts.append(t_ee + r_ee @ np.array([0.0, 0.0, 0.18]))  # gripper capsule
         return pts
 
+    def _self_spheres(self, stamp=None):
+        """cuRobo's collision spheres in base_link at `stamp`, or None when
+        the self-model is off or a frame cannot be resolved."""
+        if self.self_model is None:
+            return None
+        link_tf = {}
+        for link in self.self_model:
+            got = self._base_from(link, stamp=stamp)
+            if got is None:
+                return None
+            link_tf[link] = got
+        spheres, missing = self_model_spheres(self.self_model, link_tf)
+        return None if missing else spheres
+
+    def _register(self, cam, pts, spheres, cam_origin):
+        """Feed one still, unmasked frame to this camera's registrar; apply
+        the solved shift to the mount the moment it passes the gates."""
+        reg = self._registrars.get(id(cam))
+        if reg is None or reg.done or spheres is None:
+            return
+        out = reg.feed(pts, spheres, cam_origin)
+        if out is None:
+            return
+        if out["ok"]:
+            cfg = cam.cfg
+            new = [float(v) for v in np.asarray(cfg["mount_xyz"], float) + out["shift"]]
+            self.get_logger().info(
+                "camera registered off the arm: shift %s m (%d points, rms "
+                "%.1f mm). Using it for this session; to make it permanent "
+                "set in %s:\n    mount_xyz: [%.5f, %.5f, %.5f]"
+                % (np.round(out["shift"], 4), out["used"], out["rms"] * 1000,
+                   cfg.get("_name", "the camera config"), new[0], new[1], new[2])
+            )
+            cfg["mount_xyz"] = new
+            # everything accumulated so far was placed with the OLD mount
+            n = self.acc.reset()
+            self.tracker = BoxTracker()
+            self.get_logger().info("world restarted clean (%d voxels dropped)" % n)
+        elif out["final"]:
+            self.get_logger().warn(
+                "camera NOT registered after %d tries: %s. Obstacles carry "
+                "the calibration's pose error; raise self_radius if the arm "
+                "appears in its own map." % (out["tries"], out["reason"])
+            )
+
     # ---------------------------------------------------------------- tick
     def _tick(self):
         all_pts, frames_used, saw_frame, had_fresh = [], [], False, False
@@ -675,6 +776,23 @@ class CamerasNode(Node):
             saw_frame = True
             # mask against where the arm was WHEN THIS FRAME WAS TAKEN
             cam_links = self._link_points(stamp=cam.ros_stamp) or link_pts
+            spheres = self._self_spheres(stamp=cam.ros_stamp) if link_pts is not None else None
+            if spheres is not None and id(cam) in self._registrars:
+                self._register(
+                    cam,
+                    cropped_points(
+                        cam.depth, cam.info, pose[0], pose[1], self.stride,
+                        float(cam.cfg.get("min_range", 0.12)),
+                        float(cam.cfg.get("max_range", 1.2)),
+                        self.xy_extent, self.min_z, self.max_z,
+                    ),
+                    spheres,
+                    pose[1],
+                )
+                if self._registrars[id(cam)].done and "reg" not in self._warned:
+                    self._warned.add("reg")
+                # a just-applied shift changes this frame's pose: redo it
+                pose = self._camera_pose(cam.cfg, stamp=cam.ros_stamp) or pose
             frames_used.append(
                 (
                     pose[0],
@@ -701,6 +819,8 @@ class CamerasNode(Node):
                     self_radius=self.self_radius,
                     ignore_region=self.ignore_region,
                     baseline_boxes=self.baseline_boxes,
+                    self_spheres=spheres,
+                    self_margin=self.self_radius,
                 )
             )
         if not saw_frame:

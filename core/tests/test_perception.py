@@ -348,3 +348,131 @@ def test_in_box_mask_with_inflation():
     assert list(inside) == [True, False, False]
     inside = in_box_mask(pts, [0, 0, 0], [0.1, 0.1, 0.1], inflate=0.02)
     assert list(inside) == [True, True, False]
+
+
+# ----------------------------------------------------------- self-model
+def _rotz(deg):
+    c, s = np.cos(np.radians(deg)), np.sin(np.radians(deg))
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+def test_self_model_spheres_places_links_and_names_missing_ones():
+    from rammp_curobo.perception import self_model_spheres
+
+    model = {"a": np.array([[0.1, 0.0, 0.0, 0.05]]),
+             "b": np.array([[0.0, 0.2, 0.0, 0.03], [0.0, 0.3, 0.0, 0.03]])}
+    sph, missing = self_model_spheres(model, {"a": (_rotz(90.0), np.array([1.0, 2.0, 3.0]))})
+    assert missing == ["b"]
+    assert sph.shape == (1, 4)
+    assert np.allclose(sph[0], [1.0, 2.1, 3.0, 0.05], atol=1e-9)
+    sph, missing = self_model_spheres(model, {})
+    assert sph.shape == (0, 4) and sorted(missing) == ["a", "b"]
+
+
+def test_robot_mask_spheres_uses_radius_plus_margin():
+    from rammp_curobo.perception import robot_mask_spheres
+
+    sph = np.array([[0.0, 0.0, 0.0, 0.05]])
+    pts = np.array([[0.04, 0, 0], [0.10, 0, 0], [0.20, 0, 0]])
+    keep = robot_mask_spheres(pts, sph, margin=0.08)      # erase within 0.13
+    assert keep.tolist() == [False, False, True]
+    assert robot_mask_spheres(np.empty((0, 3)), sph, 0.1).shape == (0,)
+    assert robot_mask_spheres(pts, np.empty((0, 4)), 0.1).all()
+
+
+def _synthetic_arm(rng, cam):
+    """An L-shaped chain of spheres, sampled on the hemisphere a camera at
+    `cam` can see — the geometry the estimator will meet on the bench."""
+    centers = [[0.0, 0.0, z] for z in np.linspace(0.1, 0.5, 6)]      # upright
+    centers += [[x, 0.0, 0.5] for x in np.linspace(0.1, 0.6, 8)]      # forward
+    centers += [[0.6, y, 0.5] for y in (-0.04, 0.04)]                 # "fingers"
+    sph = np.array([[c[0], c[1], c[2], 0.05] for c in centers])
+    sph[-2:, 3] = 0.02
+    pts = []
+    for c in sph:
+        u = rng.normal(size=(400, 3))
+        u /= np.linalg.norm(u, axis=1)[:, None]
+        u = u[(u @ (np.asarray(cam) - c[:3])) > 0.0]                  # facing camera
+        pts.append(c[:3] + c[3] * u)
+    return sph, np.vstack(pts)
+
+
+def test_register_recovers_a_camera_translation_error():
+    from rammp_curobo.perception import register_points_to_spheres
+
+    rng = np.random.default_rng(3)
+    cam = [0.08, 0.70, 0.30]
+    sph, true_pts = _synthetic_arm(rng, cam)
+    delta = np.array([0.023, 0.078, -0.040])              # the bench's error
+    seen = true_pts + delta + rng.normal(scale=0.003, size=true_pts.shape)
+    # an obstacle 12 cm off the arm must not bias the fit
+    blob = np.array([0.35, 0.17, 0.5]) + rng.uniform(-0.05, 0.05, size=(400, 3))
+    out = register_points_to_spheres(np.vstack([seen, blob]), sph, cam_origin=cam)
+    assert out is not None
+    shift, used, rms = out
+    assert np.linalg.norm(shift + delta) < 0.006, (shift, delta)
+    assert used > 200
+    assert rms < 0.006
+
+
+def test_register_recovers_an_error_that_pushes_the_arm_into_itself():
+    # the drawn arm lands INSIDE its own model (error away from the
+    # camera): without the facing filter ICP matches the far surface
+    from rammp_curobo.perception import register_points_to_spheres
+
+    rng = np.random.default_rng(11)
+    cam = [0.08, 0.70, 0.30]
+    sph, true_pts = _synthetic_arm(rng, cam)
+    for delta in ([0.0, -0.06, 0.0], [0.02, -0.09, 0.03], [-0.05, 0.01, -0.04]):
+        delta = np.array(delta)
+        seen = true_pts + delta + rng.normal(scale=0.002, size=true_pts.shape)
+        out = register_points_to_spheres(seen, sph, cam_origin=cam)
+        assert out is not None, delta
+        assert np.linalg.norm(out[0] + delta) < 0.006, (delta, out[0])
+
+
+def test_register_refuses_without_arm_points():
+    from rammp_curobo.perception import register_points_to_spheres
+
+    sph = np.array([[0.0, 0.0, 0.3, 0.05]])
+    far = np.random.default_rng(0).uniform(1.0, 2.0, size=(500, 3))
+    assert register_points_to_spheres(far, sph) is None
+    assert register_points_to_spheres(np.empty((0, 3)), sph) is None
+
+
+def test_self_registrar_waits_for_still_frames_then_solves():
+    from rammp_curobo.perception import SelfRegistrar
+
+    rng = np.random.default_rng(5)
+    sph, true_pts = _synthetic_arm(rng, [0.08, 0.70, 0.30])
+    delta = np.array([0.03, -0.05, 0.02])
+    seen = true_pts + delta
+    cam = [0.08, 0.70, 0.30]
+    reg = SelfRegistrar(frames=3)
+    assert reg.feed(seen, sph, cam) is None
+    moved = sph.copy()
+    moved[:, 0] += 0.05                          # the arm moved: buffer resets
+    assert reg.feed(seen, moved, cam) is None
+    assert reg.feed(seen, moved, cam) is None
+    out = reg.feed(seen, moved, cam)             # third STILL frame -> solve
+    assert out is not None and out["ok"], out
+    assert reg.done
+    # the registrar solved against the LAST spheres (moved), so the truth
+    # is delta minus the move
+    assert np.linalg.norm(out["shift"] + delta - np.array([0.05, 0, 0])) < 0.005
+    assert reg.feed(seen, moved, cam) is None    # done: silent thereafter
+
+
+def test_self_registrar_gives_up_and_reports():
+    from rammp_curobo.perception import SelfRegistrar
+
+    sph = np.array([[0.0, 0.0, 0.3, 0.05]])
+    far = np.random.default_rng(1).uniform(1.0, 2.0, size=(200, 3))
+    reg = SelfRegistrar(frames=2, attempts=2)
+    assert reg.feed(far, sph) is None
+    out = reg.feed(far, sph)
+    assert out is not None and not out["ok"] and not out["final"]
+    reg.feed(far, sph)
+    out = reg.feed(far, sph)
+    assert not out["ok"] and out["final"] and reg.done
+    assert "too few" in out["reason"]

@@ -58,3 +58,24 @@ def test_process_self_filter_uses_link_points():
     pts_all = _run(depth, intr)
     pts_filtered = _run(depth, intr, link_pts=link_pts, self_radius=0.5)
     assert len(pts_filtered) < len(pts_all)
+
+
+def test_sphere_self_model_is_preferred_over_capsules():
+    """With a sphere model the gripper is erased by its real shape, and the
+    capsule radius is ignored — a point 30 cm down the old capsule axis
+    but far from every sphere survives."""
+    depth = np.full((10, 10), 0.5, dtype=np.float32)
+    intr = dict(fx=20.0, fy=20.0, cx=5.0, cy=5.0)
+    # a fat capsule that would erase everything near z axis...
+    link_pts = [np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.0, 2.0])]
+    pts_capsule = _run(depth, intr, link_pts=link_pts, self_radius=5.0)
+    assert len(pts_capsule) == 0
+    # ...is overridden by a tiny sphere model that touches nothing
+    spheres = np.array([[5.0, 5.0, 5.0, 0.01]])
+    pts_spheres = _run(depth, intr, link_pts=link_pts, self_radius=5.0,
+                       self_spheres=spheres, self_margin=0.05)
+    assert len(pts_spheres) > 0
+    # and a sphere model that covers the frame erases it
+    big = np.array([[0.0, 0.0, 1.0, 3.0]])
+    assert len(_run(depth, intr, link_pts=None, self_radius=0.0,
+                    self_spheres=big, self_margin=0.0)) == 0
