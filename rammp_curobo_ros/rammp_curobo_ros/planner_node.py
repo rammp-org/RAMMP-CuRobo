@@ -130,10 +130,29 @@ class RammpCuroboNode(Node):
         # Heavy GPU init BEFORE the servers exist: a goal sent during the
         # (possibly minutes-long) warmup must not silently queue and then
         # move the arm long after the client gave up (RAMMP-Kinova lesson).
-        self.get_logger().info("Loading cuRobo planner (%s)..." % self.config)
+        # Collision standoff. Both are baked into MotionGenConfig at
+        # construction, so they are launch-time knobs, not services.
+        # activation_distance is the SAFE one to raise: it is a cost term,
+        # so it bows paths away from obstacles without making any state
+        # infeasible. world_padding is a hard inflation of every box
+        # except no_pad_names, so raising it lifts the modelled table
+        # toward the arm's base spheres and can invalidate start states.
+        overrides = {}
+        act = float(self.declare_parameter("activation_distance", 0.0).value)
+        pad = float(self.declare_parameter("world_padding", 0.0).value)
+        if act > 0.0:
+            overrides["collision_activation_distance"] = act
+        if pad > 0.0:
+            overrides["world_padding"] = pad
+        self.get_logger().info(
+            "Loading cuRobo planner (%s)%s..."
+            % (self.config, (" with %s" % overrides) if overrides else "")
+        )
         from rammp_curobo import CuRoboPlanner
 
-        self.planner = CuRoboPlanner.from_config(self.config)
+        self.planner = CuRoboPlanner.from_config(
+            self.config, planner_overrides=overrides or None
+        )
         if self.world:
             self.planner.update_world(self.world)
             self.get_logger().info("World overridden: %s" % self.world)

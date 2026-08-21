@@ -80,10 +80,20 @@ class CuRoboPlanner:
         self._init_curobo(warmup=bool(p["warmup"]))
 
     @classmethod
-    def from_config(cls, name_or_path):
+    def from_config(cls, name_or_path, planner_overrides=None):
         """Build from a planner YAML (packaged name like 'gen3.yaml' or a
-        filesystem path). See configs/gen3.yaml for the schema."""
+        filesystem path). See configs/gen3.yaml for the schema.
+
+        planner_overrides patches the `planner:` block before the GPU is
+        touched — collision standoff has to be set at construction time
+        (cuRobo bakes it into MotionGenConfig), so it cannot be a runtime
+        service.
+        """
         cfg, cfg_dir = load_planner_config(name_or_path)
+        for key, value in (planner_overrides or {}).items():
+            if key not in cfg["planner"]:
+                raise KeyError("unknown planner override %r" % key)
+            cfg["planner"][key] = value
         return cls(cfg, config_dir=cfg_dir)
 
     # ------------------------------------------------------------ cuRobo setup

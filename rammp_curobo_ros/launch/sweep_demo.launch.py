@@ -26,9 +26,12 @@ ARGS = [
     ("config", "gen3_real.yaml", "planner YAML"),
     ("world", "world_real_bench.yaml", "baseline collision world — MEASURE IT"),
     ("speed_scale", "0.25", "execution speed; start low, raise once trusted"),
+    ("activation_distance", "0.0", "collision standoff (m); 0 = config's 0.03"),
+    ("world_padding", "0.0", "hard box inflation (m); 0 = config's 0.02"),
     ("camera", "camera_orbbec_bench.yaml", "environment camera config"),
     ("rate_hz", "5.0", "perception tick rate"),
     ("occupied_at", "2", "ticks before a voxel counts as an obstacle"),
+    ("min_z", "0.03", "ignore depth below this height (m, base_link)"),
     ("self_radius", "0.16", "arm self-filter radius (m)"),
     ("pose_a", "0.55,-0.30,0.35", "sweep waypoint A, tool xyz in base_link"),
     ("pose_b", "0.55,0.30,0.35", "sweep waypoint B"),
@@ -73,6 +76,8 @@ def _nodes(context, *_args, **_kwargs):
             "world": world,
             "execute": execute,
             "speed_scale": speed,
+            "activation_distance": float(val("activation_distance")),
+            "world_padding": float(val("world_padding")),
         }],
     )
     cameras = Node(
@@ -86,6 +91,7 @@ def _nodes(context, *_args, **_kwargs):
             "baseline": world,
             "rate_hz": float(val("rate_hz")),
             "occupied_at": int(val("occupied_at")),
+            "min_z": float(val("min_z")),
             "self_radius": float(val("self_radius")),
         }],
     )
