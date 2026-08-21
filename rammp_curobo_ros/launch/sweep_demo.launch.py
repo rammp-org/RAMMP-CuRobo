@@ -30,6 +30,8 @@ ARGS = [
     ("rate_hz", "5.0", "perception tick rate"),
     ("occupied_at", "2", "ticks before a voxel counts as an obstacle"),
     ("self_radius", "0.16", "arm self-filter radius (m)"),
+    ("pose_a", "0.55,-0.30,0.35", "sweep waypoint A, tool xyz in base_link"),
+    ("pose_b", "0.55,0.30,0.35", "sweep waypoint B"),
     ("watchdog_hz", "5.0", "how often the in-flight path is re-checked"),
     ("clearance_margin", "0.0", "extra standoff over cuRobo's measured 0.02 m"),
 ]
@@ -50,6 +52,12 @@ def _nodes(context, *_args, **_kwargs):
 
     def flag(name):
         return val(name).strip().lower() in ("1", "true", "yes", "on")
+
+    def xyz(name):
+        parts = [float(v) for v in val(name).replace(" ", "").split(",")]
+        if len(parts) != 3:
+            raise RuntimeError("%s must be 'x,y,z', got %r" % (name, val(name)))
+        return parts
 
     execute = flag("execute")
     world = val("world")
@@ -90,6 +98,8 @@ def _nodes(context, *_args, **_kwargs):
         parameters=[{
             "execute": execute,
             "speed_scale": speed,
+            "pose_a": xyz("pose_a"),
+            "pose_b": xyz("pose_b"),
             "watchdog_hz": float(val("watchdog_hz")),
             "clearance_margin": float(val("clearance_margin")),
         }],
