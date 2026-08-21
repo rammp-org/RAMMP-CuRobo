@@ -9,6 +9,8 @@ Actions (node name rammp_curobo):
     /rammp_curobo/execute_trajectory  rammp_curobo_interfaces/ExecuteTrajectory
 Services:
     /rammp_curobo/set_world           rammp_curobo_interfaces/srv/SetWorld
+    /rammp_curobo/update_world_boxes  rammp_curobo_interfaces/srv/UpdateWorldBoxes
+    /rammp_curobo/check_trajectory    rammp_curobo_interfaces/srv/CheckTrajectory
     /rammp_curobo/open_gripper, /rammp_curobo/close_gripper (std_srvs/Trigger)
 
 Planning NEVER moves the arm — results carry the trajectory for inspection.
@@ -33,8 +35,8 @@ from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
 
 from rammp_curobo_interfaces.action import ExecuteTrajectory, PlanToJoints, PlanToPose
-from rammp_curobo_interfaces.srv import SetWorld, UpdateWorldBoxes
-from rammp_curobo_ros.conversions import trajectory_to_msg
+from rammp_curobo_interfaces.srv import CheckTrajectory, SetWorld, UpdateWorldBoxes
+from rammp_curobo_ros.conversions import msg_arrays, trajectory_to_msg
 from rammp_curobo_ros.executor import (
     TrajectoryExecutor,
     await_future,
@@ -99,6 +101,9 @@ class RammpCuroboNode(Node):
         self._exec_lock = threading.Lock()
         self._joint_msg = None
         self._joint_msg_time = None
+        # last perceived set, kept so check_trajectory can report the gap
+        # to the boxes specifically (the baseline is not an intruder)
+        self._perceived_boxes = []
 
         # BEST-EFFORT, not the default reliable depth-10. Joint state is sensor
         # data: kinova_arm_ros2 publishes /joint_states with SensorDataQoS
@@ -190,6 +195,12 @@ class RammpCuroboNode(Node):
             UpdateWorldBoxes,
             "~/update_world_boxes",
             self._update_world_boxes_cb,
+            callback_group=self._cb,
+        )
+        self.create_service(
+            CheckTrajectory,
+            "~/check_trajectory",
+            self._check_trajectory_cb,
             callback_group=self._cb,
         )
         if self.gripper_enabled:
@@ -497,11 +508,56 @@ class RammpCuroboNode(Node):
                 self.planner.update_world_boxes(
                     boxes, baseline=request.baseline or None
                 )
+                self._perceived_boxes = boxes
                 response.success = True
                 response.message = "world: baseline + %d perceived boxes" % n
             except Exception as exc:
                 response.success = False
                 response.message = str(exc)
+        return response
+
+    def _check_trajectory_cb(self, request, response):
+        """Read-only re-check of an already-planned trajectory.
+
+        The execution gate chain validates names, limits, timing and the
+        start match — it never re-checks COLLISION, so a trajectory that
+        was clear when planned stays "valid" after an obstacle appears in
+        front of it. A reactive client polls this to find out.
+        """
+        response.first_bad_index = -1
+        response.n_bad = 0
+        response.min_clearance = float("inf")
+        names = list(request.trajectory.joint_names)
+        if names != list(self.planner.joint_names):
+            response.collision_free = False
+            response.message = "joint names %s != %s" % (
+                names,
+                list(self.planner.joint_names),
+            )
+            return response
+        pos, _vel, _times = msg_arrays(request.trajectory)
+        start = max(0, min(int(request.start_index), len(pos)))
+        span = pos[start:]
+        if not len(span):
+            response.collision_free = True
+            response.message = "nothing left to check"
+            return response
+        with self._plan_lock:
+            ok, first_bad, n_bad = self.planner.check_trajectory(span)
+            clearance = self.planner.trajectory_clearance(
+                span, self._perceived_boxes
+            )
+        response.collision_free = bool(ok)
+        response.n_bad = int(n_bad)
+        response.first_bad_index = -1 if ok else int(first_bad) + start
+        response.min_clearance = float(clearance)
+        response.message = (
+            "%d/%d points from %d clear, arm gap %.3f m"
+            % (len(span) - n_bad, len(span), start, clearance)
+            if ok
+            else "blocked at point %d (%d/%d infeasible), arm gap %.3f m"
+            % (response.first_bad_index, n_bad, len(span), clearance)
+        )
         return response
 
     def _gripper_cmd(self, position, response):

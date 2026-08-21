@@ -169,6 +169,60 @@ def test_update_world_guards_and_round_trip(planner):
     assert res.success, res.error
 
 
+def test_check_trajectory_sees_an_obstacle_appear(planner):
+    """The reactive watchdog's only evidence.
+
+    Nothing in the execution gate chain re-checks collision, so a
+    trajectory planned before an obstacle appeared stays "valid" and
+    would drive straight through it. This is the check that catches it:
+    the SAME trajectory must flip from clear to blocked when a box lands
+    on its path."""
+    try:
+        planner.update_world_boxes([], baseline="world_sim_kitchen.yaml")
+        q_goal = list(planner.home_pose)
+        q_goal[0] += 0.30
+        res = planner.plan_to_joints(q_goal)
+        assert res.success, res.error
+        traj = res.joint_traj
+
+        ok, first_bad, n_bad = planner.check_trajectory(traj.positions)
+        assert ok and first_bad == -1 and n_bad == 0
+
+        mid = list(traj.positions[traj.n_points // 2])
+        centre, _ = planner.fk(mid)
+        planner.update_world_boxes(
+            [{"name": "intruder", "position": list(centre), "dims": [0.2, 0.2, 0.2]}],
+            baseline="world_sim_kitchen.yaml",
+        )
+        ok, first_bad, n_bad = planner.check_trajectory(traj.positions)
+        assert not ok
+        assert n_bad > 0
+        assert 0 <= first_bad < traj.n_points
+    finally:
+        planner._baseline_scene = None
+        planner.update_world("world_sim_kitchen.yaml")
+
+
+def test_check_trajectory_fails_closed(planner):
+    # an empty or malformed span must never be reported as clear
+    assert planner.check_trajectory([])[0] is False
+    assert planner.check_trajectory(np.zeros((0, 7)))[0] is False
+
+
+def test_trajectory_clearance_measures_the_whole_arm(planner):
+    q = list(planner.home_pose)
+    pos, _ = planner.fk(q)
+    inside = {"position": list(pos), "dims": [0.3, 0.3, 0.3]}
+    far = {"position": [3.0, 0.0, 0.0], "dims": [0.1, 0.1, 0.1]}
+    assert planner.trajectory_clearance([q], [inside]) < 0.0
+    assert planner.trajectory_clearance([q], [far]) > 1.0
+    assert planner.trajectory_clearance([q], []) == float("inf")
+    # the minimum over several boxes is the nearest one
+    assert planner.trajectory_clearance([q], [inside, far]) == pytest.approx(
+        planner.trajectory_clearance([q], [inside])
+    )
+
+
 def test_park_pose_outside_model_limits_is_clamped(planner):
     # The real Gen3 parks with joint_4 ~0.8 deg past cuRobo's URDF bound
     # (found on first hardware contact) — tiny violations clamp inward,

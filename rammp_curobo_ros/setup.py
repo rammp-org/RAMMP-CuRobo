@@ -30,6 +30,7 @@ setup(
             "seeker = rammp_curobo_ros.seeker:main",
             "tag_follow = rammp_curobo_ros.tags:main",
             "cameras = rammp_curobo_ros.cameras:main",
+            "sweep_demo = rammp_curobo_ros.sweep_demo:main",
         ],
     },
 )

@@ -368,6 +368,10 @@ class CamerasNode(Node):
         # real-bench baseline uses 2, so 50 fits with headroom.
         self.max_boxes = int(p("max_boxes", 50).value)
         self.min_voxels = int(p("min_voxels", 8).value)
+        # ticks a voxel must be seen before it counts as an obstacle.
+        # 3 at 2 Hz = 1.5 s to react; a reactive demo wants 2 at 5 Hz
+        # (0.4 s) and pays for it with less transient rejection.
+        self.occupied_at = int(p("occupied_at", 3).value)
         self.stride = int(p("stride", 4).value)
         self.xy_extent = float(p("xy_extent", 1.2).value)
         self.min_z = float(p("min_z", 0.03).value)
@@ -380,7 +384,9 @@ class CamerasNode(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.cams = [_CameraInput(self, load_camera_config(n)) for n in cam_names]
-        self.acc = VoxelAccumulator(voxel=self.voxel)
+        self.acc = VoxelAccumulator(
+            voxel=self.voxel, occupied_at=self.occupied_at
+        )
         self.tracker = BoxTracker()
         self.ignore_region = None
         self._last_sent = None
@@ -591,14 +597,27 @@ class CamerasNode(Node):
                 return False
         return True
 
-    def _link_points(self):
+    def _link_points(self, stamp=None):
+        """Arm-link origins in base_link, at `stamp` when TF can serve it.
+
+        The stamp matters the moment the ARM moves: masking depth from
+        20-75 ms ago against the arm's pose NOW aims the self-filter where
+        the arm has already got to, so the real arm's trailing edge leaks
+        in as phantom obstacles the planner then dodges. Same time-skew
+        class as the camera pose (which _camera_pose already stamps);
+        non-strict lookups fall back to latest, so a TF buffer that cannot
+        serve the stamp behaves exactly as before.
+        """
         pts = []
         for name in ARM_CHAIN:
-            got = self._base_from(name)
+            got = self._base_from(name, stamp=stamp)
             if got is None:
                 return None  # no bringup running — skip self-filtering
             pts.append(got[1])
-        r_ee, t_ee = self._base_from("end_effector_link")
+        got = self._base_from("end_effector_link", stamp=stamp)
+        if got is None:
+            return None
+        r_ee, t_ee = got
         pts.append(t_ee + r_ee @ np.array([0.0, 0.0, 0.18]))  # gripper capsule
         return pts
 
@@ -634,6 +653,8 @@ class CamerasNode(Node):
             if pose is None:
                 continue
             saw_frame = True
+            # mask against where the arm was WHEN THIS FRAME WAS TAKEN
+            cam_links = self._link_points(stamp=cam.ros_stamp) or link_pts
             frames_used.append(
                 (
                     pose[0],
@@ -656,7 +677,7 @@ class CamerasNode(Node):
                     xy_extent=self.xy_extent,
                     min_z=self.min_z,
                     max_z=self.max_z,
-                    link_pts=link_pts,
+                    link_pts=cam_links,
                     self_radius=self.self_radius,
                     ignore_region=self.ignore_region,
                     baseline_boxes=self.baseline_boxes,

@@ -353,6 +353,58 @@ class CuRoboPlanner:
         )
         return state.link_spheres_tensor[0].detach().cpu().numpy()
 
+    def check_trajectory(self, positions):
+        """(ok, first_bad_index, n_bad) for a WHOLE trajectory against the
+        current collision world.
+
+        The batch form of check_state_valid: one GPU call covers every
+        interpolated point, which is what makes a reactive watchdog
+        affordable (~40 ms for a 100-point plan on the Orin) instead of
+        one call per state. Fails CLOSED — a checker error reports the
+        trajectory as unsafe, never as clear.
+        """
+        pos = np.asarray(positions, dtype=float)
+        if pos.ndim != 2 or pos.shape[0] == 0:
+            return False, 0, 0
+        from curobo.types.robot import JointState as CuJointState
+
+        try:
+            states = CuJointState.from_position(
+                self._tensor([self._to_curobo_order(q) for q in pos]),
+                joint_names=list(self._curobo_joint_names),
+            )
+            metrics = self._motion_gen.check_constraints(states)
+            feas = metrics.feasible.detach().cpu().numpy().reshape(-1).astype(bool)
+        except Exception:
+            return False, 0, int(pos.shape[0])
+        bad = np.flatnonzero(~feas)
+        if bad.size == 0:
+            return True, -1, 0
+        return False, int(bad[0]), int(bad.size)
+
+    def trajectory_clearance(self, positions, boxes):
+        """Smallest gap (m) between the WHOLE arm and any of `boxes` across
+        a trajectory; negative means penetration, inf when boxes is empty.
+
+        Uses the same collision spheres cuRobo plans against, so this is
+        "how close does the ARM get", not just tool_frame. Reported
+        alongside the hard feasibility verdict so a caller can react at a
+        margin instead of waiting for actual collision.
+        """
+        if not boxes:
+            return float("inf")
+        centers = np.array([b["position"] for b in boxes], dtype=float)
+        halves = np.array([b["dims"] for b in boxes], dtype=float) / 2.0
+        worst = float("inf")
+        for q in np.asarray(positions, dtype=float):
+            s = self.link_spheres(q)
+            s = s[s[:, 3] > 0.0]                 # drop cuRobo's padding rows
+            if not len(s):
+                continue
+            d = np.maximum(np.abs(s[:, None, :3] - centers[None]) - halves[None], 0.0)
+            worst = min(worst, float((np.linalg.norm(d, axis=2) - s[:, None, 3]).min()))
+        return worst
+
     def joint_limits(self):
         """{'position': (2, dof) [lower; upper], 'velocity': (dof,)} in
         CONTROLLER joint order (numpy, radians)."""

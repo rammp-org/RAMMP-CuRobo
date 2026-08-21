@@ -53,25 +53,14 @@ def live_boxes(timeout_s=8.0):
     return out
 
 
-def _box_dist(pts, center, dims):
-    """Distance from each point to an axis-aligned box surface (0 inside)."""
-    c = np.asarray(center, float)
-    h = np.asarray(dims, float) / 2.0
-    d = np.maximum(np.abs(np.asarray(pts, float) - c) - h, 0.0)
-    return np.linalg.norm(d, axis=1)
-
-
 def arm_clearance(planner, traj, center, dims):
     """Min gap (m) between the WHOLE arm and the box over a trajectory.
 
     Uses cuRobo's own collision spheres, so 0.0 means the arm is
     genuinely inside the obstacle — not merely that tool_frame is."""
-    worst = 1e9
-    for q in traj.positions:
-        sph = planner.link_spheres(q)
-        gaps = _box_dist(sph[:, :3], center, dims) - sph[:, 3]
-        worst = min(worst, float(gaps.min()))
-    return worst
+    return planner.trajectory_clearance(
+        traj.positions, [{"position": list(center), "dims": list(dims)}]
+    )
 
 
 def tool_path(planner, traj):

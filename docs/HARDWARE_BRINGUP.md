@@ -293,3 +293,79 @@ GraspGenX for 6-DoF grasps and runs pre-grasp → grasp → close.
 
 Dry-run the whole pipeline first, then a first live grasp on something
 light and forgiving, e-stop in hand.
+
+## 8. Sweep-and-avoid demo (attended)
+
+The arm sweeps left and right; the fixed Orbbec watches; anything that
+gets in the way is planned around. Three outcomes, all deliberate:
+
+| what happens | why |
+|---|---|
+| stroke completes | nothing in the corridor |
+| stroke is cancelled, arm arcs around | the watchdog found the remaining path blocked |
+| arm stops and waits — **HOLD** | the obstacle overlaps the arm's own body, so `INVALID_START_STATE_WORLD_COLLISION`: there is no path to plan. Measured on this arm, that begins around **15 cm**. Not a fault |
+
+**The watchdog is the safety-relevant part.** `validate_goal_msg` checks
+names, limits, velocity, timing, continuity and the start match — it
+never re-checks *collision*. A trajectory planned before an obstacle
+appeared passes every gate and drives through it. `~/check_trajectory`
+is what closes that hole, so if it is not running, the demo is not safe.
+
+### Prerequisites (do not skip)
+
+1. **Measure the bench.** `world_real_bench.yaml` is still placeholder
+   geometry. The cameras node *subtracts* baseline boxes from the depth
+   cloud, so a wrong table does not just mis-model collision — the real
+   table surface becomes one enormous perceived obstacle.
+2. **Prove the self-filter.** Sweep the arm with `execute:=false` in
+   front of the Orbbec with an EMPTY workspace and watch `:8766`.
+   Requirement: **zero perceived boxes on the arm.** If the arm grows a
+   trail of phantom obstacles it will spend the demo dodging itself.
+   `self_radius` (0.16 here) has to cover the camera-extrinsic residual
+   plus TF/depth skew; raise it before raising the speed.
+3. **Check the reactive chain**, no arm and no camera needed:
+
+   ```bash
+   ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml
+   python3 scripts/sweep_demo_checks.py     # 12 checks, must all PASS
+   ```
+
+### Running it
+
+Arm bringup and the Orbbec driver first, in their own terminals (§2), then:
+
+```bash
+ros2 launch rammp_curobo_ros sweep_demo.launch.py                 # dry run
+ros2 launch rammp_curobo_ros sweep_demo.launch.py execute:=true \
+    speed_scale:=0.25                                             # it moves
+```
+
+Dry run never sends an execution goal. It plans a stroke and polls the
+same watchdog, printing CLEAR/BLOCKED — hold something into the corridor
+and watch it flip, then watch the replan route around it. **Do the dry
+run first every session.**
+
+The reaction budget, at the launch file's 5 Hz / `occupied_at` 2:
+
+```
+perception 0.28-0.48 + watchdog notice <=0.20 + check 0.04
+          + cancel & settle (MEASURED AND LOGGED EACH TIME) + replan 0.26
+```
+
+Every cancel logs `arm still after N s`. That term could not be measured
+off-hardware; watch it on the first run. If it exceeds ~1 s the demo will
+look frozen rather than reactive — shorten the stroke (move `pose_a` /
+`pose_b` closer) rather than raising the speed.
+
+### Behaviour notes worth knowing before you demo it
+
+- **Depth only.** No object detection is involved; a hand, a box and a
+  mug are identical to it. Test with a box before testing with fingers,
+  so the reaction time is a measured number first.
+- **Hold the prop still.** A voxel needs `occupied_at` confirmations, so
+  something waved quickly may never confirm. Keep it above the `min_z`
+  crop (not resting on the bench) and *ahead* of the arm — anything
+  within `self_radius` of a link is erased as part of the arm.
+- **Obstacles can linger.** Decay only forgets a voxel the camera can
+  prove it sees through, so a withdrawn prop can persist while the arm
+  occludes that spot. Call `~/set_ignore_region` to purge if it sticks.

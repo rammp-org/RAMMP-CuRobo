@@ -1,0 +1,18 @@
+# Is this trajectory still collision-free in the planner's CURRENT world?
+#
+# READ-ONLY: never plans, never moves, never mutates the world. Exists so a
+# reactive client can tell whether a motion it is ALREADY executing has been
+# invalidated by newly perceived obstacles — nothing in the execution gate
+# chain re-checks collision, so without this a trajectory planned before an
+# obstacle appeared would run straight through it.
+trajectory_msgs/JointTrajectory trajectory
+int32 start_index          # check from this point onward (0 = the whole thing)
+---
+bool collision_free        # cuRobo's verdict: limits, self-collision, world
+int32 first_bad_index      # index into the FULL trajectory, -1 if clear
+int32 n_bad
+# Smallest whole-arm gap to the PERCEIVED boxes over the checked span, so a
+# caller can react at a margin rather than at contact. inf when nothing is
+# perceived; not a substitute for collision_free.
+float32 min_clearance
+string message

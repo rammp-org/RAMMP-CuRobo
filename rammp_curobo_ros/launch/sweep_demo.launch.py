@@ -1,0 +1,83 @@
+"""Sweep-and-avoid demo: planner + environment camera + the sweep loop.
+
+    ros2 launch rammp_curobo_ros sweep_demo.launch.py                # dry run
+    ros2 launch rammp_curobo_ros sweep_demo.launch.py execute:=true  # it moves
+
+Brings up everything this repo owns. It does NOT start the arm bringup or
+the Orbbec driver — start those first, in their own terminals:
+
+    ros2 launch kortex_bringup gen3.launch.py robot_ip:=192.168.1.10 \
+        dof:=7 gripper:=robotiq_2f_85 launch_rviz:=false
+    ros2 launch orbbec_camera gemini_330_series.launch.py
+
+Perception defaults here are the REACTIVE ones, not the cameras node's:
+5 Hz with occupied_at 2 confirms an obstacle in ~0.4 s instead of ~1.5 s,
+and self_radius is opened up to cover the camera-extrinsic residual plus
+TF/depth skew while the arm is sweeping.
+"""
+
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+ARGS = [
+    ("execute", "false", "allow motion (default: dry-run, nothing moves)"),
+    ("config", "gen3_real.yaml", "planner YAML"),
+    ("world", "world_real_bench.yaml", "baseline collision world — MEASURE IT"),
+    ("speed_scale", "0.25", "execution speed; start low, raise once trusted"),
+    ("camera", "camera_orbbec_bench.yaml", "environment camera config"),
+    ("rate_hz", "5.0", "perception tick rate"),
+    ("occupied_at", "2", "ticks before a voxel counts as an obstacle"),
+    ("self_radius", "0.16", "arm self-filter radius (m)"),
+    ("watchdog_hz", "5.0", "how often the in-flight path is re-checked"),
+    ("clearance_margin", "0.0", "extra margin over cuRobo's 0.03 m"),
+]
+
+
+def generate_launch_description():
+    lc = LaunchConfiguration
+    planner = Node(
+        package="rammp_curobo_ros",
+        executable="planner_node",
+        name="rammp_curobo",
+        output="screen",
+        emulate_tty=True,
+        parameters=[{
+            "config": lc("config"),
+            "world": lc("world"),
+            "execute": lc("execute"),
+            "speed_scale": lc("speed_scale"),
+        }],
+    )
+    cameras = Node(
+        package="rammp_curobo_ros",
+        executable="cameras",
+        name="cameras",
+        output="screen",
+        emulate_tty=True,
+        parameters=[{
+            "cameras": [lc("camera")],
+            "baseline": lc("world"),
+            "rate_hz": lc("rate_hz"),
+            "occupied_at": lc("occupied_at"),
+            "self_radius": lc("self_radius"),
+        }],
+    )
+    demo = Node(
+        package="rammp_curobo_ros",
+        executable="sweep_demo",
+        name="sweep_demo",
+        output="screen",
+        emulate_tty=True,
+        parameters=[{
+            "execute": lc("execute"),
+            "speed_scale": lc("speed_scale"),
+            "watchdog_hz": lc("watchdog_hz"),
+            "clearance_margin": lc("clearance_margin"),
+        }],
+    )
+    return LaunchDescription(
+        [DeclareLaunchArgument(n, default_value=d, description=h) for n, d, h in ARGS]
+        + [planner, cameras, demo]
+    )
