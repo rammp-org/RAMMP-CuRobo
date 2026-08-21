@@ -50,9 +50,12 @@ def main():
     with open(robot_yaml) as f:
         kin = yaml.safe_load(f)["robot_cfg"]["kinematics"]
     by_link = kin["collision_spheres"]
+    # cuRobo inflates every sphere by collision_sphere_buffer at load; the
+    # self-model must be what the planner actually collides against
+    buffer = float(kin.get("collision_sphere_buffer", 0.0))
     model = {}
     for link in ARM:
-        rows = [[s["center"][0], s["center"][1], s["center"][2], s["radius"]]
+        rows = [[s["center"][0], s["center"][1], s["center"][2], s["radius"] + buffer]
                 for s in by_link[link]]
         model[link] = rows
 
