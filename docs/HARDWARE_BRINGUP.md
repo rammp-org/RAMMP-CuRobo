@@ -403,7 +403,12 @@ fringe. The registration reads the raw frames before any masking.
 
 Arm bringup and the Orbbec driver first, in their own terminals (§2),
 the camera calibrated (§6's fixed-camera note: `calibrate_orbbec.py`),
-then:
+then the one command below. It cleans up after itself — stray rammp
+nodes from earlier runs are killed before its own start (a hidden
+orphan once fed a whole run with the wrong tuning), and with no live
+perception the demo holds visibly instead of sweeping blind.
+`scripts/preflight.py` gives the full green-light readout when
+debugging.
 
 ```bash
 ros2 launch rammp_curobo_ros sweep_demo.launch.py                 # dry run

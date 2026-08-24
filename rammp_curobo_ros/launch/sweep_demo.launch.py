@@ -16,6 +16,8 @@ self_radius stays at the node's 0.08 m margin — startup registration
 (auto_register) absorbs the camera-extrinsic error.
 """
 
+import os
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
@@ -49,7 +51,50 @@ ARGS = [
 ]
 
 
+def _sweep_strays():
+    """Kill leftover rammp nodes before starting our own.
+
+    This launch starts every rammp node itself, so any pre-existing one
+    is stale by definition — and a stray cameras node does not just
+    collide, it silently FEEDS the planner with whatever tuning it was
+    started with while the fresh one refuses to start (field 2026-08-24:
+    an orphaned diagnostic node drove a whole demo run invisibly). Only
+    processes running the installed rammp binaries are touched — never
+    the arm driver or the camera.
+    """
+    import signal as _signal
+    import subprocess as _sp
+    import time as _time
+
+    def strays():
+        out = _sp.run(["pgrep", "-af", "rammp_curobo_ros"],
+                      capture_output=True, text=True).stdout
+        found = []
+        for ln in out.splitlines():
+            pid, _, cmd = ln.partition(" ")
+            parts = cmd.split()
+            if len(parts) >= 2 and "/lib/rammp_curobo_ros/" in parts[1]:
+                found.append((int(pid), parts[1].rsplit("/", 1)[-1]))
+        return found
+
+    found = strays()
+    for pid, name in found:
+        print("[sweep_demo.launch] killing stray %s (pid %d)" % (name, pid))
+        try:
+            os.kill(pid, _signal.SIGINT)
+        except ProcessLookupError:
+            pass
+    if found:
+        _time.sleep(1.5)
+        for pid, _name in strays():
+            try:
+                os.kill(pid, _signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
 def _nodes(context, *_args, **_kwargs):
+    _sweep_strays()
     """Resolve every argument to a real Python value before building the
     nodes.
 
