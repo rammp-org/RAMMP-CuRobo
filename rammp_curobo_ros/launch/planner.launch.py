@@ -68,6 +68,10 @@ def generate_launch_description():
         name="rammp_curobo",
         output="screen",
         emulate_tty=True,
+        # an in-flight cuRobo solve runs ~5 s and cannot be interrupted;
+        # shutdown waits for it, so give launch more than its 5 s default
+        # before it escalates SIGINT to SIGTERM
+        sigterm_timeout="12",
         parameters=[
             {
                 "config": LaunchConfiguration("config"),

@@ -33,10 +33,12 @@ ARGS = [
     ("camera", "camera_orbbec_bench.yaml", "environment camera config"),
     ("rate_hz", "5.0", "perception tick rate"),
     ("occupied_at", "2", "ticks before a voxel counts as an obstacle"),
-    # table measured at z=-0.027 (scripts/measure_bench.py): -0.002 keeps
-    # objects taller than ~4 cm on the bench visible while the baseline
-    # strip removes the surface itself
-    ("min_z", "-0.002", "ignore depth below this height (m, base_link)"),
+    # 0.03 is the PROVEN value. Lowering it to table_top+2.5cm (-0.002)
+    # flooded the map with 11-13 stable boxes: registration corrects the
+    # mount's TRANSLATION only, so a small residual tilt lifts the bench's
+    # far corners a couple of cm in base_link and the surface itself leaks
+    # into the band. Revisit only after a rotation calibration.
+    ("min_z", "0.03", "ignore depth below this height (m, base_link)"),
     ("self_radius", "0.08", "self-filter margin over the arm's collision spheres (m)"),
     ("auto_register", "true", "solve the camera's translation error off the arm at startup"),
     ("sweep_deg", "30", "base yaw each side of home (joint-space sweep)"),
@@ -81,6 +83,10 @@ def _nodes(context, *_args, **_kwargs):
         name="rammp_curobo",
         output="screen",
         emulate_tty=True,
+        # an in-flight cuRobo solve runs ~5 s and cannot be interrupted;
+        # shutdown waits for it, so give launch more than its 5 s default
+        # before it escalates SIGINT to SIGTERM
+        sigterm_timeout="12",
         parameters=[{
             "config": val("config"),
             "world": world,

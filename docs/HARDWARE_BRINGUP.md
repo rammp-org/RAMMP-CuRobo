@@ -354,7 +354,10 @@ fringe. The registration reads the raw frames before any masking.
    Re-run after moving the arm or the bench. The written world is a
    true-height `table` (no_pad, the base spheres sit 12 mm above it)
    plus four padded `floor_*` guards: a hard 2 cm keep-out over the real
-   surface everywhere the arm can swing.
+   surface everywhere the arm can swing. (Perception's `min_z` stays at
+   0.03: the translation-only registration leaves a small mount tilt,
+   and a lower crop lets the bench's far corners leak in as a sheet of
+   stable phantom boxes — field-verified 2026-08-24.)
 
    The old advice stands only as history: **Measure the bench.** `world_real_bench.yaml` is still placeholder
    geometry. The cameras node *subtracts* baseline boxes from the depth
