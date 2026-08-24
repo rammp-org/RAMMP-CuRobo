@@ -523,6 +523,11 @@ and prints, and nothing moves.
   crop (not resting on the bench) and *ahead* of the arm — anything
   within (sphere radius + the `self_radius` margin) of the arm's
   collision-sphere model is erased as part of the arm.
+- **No perception, no sweeping.** With `execute:=true` the demo HOLDS
+  ("perception silent") whenever the cameras node's heartbeat stops —
+  a dead, missing, or duplicate cameras node pauses the arm instead of
+  letting it sweep blind. `perception_timeout_s:=0` disables the gate
+  for camera-less bench tests.
 - **Obstacles can linger.** Decay only forgets a voxel the camera can
   prove it sees through, so a withdrawn prop can persist while the arm
   occludes that spot. Call `~/set_ignore_region` to purge if it sticks.

@@ -196,3 +196,12 @@ def test_probe_msg_matches_the_checker_convention():
     assert list(msg.points[0].positions) == [0.1] * 7
     # msg_arrays needs a positive, monotonic time_from_start
     assert msg.points[0].time_from_start.nanosec > 0
+
+
+def test_perception_stale_gates_blind_sweeping():
+    from rammp_curobo_ros.sweep_demo import perception_stale
+
+    assert perception_stale(None, 100.0, 4.0) is True          # never seen
+    assert perception_stale(97.0, 100.0, 4.0) is False         # fresh
+    assert perception_stale(90.0, 100.0, 4.0) is True          # went silent
+    assert perception_stale(None, 100.0, 0.0) is False         # disabled

@@ -520,6 +520,7 @@ class CamerasNode(Node):
             voxel=self.voxel, occupied_at=self.occupied_at
         )
         self.tracker = BoxTracker()
+        self._last_named = {}
         self.ignore_region = None
         self._last_sent = None
         self._pending = None
@@ -933,6 +934,11 @@ class CamerasNode(Node):
                 self.get_logger().warn(
                     "no fresh depth frames — is the camera driver running?"
                 )
+            # heartbeat: keep publishing the remembered world so consumers
+            # can tell "camera briefly gated" from "perception is GONE" —
+            # a hidden dead/duplicate cameras node once fed a whole demo
+            # run invisibly (field 2026-08-24)
+            self._publish_markers(self._last_named)
             return
         self._warned.discard("frames")
         self._warned.discard("gated")
@@ -959,6 +965,7 @@ class CamerasNode(Node):
         else:
             self._warned.discard("cap")
         named = self.tracker.assign(boxes)
+        self._last_named = named
         self._publish_markers(named)
         if self._last_sent is not None and not boxes_changed(named, self._last_sent):
             return

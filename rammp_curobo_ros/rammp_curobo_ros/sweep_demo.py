@@ -44,6 +44,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
+from visualization_msgs.msg import MarkerArray
 
 from rammp_curobo_interfaces.action import ExecuteTrajectory, PlanToJoints, PlanToPose
 from rammp_curobo_interfaces.srv import CheckTrajectory
@@ -56,6 +57,15 @@ from rammp_curobo_ros.tour_demo import HOME
 JOINT_NAMES = ["joint_%d" % i for i in range(1, 8)]
 
 STILL_RAD_S = 0.02          # below this the arm counts as stopped
+
+
+def perception_stale(last_stamp, now, timeout):
+    """True when the cameras heartbeat has been silent too long — never
+    seen at all, or last seen more than `timeout` ago. Sweeping with
+    execute on and no perception is sweeping blind."""
+    if timeout <= 0.0:
+        return False
+    return last_stamp is None or (now - last_stamp) > timeout
 BLIND_CHECKS = 3            # consecutive dropped watchdog checks = blocked
 
 
@@ -163,6 +173,10 @@ class SweepDemo(Node):
         # outright.
         self.margin = float(p("clearance_margin", 0.0).value)
         self.hold_retry_s = float(p("hold_retry_s", 0.5).value)
+        # refuse to sweep blind: with execute on, planning pauses when the
+        # cameras heartbeat (~/world_markers, published every tick) goes
+        # silent for this long. 0 disables (bench tests without a camera).
+        self.perception_timeout = float(p("perception_timeout_s", 4.0).value)
         # Max joint travel EXCESS over the direct start->end move. The
         # first stroke legitimately travels far (sim starts at q=0, the
         # endpoints are pinned in the HOME family), so an ABSOLUTE span
@@ -195,6 +209,12 @@ class SweepDemo(Node):
         self.create_subscription(
             JointState, "/joint_states", self._js_cb,
             qos_profile_sensor_data, callback_group=cb,
+        )
+        self._markers_at = None
+        self.create_subscription(
+            MarkerArray, "/cameras/world_markers",
+            lambda _m: setattr(self, "_markers_at", time.monotonic()),
+            1, callback_group=cb,
         )
         self.plan_cli = ActionClient(
             self, PlanToPose, ns + "/plan_to_pose", callback_group=cb
@@ -529,6 +549,17 @@ class SweepDemo(Node):
         )
         i = 0
         while rclpy.ok() and not self.stop:
+            if self.execute and perception_stale(
+                self._markers_at, time.monotonic(), self.perception_timeout
+            ):
+                self.report(
+                    "warning",
+                    "perception silent — no world updates from the cameras "
+                    "node; holding rather than sweeping blind (is it "
+                    "running? ros2 node list)",
+                )
+                self._nap(self.hold_retry_s)
+                continue
             traj, message = self.plan(i % 2)
             if traj is None:
                 if "INVALID_START" in message:
