@@ -357,6 +357,57 @@ def test_registration_recovers_camera_error_on_the_real_arm_model(planner):
         assert rms < 0.006
 
 
+def test_measured_floor_keeps_two_centimetres(planner):
+    """The lower bound, as a regression: the MEASURED bench world must keep
+    home valid (the true-height table sits 12 mm under the arm's own base
+    spheres — that is why table is in no_pad_names), and every sweep and
+    dodge must clear the REAL tabletop by the padded guards' 2 cm, without
+    losing the tight under-the-slab route (path optimality)."""
+    import yaml
+
+    from rammp_curobo import CuRoboPlanner
+    from rammp_curobo.config import resolve_config
+
+    world = yaml.safe_load(open(resolve_config("world_real_bench.yaml")))
+    names = [o["name"] for o in world["obstacles"]]
+    assert "table" in names and "floor_front" in names, names
+    table = next(o for o in world["obstacles"] if o["name"] == "table")
+    top = table["position"][2] + table["dims"][2] / 2.0
+    assert -0.10 < top < -0.01, "table top %.3f looks unmeasured" % top
+
+    pl = CuRoboPlanner.from_config(
+        "gen3_real.yaml",
+        planner_overrides={"collision_activation_distance": 0.07,
+                           "warmup": False},
+    )
+    ok, detail = pl.check_state_valid(pl.home_pose)
+    assert ok, detail
+
+    def moving_low(traj):
+        alls = np.array([pl.link_spheres(q) for q in traj.positions])
+        valid = alls[0, :, 3] > 0.0
+        mov = valid & (alls[:, :, :3].std(axis=0).max(axis=1) > 0.002)
+        return float((alls[:, mov, 2] - alls[:, mov, 3]).min())
+
+    qa = list(pl.home_pose)
+    qa[0] = np.radians(30.0)
+    qb = list(pl.home_pose)
+    qb[0] = -np.radians(30.0)
+    pl.update_world_boxes([])
+    res = pl.plan_to_joints(qb, start=qa)
+    assert res.success, res.error
+    assert moving_low(res.joint_traj) - top > 0.02
+
+    slab = {"name": "s", "position": [0.50, 0.0, 0.62],
+            "dims": [0.15, 0.15, 0.25]}
+    pl.update_world_boxes([slab])
+    res = pl.plan_to_joints(qb, start=qa)
+    assert res.success, res.error
+    tool_z = np.array([pl.fk(q)[0][2] for q in res.joint_traj.positions])
+    assert tool_z.min() < 0.35, "under-the-slab route lost"
+    assert moving_low(res.joint_traj) - top > 0.02 - 1e-3
+
+
 def test_park_pose_outside_model_limits_is_clamped(planner):
     # The real Gen3 parks with joint_4 ~0.8 deg past cuRobo's URDF bound
     # (found on first hardware contact) — tiny violations clamp inward,

@@ -4,7 +4,9 @@
 depth_topic: /camera/depth/image_raw
 info_topic: /camera/depth/camera_info
 parent_frame: base_link
-mount_xyz: [0.08233, 0.70068, 0.30422]
+# registered off the arm 2026-08-24 (2710 points, rms 4.3 mm)
+# (was mount_xyz: [0.08233, 0.70068, 0.30422])
+mount_xyz: [0.08444, 0.59852, 0.35609]
 mount_quat_xyzw: [-0.322082, 0.644158, -0.599289, 0.349537]
 min_range: 0.2
 max_range: 2.0

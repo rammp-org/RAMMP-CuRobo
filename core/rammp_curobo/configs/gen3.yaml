@@ -38,8 +38,11 @@ planner:
   world_padding: 0.02                # metres per side on every collision box
   joint_limits_deg: {}               # {joint: [lo, hi]} TIGHTENS the URDF ranges (applied before warmup)
   max_joint_span_rad: 4.71           # refuse plans where one joint sweeps more — the winding guard
-  no_pad_names: [pedestal]           # the arm's own mount: padding it would put
-                                     # every start state in collision
+  no_pad_names: [pedestal, table]    # the arm's mount and the TRUE-height
+                                     # tabletop: padding either would swallow
+                                     # the base spheres (z=-0.015) and break
+                                     # every start; the floor_* guards carry
+                                     # the padded keep-out instead
   joint_space_method: auto           # 'auto' = native plan_single_js (exact joint
                                      # goal; verified OK on the torch 2.10 jp6/cu126
                                      # wheel) with automatic 'fk_pose' fallback.

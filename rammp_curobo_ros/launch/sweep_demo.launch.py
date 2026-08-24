@@ -33,7 +33,10 @@ ARGS = [
     ("camera", "camera_orbbec_bench.yaml", "environment camera config"),
     ("rate_hz", "5.0", "perception tick rate"),
     ("occupied_at", "2", "ticks before a voxel counts as an obstacle"),
-    ("min_z", "0.03", "ignore depth below this height (m, base_link)"),
+    # table measured at z=-0.027 (scripts/measure_bench.py): -0.002 keeps
+    # objects taller than ~4 cm on the bench visible while the baseline
+    # strip removes the surface itself
+    ("min_z", "-0.002", "ignore depth below this height (m, base_link)"),
     ("self_radius", "0.08", "self-filter margin over the arm's collision spheres (m)"),
     ("auto_register", "true", "solve the camera's translation error off the arm at startup"),
     ("sweep_deg", "30", "base yaw each side of home (joint-space sweep)"),

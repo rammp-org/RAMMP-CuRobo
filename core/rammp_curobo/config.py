@@ -46,7 +46,7 @@ PLANNER_DEFAULTS = {
         # turn (2*pi) is never a legitimate segment on this arm, and the
         # continuous joints (1/3/5/7, +-6 rad) make it possible
         "max_joint_span_rad": 4.71,
-        "no_pad_names": ["pedestal"],
+        "no_pad_names": ["pedestal", "table"],
         "joint_space_method": "auto",
         "limit_clamp_rad": 0.05,
         "warmup": True,
