@@ -48,7 +48,12 @@ from sensor_msgs.msg import JointState
 from rammp_curobo_interfaces.action import ExecuteTrajectory, PlanToJoints, PlanToPose
 from rammp_curobo_interfaces.srv import CheckTrajectory
 from rammp_curobo_ros.conversions import msg_arrays
+from builtin_interfaces.msg import Duration
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+
 from rammp_curobo_ros.tour_demo import HOME
+
+JOINT_NAMES = ["joint_%d" % i for i in range(1, 8)]
 
 STILL_RAD_S = 0.02          # below this the arm counts as stopped
 BLIND_CHECKS = 3            # consecutive dropped watchdog checks = blocked
@@ -310,6 +315,17 @@ class SweepDemo(Node):
         """
         pinned = self._pinned[idx]
         if pinned is not None:
+            # A blocked ENDPOINT means there is nothing to plan to — the
+            # field failure mode: an obstacle (or the operator's own arm,
+            # merged into a cluster) lands where the arm must STAND at the
+            # far end, TRAJOPT retries for ~5 s, the IK fallback fails too,
+            # and the log fills with IK_FAIL. Ask the state checker first:
+            # one point, ~40 ms, and a calm HOLD instead.
+            verdict = self.check(self._probe_msg(pinned), 0)
+            if verdict is not None and not verdict.collision_free:
+                return None, ("endpoint blocked — an obstacle occupies the "
+                              "sweep's far end; holding until it clears "
+                              "(watch :8766)")
             goal = PlanToJoints.Goal()
             goal.target_joints = [float(v) for v in pinned]
             res, message = self._send(self.joint_cli, goal)
@@ -349,6 +365,17 @@ class SweepDemo(Node):
         if pinned is None:
             self._pinned[idx] = [float(v) for v in traj.points[-1].positions]
         return traj, message
+
+    @staticmethod
+    def _probe_msg(joints):
+        """A one-point trajectory: the state checker's calling convention."""
+        msg = JointTrajectory()
+        msg.joint_names = list(JOINT_NAMES)
+        pt = JointTrajectoryPoint()
+        pt.positions = [float(v) for v in joints]
+        pt.time_from_start = Duration(nanosec=20000000)
+        msg.points.append(pt)
+        return msg
 
     def check(self, traj, start_index):
         req = CheckTrajectory.Request()
@@ -510,7 +537,8 @@ class SweepDemo(Node):
                         "HOLD — something is too close to plan around; "
                         "waiting for it to clear",
                     )
-                elif "contorted" in message or "family flip" in message:
+                elif ("contorted" in message or "family flip" in message
+                      or "endpoint blocked" in message):
                     self.report("warning", message)
                 else:
                     self.report("error", "plan failed: %s" % message)

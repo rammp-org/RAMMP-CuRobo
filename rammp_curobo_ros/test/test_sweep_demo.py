@@ -185,3 +185,14 @@ def test_report_can_change_severity(monkeypatch):
         node.destroy_node()
     finally:
         rclpy.shutdown()
+
+
+def test_probe_msg_matches_the_checker_convention():
+    from rammp_curobo_ros.sweep_demo import JOINT_NAMES, SweepDemo
+
+    msg = SweepDemo._probe_msg([0.1] * 7)
+    assert list(msg.joint_names) == JOINT_NAMES
+    assert len(msg.points) == 1
+    assert list(msg.points[0].positions) == [0.1] * 7
+    # msg_arrays needs a positive, monotonic time_from_start
+    assert msg.points[0].time_from_start.nanosec > 0
