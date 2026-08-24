@@ -127,6 +127,16 @@ def main():
     stub_log = os.path.join(tmp, "stub.log")
     plan_log = os.path.join(tmp, "planner.log")
 
+    # This test runs a FAKE controller under the real controller's action
+    # name. On a shared ROS graph with a live bringup, the planner's
+    # client binds to whichever server discovery finds first — a coin
+    # flip that could send test strokes to the REAL arm. Refuse.
+    probe = subprocess.run(["ros2", "node", "list"], capture_output=True,
+                           text=True, timeout=20)
+    if "/controller_manager" in probe.stdout:
+        sys.exit("a REAL controller_manager is on this ROS graph — stop the "
+                 "arm bringup, or isolate this test with e.g. "
+                 "ROS_DOMAIN_ID=77 before running it")
     stub = subprocess.Popen(["python3", stub_py], stdout=open(stub_log, "w"),
                             stderr=subprocess.STDOUT, start_new_session=True)
     planner = subprocess.Popen(
