@@ -22,6 +22,22 @@ host this image; it was validated there only up to the pre-Docker line:
 planner service + client contract proven live, base-image tag and the
 cuRobo v0.7.8 tag→commit pin verified against the registries 2026-08-14.
 
+**Built and verified on `abra` 2026-08-24** — L4T R36.5.2, Docker 27.5.1,
+`nvidia` runtime registered, 796 GB free. The image builds, and the verify step
+at the bottom of this file passes **23/23**. Checked inside the running
+container:
+
+    torch 2.10.0, cuda_built 12.6      # --no-deps kept CUDA 12.9 out
+    sys.flags.utf8_mode == 1
+    RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    libopenblas.so.0 and libcudss_*.so.0 both resolve via ldconfig
+
+What that does *not* prove: layers 2–5 (apt/ROS, torch, the torch runtime deps,
+cuRobo) were Docker **cache hits** from an earlier build on the same machine.
+Layers 6–10 — including the Cyclone DDS layer, cache-busted by the source
+`COPY` — rebuilt fresh. So a cold-cache build has not been timed here, and the
+~1 h figure below is still an estimate rather than a measurement from this run.
+
 ## Prerequisites (once, on the target machine)
 
 Engine + NVIDIA runtime, then let the runtime mount the GPU:
