@@ -476,3 +476,18 @@ def test_self_registrar_gives_up_and_reports():
     out = reg.feed(far, sph)
     assert not out["ok"] and out["final"] and reg.done
     assert "too few" in out["reason"]
+
+
+def test_self_registrar_survives_all_empty_frames():
+    # an Orbbec that comes up publishing all-zero depth produces eight
+    # empty cropped frames in a row; that must be a "too few points"
+    # outcome, not a np.vstack ValueError that kills the cameras node
+    from rammp_curobo.perception import SelfRegistrar
+
+    sph = np.array([[0.0, 0.0, 0.3, 0.05]])
+    reg = SelfRegistrar(frames=3, attempts=1)
+    assert reg.feed(np.empty((0, 3)), sph) is None
+    assert reg.feed(np.empty((0, 3)), sph) is None
+    out = reg.feed(np.empty((0, 3)), sph)
+    assert out is not None and not out["ok"] and reg.done
+    assert "too few" in out["reason"]

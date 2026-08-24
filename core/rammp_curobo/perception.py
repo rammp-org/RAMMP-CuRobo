@@ -254,7 +254,8 @@ class SelfRegistrar:
         self._buf.append(np.asarray(points, dtype=float))
         if len(self._buf) < self.frames:
             return None
-        pts = np.vstack([b for b in self._buf if len(b)]) if self._buf else np.empty((0, 3))
+        bufs = [b for b in self._buf if len(b)]
+        pts = np.vstack(bufs) if bufs else np.empty((0, 3))
         self._buf = []
         self._tries += 1
         out = register_points_to_spheres(pts, sph, cam_origin=cam_origin,

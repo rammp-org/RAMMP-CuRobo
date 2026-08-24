@@ -711,6 +711,22 @@ class CamerasNode(Node):
         spheres, missing = self_model_spheres(self.self_model, link_tf)
         return None if missing else spheres
 
+    def _try_register(self, cam, pose, spheres):
+        reg = self._registrars.get(id(cam))
+        if reg is None or reg.done:
+            return
+        self._register(
+            cam,
+            cropped_points(
+                cam.depth, cam.info, pose[0], pose[1], self.stride,
+                float(cam.cfg.get("min_range", 0.12)),
+                float(cam.cfg.get("max_range", 1.2)),
+                self.xy_extent, self.min_z, self.max_z,
+            ),
+            spheres,
+            pose[1],
+        )
+
     def _register(self, cam, pts, spheres, cam_origin):
         """Feed one still, unmasked frame to this camera's registrar; apply
         the solved shift to the mount the moment it passes the gates."""
@@ -778,20 +794,17 @@ class CamerasNode(Node):
             cam_links = self._link_points(stamp=cam.ros_stamp) or link_pts
             spheres = self._self_spheres(stamp=cam.ros_stamp) if link_pts is not None else None
             if spheres is not None and id(cam) in self._registrars:
-                self._register(
-                    cam,
-                    cropped_points(
-                        cam.depth, cam.info, pose[0], pose[1], self.stride,
-                        float(cam.cfg.get("min_range", 0.12)),
-                        float(cam.cfg.get("max_range", 1.2)),
-                        self.xy_extent, self.min_z, self.max_z,
-                    ),
-                    spheres,
-                    pose[1],
-                )
-                if self._registrars[id(cam)].done and "reg" not in self._warned:
-                    self._warned.add("reg")
-                # a just-applied shift changes this frame's pose: redo it
+                # a registration bug must never take the perceived world
+                # down with it — the planner would keep the last sticky
+                # world and nothing downstream would know the feed died
+                try:
+                    self._try_register(cam, pose, spheres)
+                except Exception as exc:
+                    self.get_logger().error(
+                        "camera registration failed (%s) — continuing with "
+                        "the configured mount" % exc
+                    )
+                    self._registrars.pop(id(cam), None)
                 pose = self._camera_pose(cam.cfg, stamp=cam.ros_stamp) or pose
             frames_used.append(
                 (
