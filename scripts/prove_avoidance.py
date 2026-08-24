@@ -96,9 +96,13 @@ def main():
 
     planner = CuRoboPlanner.from_config(args.config)
     quat = [0.5, 0.5, 0.5, 0.5]          # wrist flat, tool along +x
+    box_dicts = [{"name": n, "position": list(c), "dims": list(d)}
+                 for n, c, d in boxes]
 
-    # get joint values for A by planning home -> A in the bare world
-    planner.update_world_boxes([])
+    # get joint values for A by planning home -> A in the AWARE world:
+    # --execute drives this leg, so planned blind it could pass straight
+    # through the very obstacle the demo is about
+    planner.update_world_boxes(box_dicts)
     to_start = planner.plan_to_pose(args.start, quat, start=None)
     if not to_start.success:
         sys.exit("cannot reach --start %s (%s)" % (args.start, to_start.status))
@@ -107,15 +111,14 @@ def main():
           % (np.round(args.start, 2), np.round(args.goal, 2)))
 
     # A -> B, blind (baseline world only)
+    planner.update_world_boxes([])
     blind = planner.plan_to_pose(args.goal, quat, start=start_q)
     if not blind.success:
         sys.exit("blind plan failed (%s) — pick a reachable --goal" % blind.status)
     blind_path = tool_path(planner, blind.joint_traj)
 
     # A -> B, aware (baseline + the perceived obstacle)
-    planner.update_world_boxes(
-        [{"name": n, "position": list(c), "dims": list(d)} for n, c, d in boxes]
-    )
+    planner.update_world_boxes(box_dicts)
     aware = planner.plan_to_pose(args.goal, quat, start=start_q)
     if not aware.success:
         print("\naware plan FAILED (%s)" % aware.status)
@@ -157,26 +160,15 @@ def main():
 def drive(args, to_start, aware):
     """Run the two segments on the real arm through the planner node."""
     import rclpy
-    from builtin_interfaces.msg import Duration
-    from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+    from rclpy.signals import SignalHandlerOptions
 
+    from rammp_curobo_ros.conversions import trajectory_to_msg
     from rammp_curobo_ros.tour_demo import TourDemo
 
-    def to_msg(traj):
-        m = JointTrajectory()
-        m.joint_names = list(traj.joint_names)
-        for i, q in enumerate(traj.positions):
-            p = JointTrajectoryPoint()
-            p.positions = [float(v) for v in q]
-            if traj.velocities is not None:
-                p.velocities = [float(v) for v in traj.velocities[i]]
-            t = (i + 1) * traj.dt
-            p.time_from_start = Duration(sec=int(t),
-                                         nanosec=int(round((t % 1.0) * 1e9)))
-            m.points.append(p)
-        return m
-
-    rclpy.init()
+    # own SIGINT: rclpy's default handler tears the context down before
+    # the cancel can go out (the abort_checks failure class) — Ctrl+C
+    # must reach TourDemo.run's cancel path instead.
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = rclpy.create_node("prove_avoidance_exec")
     demo = TourDemo(node)
     print("\nDriving it: home -> start, then the AVOIDING path. e-stop in hand.")
@@ -184,7 +176,7 @@ def drive(args, to_start, aware):
         for label, traj in (("to start", to_start.joint_traj),
                             ("avoiding path", aware.joint_traj)):
             print("  %s ..." % label)
-            if not demo.run(to_msg(traj), args.speed):
+            if not demo.run(trajectory_to_msg(traj), args.speed):
                 print("  refused — is the planner node running with "
                       "execute:=true, and is the arm where the plan starts?")
                 break

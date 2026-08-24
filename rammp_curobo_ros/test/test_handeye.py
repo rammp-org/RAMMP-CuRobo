@@ -2,12 +2,7 @@
 
 import numpy as np
 
-from rammp_curobo_ros.handeye import (
-    invert,
-    mat_to_quat_xyzw,
-    pose_spread,
-    solve_eye_to_hand,
-)
+from rammp_curobo_ros.handeye import invert, pose_spread, solve_eye_to_hand
 
 
 def _rot(axis, ang):
@@ -69,9 +64,3 @@ def test_pose_spread_flags_the_degenerate_single_axis_case():
               for a in ([1, 0, 0], [0, 1.0, 0], [0, 0, 1.0])]
     assert pose_spread(varied) > 1.0
 
-
-def test_quat_helper_roundtrips():
-    from rammp_curobo.perception import quat_to_mat
-
-    for m in (_rot([1, 0, 0], 0.3), _rot([0, 1.0, 0], 3.0), np.eye(3)):
-        assert np.allclose(quat_to_mat(*mat_to_quat_xyzw(m)), m, atol=1e-6)

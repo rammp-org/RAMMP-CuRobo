@@ -127,3 +127,28 @@ def test_purged_count_parses_the_cameras_reply():
     assert purged_count("...; 17 mapped voxels purged") == 17
     assert purged_count("cameras node not up") is None
     assert purged_count(None) is None
+
+
+def test_seeker_calls_only_methods_that_exist():
+    # regression: tick() kept calling a deleted _heartbeat and the seek
+    # loop died with AttributeError on the first quick re-attempt. Pure
+    # source check (a Seeker needs a live node, so no instance here).
+    import ast
+    import importlib.util
+
+    spec = importlib.util.find_spec("rammp_curobo_ros.seeker")
+    with open(spec.origin) as f:
+        tree = ast.parse(f.read())
+    cls = next(
+        n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Seeker"
+    )
+    defined = {n.name for n in cls.body if isinstance(n, ast.FunctionDef)}
+    called = {
+        node.func.attr
+        for node in ast.walk(cls)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+    }
+    assert called <= defined, called - defined

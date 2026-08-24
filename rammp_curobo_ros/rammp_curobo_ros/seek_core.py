@@ -105,9 +105,13 @@ def roll_about_tool_z(xyzw, rad):
 
 
 class D405Grabber:
-    """Color + aligned-depth + info + camera pose for one shot."""
+    """Color + aligned-depth + info + camera pose for one shot.
 
-    def __init__(self, node):
+    need_depth=False (tag follower): colour-only — no depth
+    subscription, shot() never waits for it, and the driver needn't
+    align depth at all."""
+
+    def __init__(self, node, need_depth=True):
         from rclpy.qos import qos_profile_sensor_data
         from sensor_msgs.msg import CameraInfo, Image
         from tf2_ros import Buffer, TransformListener
@@ -123,18 +127,21 @@ class D405Grabber:
         ns = cfg["depth_topic"].rsplit("/depth/", 1)[0]
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, node)
+        self.need_depth = bool(need_depth)
         self.color = self.depth = self.info = None
+        self.k = self.dist = None   # full K + distortion for PnP users
         self.color_stamp = None
         self.last_fail = "no frames yet"
         node.create_subscription(
             Image, ns + "/color/image_raw", self._color_cb, qos_profile_sensor_data
         )
-        node.create_subscription(
-            Image,
-            ns + "/aligned_depth_to_color/image_raw",
-            self._depth_cb,
-            qos_profile_sensor_data,
-        )
+        if self.need_depth:
+            node.create_subscription(
+                Image,
+                ns + "/aligned_depth_to_color/image_raw",
+                self._depth_cb,
+                qos_profile_sensor_data,
+            )
         node.create_subscription(
             CameraInfo,
             ns + "/color/camera_info",
@@ -163,6 +170,8 @@ class D405Grabber:
 
     def _info_cb(self, msg):
         k = np.array(msg.k).reshape(3, 3)
+        self.k = k
+        self.dist = np.array(msg.d, dtype=float).ravel()
         self.info = dict(fx=k[0, 0], fy=k[1, 1], cx=k[0, 2], cy=k[1, 2])
 
     def shot(self, timeout_s=5.0):
@@ -175,14 +184,20 @@ class D405Grabber:
         """
         from rammp_curobo.perception import quat_to_mat
 
-        self.color = self.depth = None
+        self.color = None
+        if self.need_depth:
+            self.depth = None
         t0 = time.monotonic()
-        while self.color is None or self.depth is None or self.info is None:
+        while (
+            self.color is None
+            or self.info is None
+            or (self.need_depth and self.depth is None)
+        ):
             rclpy.spin_once(self.node, timeout_sec=0.2)
             if time.monotonic() - t0 > timeout_s:
                 self.last_fail = ", ".join(self.missing())
                 return None
-        if self.depth.shape != self.color.shape[:2]:
+        if self.need_depth and self.depth.shape != self.color.shape[:2]:
             sys.exit(
                 "aligned depth %s vs color %s — launch the driver with "
                 "align_depth.enable:=true" % (self.depth.shape, self.color.shape[:2])
@@ -210,7 +225,7 @@ class D405Grabber:
         out = []
         if self.color is None:
             out.append("color")
-        if self.depth is None:
+        if self.need_depth and self.depth is None:
             out.append("ALIGNED depth (align_depth.enable:=true?)")
         if self.info is None:
             out.append("camera_info")

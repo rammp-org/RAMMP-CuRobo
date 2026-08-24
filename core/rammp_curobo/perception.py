@@ -26,6 +26,24 @@ def quat_to_mat(x, y, z, w):
     )
 
 
+def mat_to_quat_xyzw(m):
+    """3x3 rotation -> ROS xyzw quaternion (inverse of quat_to_mat)."""
+    t = float(np.trace(m))
+    if t > 0.0:
+        s = np.sqrt(t + 1.0) * 2.0
+        return np.array([(m[2, 1] - m[1, 2]) / s, (m[0, 2] - m[2, 0]) / s,
+                         (m[1, 0] - m[0, 1]) / s, 0.25 * s])
+    i = int(np.argmax(np.diag(m)))
+    j, k = (i + 1) % 3, (i + 2) % 3
+    s = np.sqrt(1.0 + m[i, i] - m[j, j] - m[k, k]) * 2.0
+    q = np.zeros(4)
+    q[i] = 0.25 * s
+    q[j] = (m[j, i] + m[i, j]) / s
+    q[k] = (m[k, i] + m[i, k]) / s
+    q[3] = (m[k, j] - m[j, k]) / s
+    return q / np.linalg.norm(q)
+
+
 def depth_to_points(depth, fx, fy, cx, cy, stride=2, min_range=0.12, max_range=1.2):
     """Depth image (metres, HxW) -> (N, 3) camera-optical-frame points."""
     h, w = depth.shape
@@ -336,14 +354,12 @@ class VoxelAccumulator:
         grasp target's already-accumulated voxels, not just mask new hits.
         Returns the number of voxels cleared.
         """
-        half = np.asarray(dims, dtype=float) / 2.0 + float(inflate)
-        c = np.asarray(center, dtype=float)
-        gone = [
-            cell
-            for cell in self._scores
-            if np.all(np.abs((np.asarray(cell) + 0.5) * self.voxel - c) <= half)
-        ]
-        for cell in gone:
+        cells = self.known_cells()
+        if not len(cells):
+            return 0
+        centers = (cells + 0.5) * self.voxel
+        gone = cells[in_box_mask(centers, center, dims, inflate=inflate)]
+        for cell in map(tuple, gone):
             del self._scores[cell]
         return len(gone)
 
@@ -444,7 +460,7 @@ def _split_cells(cells, min_fill, min_span):
     )
 
 
-def cluster_cells(cells, voxel, min_voxels=8, max_boxes=20, min_fill=0.25, min_span=4):
+def cluster_cells(cells, voxel, min_voxels=8, max_boxes=50, min_fill=0.25, min_span=4):
     """Occupied voxel cells -> connected components -> tight AABBs.
 
     Returns (boxes, total_found). When capped, the NEAREST boxes win — a
@@ -459,10 +475,14 @@ def cluster_cells(cells, voxel, min_voxels=8, max_boxes=20, min_fill=0.25, min_s
     idx = cells - origin
     grid = np.zeros(idx.max(axis=0) + 1, dtype=np.uint8)
     grid[idx[:, 0], idx[:, 1], idx[:, 2]] = 1
-    labels, n = ndimage.label(grid, structure=np.ones((3, 3, 3)))
+    labels, _n = ndimage.label(grid, structure=np.ones((3, 3, 3)))
     boxes = []
-    for lab in range(1, n + 1):
-        comp = np.argwhere(labels == lab)
+    # find_objects slices each component to its bounding box: argwhere over
+    # the WHOLE grid per component cost 243 ms/tick on the bench camera
+    for lab, sl in enumerate(ndimage.find_objects(labels), start=1):
+        if sl is None:
+            continue
+        comp = np.argwhere(labels[sl] == lab) + [s.start for s in sl]
         if len(comp) < min_voxels:
             continue
         for lo, hi, nvox in _split_cells(comp, min_fill, min_span):

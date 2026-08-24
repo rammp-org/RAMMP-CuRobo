@@ -12,22 +12,32 @@ core/                     Layer 1 — pip package `rammp-curobo`: pure-Python
                           cuRobo wrapper, NO ROS imports (configs baked in)
 rammp_curobo_interfaces/  ROS 2 action/srv definitions (dependency-free)
 rammp_curobo_ros/         Layer 2 — planner node + safety-gated executor
-                          + tour_demo (the showcase: 4 random points, one
-                          merged full-speed trajectory)
+                          + cameras (perceived world) + the demos: tour,
+                          dance, seeker, tag_follow, sweep_demo
 examples/                 plan_only.py (no ROS) / plan_and_execute.py
-scripts/                  config baking, live sim checks
+scripts/                  config baking (bake_robot_config,
+                          bake_self_model), camera calibration
+                          (calibrate_orbbec + make_tag; fallback
+                          calibrate_camera_extrinsics), live checks
+                          (cameras_checks, sim_execution_checks,
+                          sweep_demo_checks, abort_checks,
+                          perception_debug, prove_avoidance), go_home
 docker/                   the planning service as a container (Jetson/JP6)
 docs/HARDWARE_BRINGUP.md  the real-arm runbook — READ BEFORE TOUCHING HARDWARE
 ```
 
 > **Hardware safety, non-negotiable:** a human holds the physical e-stop
-> during ALL hardware runs. Execution is opt-in at three separate layers
-> (node `execute:=true`, example/demo `--execute`, typed confirmation —
-> except the `seeker`, which by owner decision moves autonomously once
-> given a target), defaults to 25% speed
-> (`tour_demo` alone runs full-speed, behind its own all-caps warning
-> and typed 'go'), and every plan is re-validated against limits and
-> the arm's live state before anything reaches the controller.
+> during ALL hardware runs. Execution is opt-in at least twice (node
+> `execute:=true`, plus each tool's own `--execute` / `execute:=true`),
+> and every plan is re-validated against limits and the arm's live state
+> before anything reaches the controller. Typed confirmations remain
+> only on the interactive demos: `tour_demo` ('go' — and it alone
+> defaults to FULL speed), `dance_demo` ('dance', default 0.4) and
+> `plan_and_execute.py` ('yes'); everything else defaults to <=25%
+> speed. The `seeker`, `tag_follow`, `sweep_demo`, `calibrate_orbbec`,
+> `prove_avoidance` and `go_home` move autonomously once started —
+> owner decision 2026-08-19: no typed gates, no countdowns; Ctrl+C
+> cancels and the arm holds.
 
 ## Install (Jetson AGX Orin)
 
@@ -247,9 +257,14 @@ for the D405 (passive stereo, no projector) that's the High Accuracy
 preset, which makes textureless surfaces return holes (unknown, safe)
 instead of hallucinated depth (phantom obstacles — field-bitten). `scripts/cameras_checks.py` verifies
 the service loop live; `/cameras/set_ignore_region` masks the object
-you're about to grasp (see INTEGRATION.md). A fixed bench camera can be
-added via the `cameras` param after running
-`scripts/calibrate_camera_extrinsics.py` (browser-click, no fiducials).
+you're about to grasp (see INTEGRATION.md). A fixed bench camera (the
+Orbbec) is calibrated by `scripts/calibrate_orbbec.py` — ArUco tag taped
+to the gripper (`make_tag.py`, 60 mm), eye-to-hand solve, writes
+`camera_orbbec_bench.yaml` for the `cameras` param;
+`scripts/calibrate_camera_extrinsics.py` (browser fingertip-click, no
+fiducials) is the fallback. At startup the node also self-registers each
+fixed camera off the arm, absorbing residual translation error — never
+hand-edit mounts.
 
 ## Safety model (execution gates)
 

@@ -6,15 +6,10 @@ environment has them).
 """
 
 import numpy as np
-import pytest
 
-try:
-    from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-except ImportError:  # pragma: no cover
-    pytest.skip(
-        "ROS message packages not on PYTHONPATH (source ROS 2 first)",
-        allow_module_level=True,
-    )
+# SAFETY-GATE tests: import loudly. A try/except-skip here let the whole
+# file silently vanish in an unsourced shell — a green run proving nothing.
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from rammp_curobo_ros.conversions import duration_msg, msg_arrays, scaled_msg
 from rammp_curobo_ros.executor import validate_goal_msg

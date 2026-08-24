@@ -4,9 +4,9 @@ Ported from RAMMP-Kinova's curobo_planner.scene (the format the sim kitchen
 world is authored in) and kept deliberately dependency-light. Some parsed
 fields exist for format parity rather than local use: color/free/density
 feed RAMMP-Kinova's MuJoCo styling and physics, and the targets section
-(Target, Scene.target, target_names) serves its NL command layer — this
-repo only plans against obstacles/objects, but keeps the schema whole so
-one YAML drives both stacks. Kept dependency-light (stdlib + PyYAML
+serves its NL command layer — this repo only plans against
+obstacles/objects, but keeps the schema whole so one YAML drives both
+stacks. Kept dependency-light (stdlib + PyYAML
 — NO ROS, NO cuRobo, NO numpy) so any RAMMP module can import it without the
 GPU stack. The planner converts a Scene into cuRobo's collision world (see
 world.py); poses are authored human-friendly as position [x, y, z] (metres,
@@ -14,8 +14,6 @@ base frame) plus roll/pitch/yaw in DEGREES.
 """
 
 import yaml
-
-from rammp_curobo.geometry import euler_deg_to_quat_xyzw
 
 
 class Obstacle:
@@ -99,9 +97,6 @@ class Target:
         sr = d.get("standoff_rpy_deg")
         self.standoff_rpy_deg = [float(v) for v in sr] if sr else None
 
-    def quat_xyzw(self):
-        return euler_deg_to_quat_xyzw(self.rpy_deg)
-
 
 class Scene:
     def __init__(self, base_frame, obstacles, targets, objects=()):
@@ -109,16 +104,6 @@ class Scene:
         self.obstacles = obstacles
         self.targets = targets
         self.objects = list(objects)
-
-    @property
-    def target_names(self):
-        return [t.name for t in self.targets]
-
-    def target(self, name):
-        for t in self.targets:
-            if t.name == name:
-                return t
-        return None
 
 
 def load_scene(path):

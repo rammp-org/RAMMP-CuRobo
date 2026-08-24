@@ -240,12 +240,18 @@ hole) persists by design: clear it by looking at the spot, setting an
 ignore region over it (which also purges what's already mapped there),
 or restarting the node.
 
-(The retired fixed-Orbbec path — browser-click fingertip calibration via
-`scripts/calibrate_camera_extrinsics.py` — still works if a bench camera
-returns; it writes `camera_orbbec_bench.yaml` and the node takes it via
-the `cameras` parameter list. Note it now shares the frustum-scoped
-decay: unlike the original Orbbec build, a removed object backed by a
-depth hole or occlusion persists until provably seen through.)
+(A fixed bench camera — the Orbbec §8 uses — is calibrated by
+`scripts/calibrate_orbbec.py`: print a 60 mm tag with `make_tag.py`,
+tape it to the gripper, run with `--execute` (moves the arm; e-stop in
+hand). It solves eye-to-hand and writes `camera_orbbec_bench.yaml`,
+which the node takes via the `cameras` parameter list.
+`scripts/calibrate_camera_extrinsics.py` — browser fingertip-click, no
+fiducials — remains the fallback when no tag can be printed. Residual
+translation error is corrected at startup by the node's
+self-registration (§8, "How the arm stays out of its own map"); never
+hand-edit mounts. A fixed camera shares the frustum-scoped decay: a
+removed object backed by a depth hole or occlusion persists until
+provably seen through.)
 
 ## 7. Seeker — "go to the bottle" (attended)
 
@@ -383,7 +389,9 @@ fringe. The registration reads the raw frames before any masking.
 
 ### Running it
 
-Arm bringup and the Orbbec driver first, in their own terminals (§2), then:
+Arm bringup and the Orbbec driver first, in their own terminals (§2),
+the camera calibrated (§6's fixed-camera note: `calibrate_orbbec.py`),
+then:
 
 ```bash
 ros2 launch rammp_curobo_ros sweep_demo.launch.py                 # dry run

@@ -64,7 +64,9 @@ start-state match) and refuses anything stale — plan again if the arm moved.
 ### Perceived obstacles (live cameras)
 
 With the `cameras` node running (`ros2 run rammp_curobo_ros cameras` —
-wrist D405 by default, extrinsics from TF, no calibration), the planner's
+wrist D405 by default, extrinsics from TF, no calibration; a FIXED camera
+uses a `mount_*` config written by `scripts/calibrate_orbbec.py` and is
+re-registered off the arm's own collision-sphere model at startup), the planner's
 world tracks what the camera has seen — mapped obstacles persist when the
 wrist looks away — so plans route around real clutter with no client work
 at all. Two services matter to integrators:

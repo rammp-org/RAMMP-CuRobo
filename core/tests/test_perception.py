@@ -91,12 +91,88 @@ def test_cluster_cells_cap_keeps_nearest():
     from rammp_curobo.perception import cluster_cells
 
     near = np.argwhere(np.ones((3, 3, 3)))  # near origin
-    far = near + np.array([40, 0, 0])
+    # LOWER array index than `near`: scan-order labeling meets it first, so
+    # without the nearest-first sort the cap would keep it and this fails
+    far = near - np.array([40, 0, 0])
     boxes, total = cluster_cells(
-        np.vstack([near, far]), voxel=0.05, min_voxels=8, max_boxes=1
+        np.vstack([far, near]), voxel=0.05, min_voxels=8, max_boxes=1
     )
     assert total == 2 and len(boxes) == 1
-    assert boxes[0]["center"][0] < 1.0  # the near one survived
+    assert abs(boxes[0]["center"][0]) < 1.0  # the near one survived
+
+
+def test_split_cells_breaks_an_l_into_tight_boxes():
+    from rammp_curobo.perception import cluster_cells
+
+    # an L of two 40x2x2 bars: one AABB would claim ~10x the occupied
+    # volume (bars this long make the recursion bite; 20-long bars stop
+    # after one split at fill 0.28 and only halve the claim)
+    bar_x = np.argwhere(np.ones((40, 2, 2)))
+    bar_y = np.argwhere(np.ones((2, 40, 2)))
+    cells = np.unique(np.vstack([bar_x, bar_y]), axis=0)
+    boxes, total = cluster_cells(cells, voxel=0.05, min_voxels=8)
+    assert total >= 2
+    vol = sum(float(np.prod(b["dims"])) for b in boxes)
+    aabb = 40 * 40 * 2 * 0.05**3  # the single mega-box the split prevents
+    assert vol < 0.3 * aabb
+
+
+def test_depth_to_points_stride_keeps_pixel_units():
+    # (u - cx) must use PIXEL coordinates, not the subsampled index
+    depth = np.full((10, 10), 0.5, dtype=np.float32)
+    pts = depth_to_points(depth, fx=100.0, fy=100.0, cx=4.0, cy=4.0, stride=2)
+    assert len(pts) == 25
+    # pixel (u=6, v=4): x = (6 - 4) / 100 * 0.5 = 0.01
+    assert any(np.allclose(p, [0.01, 0.0, 0.5], atol=1e-6) for p in pts)
+
+
+def test_accumulator_max_score_caps_fade_time():
+    from rammp_curobo.perception import VoxelAccumulator
+
+    acc = VoxelAccumulator(voxel=0.05, occupied_at=3, max_score=6)
+    pts = _cube_points([0.5, 0.0, 0.1], 0.1)
+    for _ in range(50):  # long-standing object must not build unbounded score
+        acc.update(pts)
+    for _ in range(6):  # ... so it fades within max_score empty ticks
+        acc.update(np.empty((0, 3)))
+    assert len(acc.occupied_cells()) == 0
+    assert len(acc.known_cells()) == 0
+
+
+def test_robot_mask_endcap_clamps_beyond_the_tip():
+    # a point past the last link must be measured against the capsule END,
+    # not the infinite line through it
+    link_pts = [np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.0, 1.0])]
+    pts = np.array([[0.0, 0.0, 1.3]])  # 0.3 m past the tip
+    assert robot_mask(pts, link_pts, radius=0.11).tolist() == [True]
+
+
+def test_negative_coordinates_floor_to_the_right_voxel():
+    from rammp_curobo.perception import VoxelAccumulator, cluster_cells
+
+    # floor (not int-truncation toward zero): -0.01 belongs to cell -1
+    acc = VoxelAccumulator(voxel=0.05, occupied_at=1)
+    acc.update(np.repeat([[-0.01, -0.01, 0.5]], 2, axis=0))
+    cells = acc.occupied_cells()
+    assert cells.tolist() == [[-1, -1, 10]]
+    boxes, _ = cluster_cells(cells, voxel=0.05, min_voxels=1)
+    assert np.allclose(boxes[0]["center"][:2], [-0.025, -0.025])
+
+
+def test_mat_to_quat_xyzw_roundtrips_including_trace_negative_branches():
+    from rammp_curobo.perception import mat_to_quat_xyzw
+
+    rng = np.random.default_rng(0)
+    for _ in range(50):
+        m, _ = np.linalg.qr(rng.normal(size=(3, 3)))
+        if np.linalg.det(m) < 0:
+            m[:, 0] *= -1
+        assert np.allclose(quat_to_mat(*mat_to_quat_xyzw(m)), m, atol=1e-6)
+    # 180 deg rotations exercise every argmax branch
+    for m in (np.diag([1.0, -1.0, -1.0]),
+              np.diag([-1.0, 1.0, -1.0]),
+              np.diag([-1.0, -1.0, 1.0])):
+        assert np.allclose(quat_to_mat(*mat_to_quat_xyzw(m)), m, atol=1e-6)
 
 
 def test_tracker_names_are_stable():

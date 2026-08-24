@@ -8,27 +8,13 @@ import numpy as np
 
 from rammp_curobo_ros.grasps import (
     ROBOTIQ_2F85_SWEEP,
-    mat_to_quat_xyzw,
     pregrasp,
     quat_to_mat3,
     to_base,
 )
 
-
-def test_mat_to_quat_roundtrips_including_trace_negative_branches():
-    rng = np.random.default_rng(0)
-    for _ in range(50):
-        a = rng.normal(size=(3, 3))
-        q_, _ = np.linalg.qr(a)
-        if np.linalg.det(q_) < 0:
-            q_[:, 0] *= -1
-        back = quat_to_mat3(mat_to_quat_xyzw(q_))
-        assert np.allclose(back, q_, atol=1e-6)
-    # 180 deg rotations exercise every argmax branch
-    for m in (np.diag([1.0, -1.0, -1.0]),
-              np.diag([-1.0, 1.0, -1.0]),
-              np.diag([-1.0, -1.0, 1.0])):
-        assert np.allclose(quat_to_mat3(mat_to_quat_xyzw(m)), m, atol=1e-6)
+# mat_to_quat_xyzw round-trip coverage lives with the shared helper in
+# core/tests/test_perception.py.
 
 
 def test_to_base_pushes_the_goal_along_the_grasp_approach_axis():

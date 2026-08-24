@@ -13,6 +13,8 @@ returns nonsense with no warning. `pose_spread` is the tripwire.
 
 import numpy as np
 
+from rammp_curobo.perception import mat_to_quat_xyzw  # noqa: F401  (re-export: calibrate_orbbec imports it here)
+
 
 def _rt(t4):
     return np.asarray(t4)[:3, :3], np.asarray(t4)[:3, 3]
@@ -78,21 +80,3 @@ def solve_eye_to_hand(base_T_ee, cam_T_tag):
     residual = float(np.sqrt(((pts - pts.mean(axis=0)) ** 2).sum(axis=1).mean()))
     return base_T_cam, residual
 
-
-def mat_to_quat_xyzw(m):
-    t = float(np.trace(m))
-    if t > 0.0:
-        s = np.sqrt(t + 1.0) * 2.0
-        q = [(m[2, 1] - m[1, 2]) / s, (m[0, 2] - m[2, 0]) / s,
-             (m[1, 0] - m[0, 1]) / s, 0.25 * s]
-    else:
-        i = int(np.argmax(np.diag(m)))
-        j, k = (i + 1) % 3, (i + 2) % 3
-        s = np.sqrt(1.0 + m[i, i] - m[j, j] - m[k, k]) * 2.0
-        q = [0.0, 0.0, 0.0, 0.0]
-        q[i] = 0.25 * s
-        q[j] = (m[j, i] + m[i, j]) / s
-        q[k] = (m[k, i] + m[i, k]) / s
-        q[3] = (m[k, j] - m[j, k]) / s
-    q = np.array(q, dtype=float)
-    return q / np.linalg.norm(q)

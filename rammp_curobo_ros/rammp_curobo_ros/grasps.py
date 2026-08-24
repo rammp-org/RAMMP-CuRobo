@@ -26,6 +26,8 @@ z = 0.136 while our tool_frame sits at 0.120 — 16 mm shallower. That is
 
 import numpy as np
 
+from rammp_curobo.perception import mat_to_quat_xyzw  # noqa: F401  (re-export: seeker imports it here)
+
 # Robotiq 2F-85 sweep-volume conditioning, read out of GraspGenX's own
 # gripper config so the client needs no GraspGenX assets.
 ROBOTIQ_2F85_SWEEP = {
@@ -36,24 +38,6 @@ ROBOTIQ_2F85_SWEEP = {
     "gripper_type": 1,
     "fingertip_depth": 0.136,
 }
-
-
-def mat_to_quat_xyzw(m):
-    """3x3 rotation -> ROS xyzw quaternion."""
-    t = float(np.trace(m))
-    if t > 0.0:
-        s = np.sqrt(t + 1.0) * 2.0
-        return np.array([(m[2, 1] - m[1, 2]) / s, (m[0, 2] - m[2, 0]) / s,
-                         (m[1, 0] - m[0, 1]) / s, 0.25 * s])
-    i = int(np.argmax(np.diag(m)))
-    j, k = (i + 1) % 3, (i + 2) % 3
-    s = np.sqrt(1.0 + m[i, i] - m[j, j] - m[k, k]) * 2.0
-    q = np.zeros(4)
-    q[i] = 0.25 * s
-    q[j] = (m[j, i] + m[i, j]) / s
-    q[k] = (m[k, i] + m[i, k]) / s
-    q[3] = (m[k, j] - m[j, k]) / s
-    return q / np.linalg.norm(q)
 
 
 def to_base(grasp_cam, rot_cam, trans_cam, tool_offset=0.120):
@@ -120,12 +104,6 @@ class GraspClient:
         if "error" in res:
             raise RuntimeError(res["error"])
         return res
-
-    def health(self):
-        try:
-            return self._request({"action": "health"}).get("status") == "ok"
-        except Exception:
-            return False
 
     def grasps_from_mask(self, depth_m, intrinsics, mask, planner="graspmoe",
                          num_grasps=200, threshold=0.5, topk=10):

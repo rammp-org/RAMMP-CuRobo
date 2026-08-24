@@ -30,9 +30,9 @@ import numpy as np
 import rclpy
 from std_msgs.msg import String
 
+from rammp_curobo.perception import mat_to_quat_xyzw
 from rammp_curobo_ros.cameras import _ViewServer
-from rammp_curobo_ros.grasps import mat_to_quat_xyzw
-from rammp_curobo_ros.seek_core import joint_travel, stable_fix
+from rammp_curobo_ros.seek_core import D405Grabber, joint_travel, stable_fix
 from rammp_curobo_ros.tour_demo import TourDemo
 
 
@@ -53,69 +53,27 @@ def look_at_pose(tag_pos, tag_rot, standoff):
     return pos, mat_to_quat_xyzw(rot)
 
 
-class TagGrabber:
-    """Colour frame + intrinsics + camera pose. No depth needed."""
+def tag_pose_from_frame(frame, detector, objp, k, dist, tag_id=-1):
+    """Pure detect->pose: (tag_id, R_tag_cam (3,3), tvec (3,)) or None.
 
-    def __init__(self, node):
-        from rclpy.qos import qos_profile_sensor_data
-        from sensor_msgs.msg import CameraInfo, Image
-        from tf2_ros import Buffer, TransformListener
+    First marker wins unless tag_id >= 0 picks one; IPPE_SQUARE is the
+    exact planar-square solver, so objp must keep the tag-frame corner
+    order."""
+    import cv2
 
-        from rammp_curobo_ros.cameras import load_camera_config
-
-        self.node = node
-        cfg = load_camera_config("camera_d405_wrist.yaml")
-        self.mount_xyz = np.asarray(cfg["mount_xyz"], dtype=float)
-        self.mount_quat = list(cfg["mount_quat_xyzw"])
-        self.parent = cfg["parent_frame"]
-        ns = cfg["depth_topic"].rsplit("/depth/", 1)[0]
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, node)
-        self.color = self.info = None
-        self.stamp = None
-        node.create_subscription(Image, ns + "/color/image_raw",
-                                 self._color_cb, qos_profile_sensor_data)
-        node.create_subscription(CameraInfo, ns + "/color/camera_info",
-                                 self._info_cb, qos_profile_sensor_data)
-
-    def _color_cb(self, msg):
-        if msg.encoding in ("rgb8", "bgr8"):
-            a = np.frombuffer(msg.data, dtype=np.uint8).reshape(
-                msg.height, msg.width, 3)
-            self.color = a[:, :, ::-1].copy() if msg.encoding == "rgb8" else a.copy()
-            self.stamp = msg.header.stamp
-
-    def _info_cb(self, msg):
-        k = np.array(msg.k).reshape(3, 3)
-        self.k = k
-        self.dist = np.array(msg.d, dtype=float).ravel()
-        self.info = True
-
-    def shot(self, timeout_s=1.0):
-        """(bgr, K, dist, R_base_cam, t_base_cam) or None."""
-        from rammp_curobo.perception import quat_to_mat
-
-        self.color = None
-        t0 = time.monotonic()
-        while self.color is None or self.info is None:
-            rclpy.spin_once(self.node, timeout_sec=0.1)
-            if time.monotonic() - t0 > timeout_s:
+    corners, ids, _ = detector.detectMarkers(frame)
+    if ids is None:
+        return None
+    for c, i in zip(corners, ids.ravel()):
+        if tag_id < 0 or int(i) == tag_id:
+            ok, rvec, tvec = cv2.solvePnP(
+                objp, c.reshape(4, 2).astype(np.float64), k, dist,
+                flags=cv2.SOLVEPNP_IPPE_SQUARE)
+            if not ok:
                 return None
-        tr = None
-        for when in (rclpy.time.Time.from_msg(self.stamp), rclpy.time.Time()):
-            try:
-                tr = self.tf_buffer.lookup_transform("base_link", self.parent, when)
-                break
-            except Exception:
-                continue
-        if tr is None:
-            return None
-        q, t = tr.transform.rotation, tr.transform.translation
-        r_p = quat_to_mat(q.x, q.y, q.z, q.w)
-        qx, qy, qz, qw = self.mount_quat
-        rot = r_p @ quat_to_mat(qx, qy, qz, qw)
-        trans = r_p @ self.mount_xyz + np.array([t.x, t.y, t.z])
-        return self.color, self.k, self.dist, rot, trans
+            r_tag_cam, _ = cv2.Rodrigues(rvec)
+            return int(i), r_tag_cam, tvec.ravel()
+    return None
 
 
 class TagFollower:
@@ -136,7 +94,7 @@ class TagFollower:
         self.tag_id = int(p("tag_id", -1).value)      # -1 = any
         dict_name = str(p("dictionary", "DICT_4X4_50").value)
         self.demo = TourDemo(node)
-        self.grab = TagGrabber(node)
+        self.grab = D405Grabber(node, need_depth=False)
         self.status_pub = node.create_publisher(String, "~/status", 1)
         self._last_status = ""
 
@@ -174,35 +132,27 @@ class TagFollower:
         self.status_pub.publish(String(data=text))
 
     def _detect(self, now):
-        shot = self.grab.shot()
+        shot = self.grab.shot(timeout_s=1.0)
         if shot is None:
             return
-        frame, k, dist, rot_cam, trans_cam = shot
-        corners, ids, _ = self.detector.detectMarkers(frame)
-        pick = None
-        if ids is not None:
-            for c, i in zip(corners, ids.ravel()):
-                if self.tag_id < 0 or int(i) == self.tag_id:
-                    pick = (c.reshape(4, 2).astype(np.float64), int(i))
-                    break
+        frame, _depth, _intr, rot_cam, trans_cam = shot
         if self.view is not None:
+            # the view wants EVERY marker's corners; the pure helper
+            # returns only the picked pose — one extra detect is cheap
             vis = frame.copy()
+            corners, ids, _ = self.detector.detectMarkers(frame)
             if ids is not None:
                 self.cv2.aruco.drawDetectedMarkers(vis, corners, ids)
             self.cv2.putText(vis, self._last_status[:70],
                              (8, vis.shape[0] - 10),
                              self.cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             self.view.update(vis)
-        if pick is None:
+        hit = tag_pose_from_frame(frame, self.detector, self.objp,
+                                  self.grab.k, self.grab.dist, self.tag_id)
+        if hit is None:
             return
-        img_pts, tag_id = pick
-        ok, rvec, tvec = self.cv2.solvePnP(
-            self.objp, img_pts, k, dist,
-            flags=self.cv2.SOLVEPNP_IPPE_SQUARE)
-        if not ok:
-            return
-        r_tag_cam, _ = self.cv2.Rodrigues(rvec)
-        pos = rot_cam @ tvec.ravel() + trans_cam
+        tag_id, r_tag_cam, tvec = hit
+        pos = rot_cam @ tvec + trans_cam
         self.rot = rot_cam @ r_tag_cam
         self.tag_id_seen = tag_id
         self.last_seen = now

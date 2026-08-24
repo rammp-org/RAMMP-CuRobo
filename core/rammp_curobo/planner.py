@@ -248,6 +248,7 @@ class CuRoboPlanner:
                 start_state, goal, self._plan_config()
             )
         except Exception as exc:
+            log.exception("cuRobo plan_single raised")
             return PlanResult.failure(
                 "EXCEPTION",
                 "cuRobo plan_single raised: %s" % exc,
@@ -304,6 +305,7 @@ class CuRoboPlanner:
                     self._start_state(start), goal, self._plan_config()
                 )
             except Exception as exc:
+                log.exception("cuRobo plan_single_js raised")
                 return PlanResult.failure(
                     "EXCEPTION",
                     "cuRobo plan_single_js raised: %s" % exc,
@@ -402,10 +404,16 @@ class CuRoboPlanner:
         hit it" actually means (tool_frame alone answers a much weaker
         question).
         """
+        return self._link_spheres_batch([q])[0]
+
+    def _link_spheres_batch(self, positions):
+        """(N, dof) controller-order joint vectors -> (N, M, 4) collision
+        spheres in ONE kinematics call (a per-point loop costs a GPU sync
+        per waypoint — measured against the node's 5 Hz watchdog lock)."""
         state = self._motion_gen.kinematics.get_state(
-            self._tensor([self._to_curobo_order(q)])
+            self._tensor([self._to_curobo_order(q) for q in positions])
         )
-        return state.link_spheres_tensor[0].detach().cpu().numpy()
+        return state.link_spheres_tensor.detach().cpu().numpy()
 
     def check_trajectory(self, positions):
         """(ok, first_bad_index, n_bad) for a WHOLE trajectory against the
@@ -422,6 +430,10 @@ class CuRoboPlanner:
             return False, 0, 0
         from curobo.types.robot import JointState as CuJointState
 
+        lim = self.joint_limits()["position"]
+        # same reason as check_state_valid: cuRobo's BoundCost cloned the
+        # URDF ranges at construction, so joint_limits_deg lives HERE
+        oob = ((pos < lim[0]) | (pos > lim[1])).any(axis=1)
         try:
             states = CuJointState.from_position(
                 self._tensor([self._to_curobo_order(q) for q in pos]),
@@ -430,7 +442,9 @@ class CuRoboPlanner:
             metrics = self._motion_gen.check_constraints(states)
             feas = metrics.feasible.detach().cpu().numpy().reshape(-1).astype(bool)
         except Exception:
+            log.exception("check_trajectory: constraint check raised — failing closed")
             return False, 0, int(pos.shape[0])
+        feas &= ~oob
         bad = np.flatnonzero(~feas)
         if bad.size == 0:
             return True, -1, 0
@@ -447,17 +461,20 @@ class CuRoboPlanner:
         """
         if not boxes:
             return float("inf")
+        pos = np.asarray(positions, dtype=float)
+        if pos.ndim != 2 or pos.shape[0] == 0:
+            return float("inf")
         centers = np.array([b["position"] for b in boxes], dtype=float)
         halves = np.array([b["dims"] for b in boxes], dtype=float) / 2.0
-        worst = float("inf")
-        for q in np.asarray(positions, dtype=float):
-            s = self.link_spheres(q)
-            s = s[s[:, 3] > 0.0]                 # drop cuRobo's padding rows
-            if not len(s):
-                continue
-            d = np.maximum(np.abs(s[:, None, :3] - centers[None]) - halves[None], 0.0)
-            worst = min(worst, float((np.linalg.norm(d, axis=2) - s[:, None, 3]).min()))
-        return worst
+        s = self._link_spheres_batch(pos)        # (N, M, 4), one GPU call
+        valid = s[:, :, 3] > 0.0                 # drop cuRobo's padding rows
+        if not valid.any():
+            return float("inf")
+        d = np.maximum(
+            np.abs(s[:, :, None, :3] - centers[None, None]) - halves[None, None], 0.0
+        )
+        gap = np.linalg.norm(d, axis=3) - s[:, :, 3:]
+        return float(gap[valid].min())
 
     def joint_limits(self):
         """{'position': (2, dof) [lower; upper], 'velocity': (dof,)} in
@@ -472,6 +489,18 @@ class CuRoboPlanner:
     def check_state_valid(self, q):
         """(feasible, detail) for one controller-order joint vector against
         joint limits, self-collision, and the CURRENT collision world."""
+        arr = np.asarray([float(v) for v in q], dtype=float)
+        lim = self.joint_limits()["position"]
+        # cuRobo's BoundCost clones the limit tensors at CONSTRUCTION, so
+        # check_constraints tests the URDF ranges — the tightened
+        # joint_limits_deg sector is enforced by this numpy check.
+        out = (arr < lim[0]) | (arr > lim[1])
+        if out.any():
+            j = int(np.argmax(out))
+            return False, (
+                "%s = %.3f rad outside position limits [%.3f, %.3f]"
+                % (self.joint_names[j], arr[j], lim[0][j], lim[1][j])
+            )
         state = self._curobo_state(q)
         try:
             metrics = self._motion_gen.check_constraints(state)

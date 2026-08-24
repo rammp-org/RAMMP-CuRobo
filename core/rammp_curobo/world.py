@@ -10,6 +10,7 @@ in RAMMP-Kinova):
     refused here with a message that names the fix.
 """
 
+from rammp_curobo.config import PLANNER_DEFAULTS
 from rammp_curobo.geometry import euler_deg_to_quat_xyzw
 
 
@@ -44,7 +45,13 @@ def world_cuboids(scene, padding=0.02, ignore=frozenset(), no_pad_names=frozense
 
 
 def make_world_config(
-    scene, padding=0.02, ignore=frozenset(), no_pad_names=frozenset(), cache_obb=40
+    scene,
+    padding=0.02,
+    ignore=frozenset(),
+    no_pad_names=frozenset(),
+    # default tracks the config so a caller that forgets to pass the cache
+    # size gets the same cap the planner was built with
+    cache_obb=PLANNER_DEFAULTS["planner"]["collision_cache_obb"],
 ):
     """A guarded cuRobo WorldConfig for this scene (see module docstring)."""
     from curobo.geom.types import WorldConfig

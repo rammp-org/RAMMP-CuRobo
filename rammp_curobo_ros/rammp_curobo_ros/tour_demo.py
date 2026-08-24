@@ -132,6 +132,11 @@ class TourDemo:
         goal = ExecuteTrajectory.Goal(trajectory=traj, speed_scale=float(scale))
         send_fut = self.execute.send_goal_async(goal)
         send = None
+        # budget from the plan itself, not a fixed number: a long merged
+        # tour would time out mid-motion, and an overdue goal is still
+        # DRIVING the arm — it must be cancelled, not walked away from
+        last = traj.points[-1].time_from_start
+        budget = (last.sec + last.nanosec * 1e-9) / float(scale) * 1.5 + 15.0
         try:
             # the SEND window counts too: a goal accepted server-side but
             # not yet in hand would otherwise keep driving the arm while
@@ -139,7 +144,11 @@ class TourDemo:
             send = spin_until_done(self.node, send_fut, 10.0)
             if send is None or not send.accepted:
                 return False
-            wrapped = spin_until_done(self.node, send.get_result_async(), 240.0)
+            wrapped = spin_until_done(self.node, send.get_result_async(), budget)
+            if wrapped is None:
+                spin_until_done(self.node, send.cancel_goal_async(), 3.0)
+                print("\nexecution overdue — goal cancelled, arm holds")
+                return False
         except KeyboardInterrupt:
             if send is None and send_fut.done():
                 send = send_fut.result()
@@ -209,7 +218,11 @@ def main():
     scale = min(max(args.speed, 0.1), 1.0)
     rng = random.Random(args.seed)
 
-    rclpy.init()
+    from rclpy.signals import SignalHandlerOptions
+
+    # own the SIGINT: rclpy's handler would tear the context down before
+    # the except-branch could cancel the active goal
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = rclpy.create_node("rammp_curobo_tour")
     demo = TourDemo(node)
 

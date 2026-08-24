@@ -36,6 +36,8 @@ planner:
   collision_cache_mesh: 10
   collision_activation_distance: 0.03  # soft standoff; default 0.025 grazes
   world_padding: 0.02                # metres per side on every collision box
+  joint_limits_deg: {}               # {joint: [lo, hi]} TIGHTENS the URDF ranges (applied before warmup)
+  max_joint_span_rad: 4.71           # refuse plans where one joint sweeps more — the winding guard
   no_pad_names: [pedestal]           # the arm's own mount: padding it would put
                                      # every start state in collision
   joint_space_method: auto           # 'auto' = native plan_single_js (exact joint

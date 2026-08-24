@@ -326,7 +326,10 @@ class Seeker:
             return False
         self._status("%d grasp candidates (best %.2f) — planning"
                      % (len(grasps), float(scores[0])))
-        self._trigger(self.open_cli, "open")
+        if not self._trigger(self.open_cli, "open"):
+            # a closed gripper rams the object instead of enveloping it
+            self._status("gripper open failed — holding")
+            return False
         for g, sc in zip(grasps, scores):
             pos, quat = to_base(g, f["rot"], f["trans"], self.tool_offset)
             rot3 = quat_to_mat3(quat)
@@ -415,7 +418,9 @@ class Seeker:
             self._status("%s lifted — holding, not chasing a hand" % self.target)
             return
         if now < self._next_try_t:
-            self._heartbeat()
+            # keep the status stream alive between attempts (_status
+            # throttles its own republish to 0.5 s)
+            self._status(self._last_status)
             return
         self._next_try_t = now + 4.0   # one attempt at a time, no spinning
         reach = float(np.hypot(pos[0], pos[1]))

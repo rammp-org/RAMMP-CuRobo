@@ -268,6 +268,24 @@ def test_joint_limit_override_refuses_nonsense():
         )
 
 
+def test_tightened_limits_are_enforced_by_the_checkers():
+    """cuRobo's BoundCost clones the limit tensors at CONSTRUCTION, so
+    check_constraints tests the URDF ranges — a state inside the URDF but
+    outside joint_limits_deg must still be flagged, by the planner's own
+    numpy limit check."""
+    p = CuRoboPlanner.from_config(
+        "gen3_real.yaml",
+        planner_overrides={"joint_limits_deg": {"joint_1": [-75.0, 90.0]},
+                           "warmup": False},
+    )
+    q = list(p.home_pose)
+    q[p.joint_names.index("joint_1")] = np.radians(150.0)
+    ok, detail = p.check_state_valid(q)
+    assert not ok and "joint_1" in detail
+    ok, first_bad, n_bad = p.check_trajectory([q])
+    assert not ok and first_bad == 0 and n_bad == 1
+
+
 def test_winding_plan_is_refused(planner):
     """A plan in which one joint sweeps more than max_joint_span_rad is
     refused as WINDING rather than handed to the executor. Exercised by

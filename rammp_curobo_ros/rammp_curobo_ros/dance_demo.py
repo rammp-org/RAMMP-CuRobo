@@ -124,7 +124,11 @@ def main():
     scale = min(max(args.speed, 0.1), 1.0)
     rng = random.Random(args.seed)
 
-    rclpy.init()
+    from rclpy.signals import SignalHandlerOptions
+
+    # own the SIGINT: rclpy's handler would tear the context down before
+    # the except-branch could cancel the active goal
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = rclpy.create_node("rammp_curobo_dance")
     demo = TourDemo(node)
 

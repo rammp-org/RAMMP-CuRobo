@@ -7,10 +7,11 @@
 # top of the wrist directly above the Kinova vision module, lenses along
 # the tool axis. Offsets vs end_effector_link (z = tool direction, +y =
 # vision-module side): ~7.5 cm off-axis on the module side, lens face at
-# ~the flange plane. Roll is set by the bare-table dry-capture check, not
-# by eye — re-verify with `sweep_scan --dry-capture --debug` after ANY
-# bracket change (a wrong mount shifts the whole world by exactly its
-# error).
+# ~the flange plane. Never hand-tune mount_* — the mount is validated
+# against reality by the HARDWARE_BRINGUP §6 acceptance (box marker
+# within ±3 cm; scripts/cameras_checks.py for the service loop). Re-run
+# that after ANY bracket change and re-measure if it drifts (a wrong
+# mount shifts the whole world by exactly its error).
 depth_topic: /d405/d405/depth/image_rect_raw
 info_topic: /d405/d405/depth/camera_info
 parent_frame: end_effector_link

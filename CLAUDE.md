@@ -2,22 +2,21 @@
 
 Standalone cuRobo planning for the RAMMP Kinova Gen3 7-DoF (+ Robotiq
 2F-85): a planning SERVICE — end position in, collision-free joint
-trajectory out — plus showcases (`tour_demo`, and the `dance_demo`
-easter egg, and the `seeker`: "go to the bottle" via YOLO on the wrist
-camera — a continuous perceive/decide/act loop (blocking cuRobo hops,
-survey pose when lost; helpers in seek_core.py), autonomous once
-targeted BY OWNER DECISION 2026-08-19 (no typed gates; node/executor
-gates unchanged; never chases a lifted target)), a safety-gated
+trajectory out — plus showcases (`tour_demo`, the `dance_demo`
+easter egg, `tag_follow`, `sweep_demo`, and the `seeker`: "go to the
+bottle" via YOLO on the wrist camera — a continuous perceive/decide/act
+loop (blocking cuRobo hops, survey pose when lost; helpers in
+seek_core.py; never chases a lifted target)), a safety-gated
 executor for this bench, and live spatial awareness (the `cameras` node:
 wrist-D405 depth → cuboid obstacles → planner world at ~2 Hz; TF
-extrinsics, no calibration). Parts:
+extrinsics, no calibration; plus the calibrated fixed Orbbec). Parts:
 `core/` (pip `rammp-curobo`, pure Python, NO ROS imports — keep it that
 way; perception.py is the pure pipeline), `rammp_curobo_interfaces/`
 (rosidl, dependency-free by policy), `rammp_curobo_ros/` (ament_python:
-planner_node + cameras), `docker/` (the service containerized for other
-RAMMP codebases). This repo deliberately contains and launches NO arm
-driver — bringup is the RAMMP-Kinova workspace's, execution ownership is
-the caller's. The 2026-08-14 cleanup removed the scan/palm demos; the
+planner_node + cameras + the demos), `docker/` (the service
+containerized for other RAMMP codebases). This repo deliberately
+contains and launches NO arm driver — bringup is the RAMMP-Kinova
+workspace's, execution ownership is the caller's. The 2026-08-14 cleanup removed the scan/palm demos; the
 scan pipeline was deliberately REVIVED 2026-08-17 as `perception.py` +
 `cameras` (the palm demo remains history-only).
 
@@ -108,9 +107,12 @@ scan pipeline was deliberately REVIVED 2026-08-17 as `perception.py` +
   TF at THEIR stamp and are dropped while the camera moves — never
   "latest" TF (field-verified time-skew class). Primary camera = wrist
   D405 (TF extrinsics, no calibration; mount YAML is photo-estimated,
-  validated by the §6 acceptance). A fixed camera needs
-  scripts/calibrate_camera_extrinsics.py (fingertip-click Kabsch, NO
-  fiducials — user's explicit preference); never hand-edit mounts.
+  validated by the §6 acceptance). A fixed camera is calibrated by
+  scripts/calibrate_orbbec.py (tag-on-gripper eye-to-hand; make_tag.py
+  prints the 60 mm tag) — what produced camera_orbbec_bench.yaml;
+  scripts/calibrate_camera_extrinsics.py (fingertip-click Kabsch, no
+  fiducials) is the fallback. Startup self-registration (SelfRegistrar
+  above) absorbs residual translation error. Never hand-edit mounts.
 
 ## Safety (do not weaken)
 
@@ -118,10 +120,15 @@ Execution gates live in `rammp_curobo_ros/planner_node.py` (`_execute_cb`:
 execute param, speed clamp) + `executor.py` (the rest) and are all
 verified live: execute param (default false) → speed clamp (0,1] → name /
 limit / continuity / monotonic-time checks → live start-state match →
-cancel = controller stop+hold → arrival check. The example adds --execute
-+ typed-yes. Hardware runs follow docs/HARDWARE_BRINGUP.md with a human on
-the physical e-stop; never drive the real arm autonomously from an agent
-session.
+cancel = controller stop+hold → arrival check. Typed gates survive only
+on the interactive trio: tour_demo 'go' (default speed 1.0!), dance_demo
+'dance' (0.4), the example's 'yes'. Everything else that moves — seeker,
+tag_follow, sweep_demo execute:=true, calibrate_orbbec / prove_avoidance
+/ go_home --execute — is autonomous once started BY OWNER DECISION
+2026-08-19 (no typed gates, no countdowns; Ctrl+C stops and holds;
+node/executor gates unchanged). Hardware runs follow
+docs/HARDWARE_BRINGUP.md with a human on the physical e-stop; never
+drive the real arm autonomously from an agent session.
 
 ## Build / test
 

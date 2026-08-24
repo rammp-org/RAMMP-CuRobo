@@ -25,6 +25,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -71,9 +72,17 @@ def generate_launch_description():
             {
                 "config": LaunchConfiguration("config"),
                 "world": LaunchConfiguration("world"),
-                "execute": LaunchConfiguration("execute"),
-                "speed_scale": LaunchConfiguration("speed_scale"),
-                "use_sim_time": LaunchConfiguration("use_sim_time"),
+                # typed: a bare substitution is a STRING, and execute:=1
+                # or speed_scale:=1 would abort the node at declare time
+                "execute": ParameterValue(
+                    LaunchConfiguration("execute"), value_type=bool
+                ),
+                "speed_scale": ParameterValue(
+                    LaunchConfiguration("speed_scale"), value_type=float
+                ),
+                "use_sim_time": ParameterValue(
+                    LaunchConfiguration("use_sim_time"), value_type=bool
+                ),
                 "controller_action": LaunchConfiguration("controller_action"),
             }
         ],

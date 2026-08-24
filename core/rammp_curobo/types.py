@@ -35,10 +35,6 @@ class Trajectory:
     def duration(self) -> float:
         return self.n_points * self.dt
 
-    def times(self) -> np.ndarray:
-        """time_from_start of every point: (k + 1) * dt."""
-        return (np.arange(self.n_points) + 1) * self.dt
-
     def scaled(self, speed_scale: float) -> "Trajectory":
         """Exact time-dilation retiming — see retime.scale_trajectory."""
         from rammp_curobo.retime import scale_trajectory

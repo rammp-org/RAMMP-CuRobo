@@ -183,10 +183,12 @@ def main():
 
         print("SIGINT to the planner, mid-stroke...")
         os.killpg(os.getpgid(planner.pid), signal.SIGINT)
+        hung = False
         try:
             planner.wait(timeout=25)
         except subprocess.TimeoutExpired:
-            print("FAIL: the planner did not exit")
+            hung = True
+            print("planner still running 25 s after SIGINT")
         time.sleep(2)
         node.destroy_node()
         rclpy.shutdown()
@@ -196,10 +198,17 @@ def main():
 
     said = open(stub_log).read()
     print("\n--- controller saw ---\n%s" % said.strip())
-    ok = "CANCEL RECEIVED" in said and "STOPPED" in said
-    print("\n%s" % ("PASS — Ctrl+C stopped the arm and it holds" if ok else
-                    "FAIL — the arm was left running; see docs/HARDWARE_BRINGUP.md"))
-    sys.exit(0 if ok else 1)
+    stopped = "CANCEL RECEIVED" in said and "STOPPED" in said
+    if stopped and not hung:
+        print("\nPASS — Ctrl+C stopped the arm and it holds")
+    elif stopped:
+        # the arm is safe, but a node that never exits after SIGINT is
+        # its own field hazard (orphaned planner holding the action
+        # servers) — do not call that a pass
+        print("\nFAIL — arm stopped but planner hung after SIGINT")
+    else:
+        print("\nFAIL — the arm was left running; see docs/HARDWARE_BRINGUP.md")
+    sys.exit(0 if stopped and not hung else 1)
 
 
 if __name__ == "__main__":

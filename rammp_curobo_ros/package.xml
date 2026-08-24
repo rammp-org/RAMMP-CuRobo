@@ -19,10 +19,21 @@
   <depend>std_srvs</depend>
   <depend>builtin_interfaces</depend>
   <depend>controller_manager_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>rcl_interfaces</depend>
+  <depend>tf2_ros</depend>
+  <depend>visualization_msgs</depend>
   <!-- servoing-recovery fault reset (kortex fault_controller's Trigger) -->
   <exec_depend>example_interfaces</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <!-- seek_core / tags / cameras views -->
+  <exec_depend>python3-opencv</exec_depend>
+  <!-- deliberately unlisted (no rosdep keys; optional features): ultralytics
+       (seeker YOLO), zmq + msgpack_numpy (GraspGenX client) -->
 
   <test_depend>python3-pytest</test_depend>
 

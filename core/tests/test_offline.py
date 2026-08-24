@@ -47,14 +47,15 @@ def test_planner_config_loads_and_merges():
 
 def test_gen3_yaml_matches_planner_defaults():
     # gen3.yaml deliberately restates every default so the file is the
-    # single human-readable reference (its own header says so). This test
-    # keeps the two copies honest: any drift between config.PLANNER_DEFAULTS
-    # and the YAML is a bug in whichever was edited alone.
+    # single human-readable reference (its own header says so). Compare the
+    # RAW file, not the merged config: merging fills omitted keys from the
+    # defaults, which hid two missing entries until 2026-08.
     from rammp_curobo.config import PLANNER_DEFAULTS
 
-    cfg, _ = load_planner_config("gen3.yaml")
+    raw = yaml.safe_load(resolve_config("gen3.yaml").read_text())
     for section in ("planner", "tool", "execution"):
-        assert cfg[section] == PLANNER_DEFAULTS[section], section
+        assert raw[section] == PLANNER_DEFAULTS[section], section
+    cfg, _ = load_planner_config("gen3.yaml")
     assert cfg["joint_names"] == PLANNER_DEFAULTS["joint_names"]
     assert cfg["home_pose_rad"] == pytest.approx(PLANNER_DEFAULTS["home_pose_rad"])
 
@@ -95,8 +96,8 @@ def test_world_cuboids_padding_and_ignore():
     assert boxes["pedestal"]["dims"] == pytest.approx([0.14, 0.14, 0.04])
     table = next(o for o in scene.obstacles if o.name == "table")
     assert boxes["table"]["dims"] == pytest.approx([d + 0.04 for d in table.dims])
-    # the sim kitchen must leave headroom under the 60-box cache for
-    # update_world additions (40 keeps a wide margin)
+    # the sim kitchen must leave wide headroom under collision_cache_obb
+    # (120) for live perceived-world additions
     assert len(boxes) <= 40
 
 

@@ -31,6 +31,8 @@ import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import JointState
 
 from rammp_curobo_interfaces.action import ExecuteTrajectory, PlanToJoints, PlanToPose
@@ -84,8 +86,12 @@ def read_joint_state(node, executor, timeout_s=5.0):
 
     names = JOINT_NAMES
     slot = {}
+    # sensor-data QoS: the Kinova driver publishes /joint_states
+    # BEST_EFFORT, and a RELIABLE subscriber is QoS-incompatible with it —
+    # it receives nothing and this times out claiming the bringup is down.
     sub = node.create_subscription(
-        JointState, "/joint_states", lambda m: slot.update(msg=m), 10
+        JointState, "/joint_states", lambda m: slot.update(msg=m),
+        qos_profile_sensor_data,
     )
     t0 = time.monotonic()
     while "msg" not in slot:
@@ -178,7 +184,10 @@ def main():
     )
     args = ap.parse_args()
 
-    rclpy.init()
+    # own SIGINT: rclpy's default handler tears the context down before
+    # call_action's KeyboardInterrupt path can send the cancel — Ctrl+C
+    # would stop watching the arm, not stop it.
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = Node("rammp_curobo_example")
     executor = rclpy.executors.SingleThreadedExecutor()
     executor.add_node(node)
