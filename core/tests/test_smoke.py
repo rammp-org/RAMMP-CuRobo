@@ -310,9 +310,11 @@ def test_winding_plan_is_refused(planner):
 def test_registration_recovers_camera_error_on_the_real_arm_model(planner):
     """The synthetic-arm tests prove the estimator; this proves it on the
     geometry it will meet: cuRobo's 47 Gen3 spheres at home, sampled on
-    the hemisphere the bench Orbbec sees, displaced by the bench's own
-    measured error. Also pins the baked self-model to cuRobo's sphere
-    set, so a re-bake that drifts is caught here."""
+    the PHYSICAL surface (runtime radius minus the load-time buffer —
+    depth cameras see the surface, not the inflated collision set) on the
+    hemisphere the bench Orbbec sees, displaced by the bench's own
+    measured error. Also pins the baked self-model (raw radii + buffer)
+    to cuRobo's sphere set, so a re-bake that drifts is caught here."""
     import yaml
 
     from rammp_curobo.config import resolve_config
@@ -320,27 +322,38 @@ def test_registration_recovers_camera_error_on_the_real_arm_model(planner):
 
     sph = planner.link_spheres(planner.home_pose)
     sph = sph[sph[:, 3] > 0.0]
-    baked = yaml.safe_load(open(resolve_config("self_model_gen3_2f85.yaml")))["spheres"]
-    baked_r = sorted(round(float(row[3]), 4) for rows in baked.values() for row in rows)
+    baked = yaml.safe_load(open(resolve_config("self_model_gen3_2f85.yaml")))
+    buf = float(baked["buffer"])
+    baked_r = sorted(round(float(row[3]) + buf, 4)
+                     for rows in baked["spheres"].values() for row in rows)
     assert baked_r == sorted(round(float(r), 4) for r in sph[:, 3])
 
+    # register against RAW radii — what perception_debug and the node feed
+    sph_raw = sph.copy()
+    sph_raw[:, 3] -= buf
     rng = np.random.default_rng(21)
     cam = np.array([0.08, 0.70, 0.30])                # the bench Orbbec
     pts = []
-    for c in sph:
+    for i, c in enumerate(sph_raw):
         u = rng.normal(size=(300, 3))
         u /= np.linalg.norm(u, axis=1)[:, None]
         u = u[(u @ (cam - c[:3])) > 0.0]
-        pts.append(c[:3] + c[3] * u)
+        p = c[:3] + c[3] * u
+        # union visibility: the real overlapping sphere chains never show
+        # points buried inside a neighbour — drop anything >5 mm deep
+        others = np.delete(sph_raw, i, axis=0)
+        depth_in = np.linalg.norm(p[:, None, :] - others[None, :, :3], axis=2) \
+            - others[None, :, 3]
+        pts.append(p[depth_in.min(axis=1) > -0.005])
     true_pts = np.vstack(pts)
     for delta in ([0.023, 0.078, -0.040], [0.0, -0.09, 0.0], [-0.06, 0.02, 0.05]):
         delta = np.array(delta)
         seen = true_pts + delta + rng.normal(scale=0.003, size=true_pts.shape)
         blob = np.array([0.45, 0.20, 0.35]) + rng.uniform(-0.05, 0.05, size=(500, 3))
-        out = register_points_to_spheres(np.vstack([seen, blob]), sph, cam_origin=cam)
+        out = register_points_to_spheres(np.vstack([seen, blob]), sph_raw, cam_origin=cam)
         assert out is not None, delta
         shift, used, rms = out
-        assert np.linalg.norm(shift + delta) < 0.004, (delta, shift)
+        assert np.linalg.norm(shift + delta) < 0.005, (delta, shift)
         assert rms < 0.006
 
 

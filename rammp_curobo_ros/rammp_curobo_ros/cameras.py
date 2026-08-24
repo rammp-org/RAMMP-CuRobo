@@ -15,6 +15,8 @@ TF) OR parent_frame + mount_xyz + mount_quat_xyzw (fixed mount; the
 calibration script writes this form for the Orbbec).
 """
 
+import concurrent.futures
+import fcntl
 import os
 import sys
 import time
@@ -64,6 +66,17 @@ ARM_CHAIN = [
     "bracelet_link",
     "end_effector_link",
 ]
+
+# Registration crop, shared with scripts/perception_debug.py: the tool
+# that writes the camera config must measure the SAME crop the node
+# registers with, and registration must be invariant to whatever the
+# user tunes stride/min_z/... to for mapping.
+REGISTER_DEFAULTS = dict(stride=4, min_z=0.03, max_z=1.3, xy_extent=1.2, frames=8)
+
+# Capsule radius for the no-self-model fallback filter. Distinct from
+# self_radius, which is a MARGIN (~0.08) — a 0.08 capsule cannot cover
+# the arm and would let it map itself as an obstacle.
+CAPSULE_FALLBACK_RADIUS = 0.25
 
 
 def load_camera_config(name_or_path):
@@ -382,17 +395,17 @@ class CamerasNode(Node):
         self.rate_hz = float(p("rate_hz", 2.0).value)
         self.baseline = str(p("baseline", "world_real_bench.yaml").value)
         self.voxel = float(p("voxel", 0.03).value)
-        # Self-filter. With a self-model, `self_radius` is the MARGIN added
-        # to every collision-sphere radius (camera-pose error + TF/depth
-        # skew); without one it is the old capsule radius. "" disables
-        # the sphere model.
+        # Self-filter. `self_radius` is the MARGIN added to every
+        # collision-sphere radius (camera-pose error + TF/depth skew);
+        # the model's planning buffer is added on top from its YAML.
+        # Without a model the filter falls back to link capsules of
+        # CAPSULE_FALLBACK_RADIUS. "" disables the sphere model.
         self.self_radius = float(p("self_radius", 0.08).value)
         self.self_model_name = str(p("self_model", "self_model_gen3_2f85.yaml").value)
         # Solve each FIXED camera's translation error off the arm at
         # startup, from a few still frames, and apply it in memory. The
         # config on disk is untouched; the corrected line is logged.
         self.auto_register = bool(p("auto_register", True).value)
-        self.register_frames = int(p("register_frames", 8).value)
         # 20 was sized for the WRIST camera's handful of clusters. A fixed
         # ENVIRONMENT camera sees the whole bench: 60-70 clusters, of which
         # 20 threw two-thirds of the scene away — obstacles the planner
@@ -417,7 +430,21 @@ class CamerasNode(Node):
         # the second one's arrival makes the first report "no fresh depth
         # frames" while the driver is happily publishing at 30 Hz (field
         # 2026-08-21, an hour lost to it). The planner node has guarded
-        # this since 2026-08-13; so does this one now.
+        # this since 2026-08-13; so does this one now. The flock closes
+        # the symmetric TOCTOU of the discovery check alone (two
+        # simultaneous starts each see the other and BOTH die); the fd
+        # stays open on self so the lock lives as long as the node.
+        self._lock_file = open("/tmp/rammp_cameras.lock", "w")
+        try:
+            fcntl.flock(self._lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise SystemExit(
+                "another '%s' node is already running — two of them break "
+                "each other's depth subscriptions (the symptom is 'no fresh "
+                "depth frames' while the driver is fine). Stop the other one "
+                "first: ros2 node list. NOTE sweep_demo.launch.py starts a "
+                "cameras node of its own." % self.get_name()
+            )
         time.sleep(1.0)  # let discovery see an already-running peer
         peers = [
             name
@@ -441,25 +468,54 @@ class CamerasNode(Node):
             cfg["_name"] = n                     # for log lines that name the file
             self.cams.append(_CameraInput(self, cfg))
         self.self_model = None
+        self.sphere_buffer = 0.0  # the model YAML's planning inflation
         if self.self_model_name:
             try:
-                self.self_model = load_self_model(resolve_config(self.self_model_name))
+                model, buf = load_self_model(resolve_config(self.self_model_name))
+                if sum(len(v) for v in model.values()) == 0:
+                    raise ValueError("model has no spheres")
+                self.self_model, self.sphere_buffer = model, float(buf)
                 self.get_logger().info(
-                    "self-model %s: %d spheres over %d frames, margin %.2f m"
+                    "self-model %s: %d spheres over %d frames, margin "
+                    "%.2f m + buffer %.3f m"
                     % (self.self_model_name,
                        sum(len(v) for v in self.self_model.values()),
-                       len(self.self_model), self.self_radius)
+                       len(self.self_model), self.self_radius,
+                       self.sphere_buffer)
                 )
             except Exception as exc:
                 self.get_logger().warn(
                     "self-model %s unavailable (%s) — falling back to %.2f m "
-                    "link capsules" % (self.self_model_name, exc, self.self_radius)
+                    "link capsules"
+                    % (self.self_model_name, exc, CAPSULE_FALLBACK_RADIUS)
                 )
-        self._registrars = {
-            id(cam): SelfRegistrar(frames=self.register_frames)
+        reg_cams = [
+            cam
             for cam in self.cams
             if self.auto_register and cam.cfg.get("parent_frame") == "base_link"
+        ]
+        if reg_cams and self.self_model is None:
+            self.get_logger().warn(
+                "auto_register requires the self-model — camera registration "
+                "DISABLED; obstacles keep the calibration's pose error"
+            )
+            reg_cams = []
+        self._registrars = {
+            id(cam): SelfRegistrar(
+                frames=REGISTER_DEFAULTS["frames"], solve_inline=False
+            )
+            for cam in reg_cams
         }
+        # the 6-8 s registration solve runs here, off the tick thread —
+        # inline it stalled subscriptions, the view and SIGINT for the
+        # whole solve. The solve is pure math (no ROS state); the APPLY
+        # still happens on the tick thread via _poll_registration.
+        self._reg_jobs = {}
+        self._reg_pool = (
+            concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            if self._registrars
+            else None
+        )
         self.acc = VoxelAccumulator(
             voxel=self.voxel, occupied_at=self.occupied_at
         )
@@ -712,30 +768,50 @@ class CamerasNode(Node):
         return None if missing else spheres
 
     def _try_register(self, cam, pose, spheres):
+        """Feed one still, unmasked frame to this camera's registrar; when
+        the buffer fills, hand the solve to the worker thread. The crop is
+        REGISTER_DEFAULTS (not the node's mapping params) so registration
+        matches perception_debug and ignores per-run tuning."""
         reg = self._registrars.get(id(cam))
-        if reg is None or reg.done:
+        if reg is None or reg.done or id(cam) in self._reg_jobs:
             return
-        self._register(
-            cam,
-            cropped_points(
-                cam.depth, cam.info, pose[0], pose[1], self.stride,
-                float(cam.cfg.get("min_range", 0.12)),
-                float(cam.cfg.get("max_range", 1.2)),
-                self.xy_extent, self.min_z, self.max_z,
-            ),
-            spheres,
-            pose[1],
+        pts = cropped_points(
+            cam.depth, cam.info, pose[0], pose[1],
+            REGISTER_DEFAULTS["stride"],
+            float(cam.cfg.get("min_range", 0.12)),
+            float(cam.cfg.get("max_range", 1.2)),
+            REGISTER_DEFAULTS["xy_extent"],
+            REGISTER_DEFAULTS["min_z"],
+            REGISTER_DEFAULTS["max_z"],
         )
+        out = reg.feed(pts, spheres, pose[1])
+        if out is not None and "pending" in out:
+            self._reg_jobs[id(cam)] = self._reg_pool.submit(
+                reg.complete, out["pending"]
+            )
 
-    def _register(self, cam, pts, spheres, cam_origin):
-        """Feed one still, unmasked frame to this camera's registrar; apply
-        the solved shift to the mount the moment it passes the gates."""
-        reg = self._registrars.get(id(cam))
-        if reg is None or reg.done or spheres is None:
-            return
-        out = reg.feed(pts, spheres, cam_origin)
-        if out is None:
-            return
+    def _poll_registration(self):
+        """Harvest finished solves (done() only, never wait) and apply them
+        on the tick thread before this tick accumulates anything."""
+        for cid, fut in list(self._reg_jobs.items()):
+            if not fut.done():
+                continue
+            del self._reg_jobs[cid]
+            cam = next((c for c in self.cams if id(c) == cid), None)
+            try:
+                out = fut.result()
+            except Exception as exc:
+                self.get_logger().error(
+                    "camera registration failed (%s) — continuing with "
+                    "the configured mount" % exc
+                )
+                self._registrars.pop(cid, None)
+                continue
+            if cam is not None:
+                self._apply_registration(cam, out)
+
+    def _apply_registration(self, cam, out):
+        """Apply a solved shift to the mount the moment it passes the gates."""
         if out["ok"]:
             cfg = cam.cfg
             new = [float(v) for v in np.asarray(cfg["mount_xyz"], float) + out["shift"]]
@@ -760,6 +836,7 @@ class CamerasNode(Node):
 
     # ---------------------------------------------------------------- tick
     def _tick(self):
+        self._poll_registration()
         all_pts, frames_used, saw_frame, had_fresh = [], [], False, False
         link_pts = self._link_points()
         if link_pts is None and "tf" not in self._warned:
@@ -805,7 +882,6 @@ class CamerasNode(Node):
                         "the configured mount" % exc
                     )
                     self._registrars.pop(id(cam), None)
-                pose = self._camera_pose(cam.cfg, stamp=cam.ros_stamp) or pose
             frames_used.append(
                 (
                     pose[0],
@@ -829,11 +905,14 @@ class CamerasNode(Node):
                     min_z=self.min_z,
                     max_z=self.max_z,
                     link_pts=cam_links,
-                    self_radius=self.self_radius,
+                    self_radius=CAPSULE_FALLBACK_RADIUS,
                     ignore_region=self.ignore_region,
                     baseline_boxes=self.baseline_boxes,
                     self_spheres=spheres,
-                    self_margin=self.self_radius,
+                    # a depth point sits on the PHYSICAL surface; the
+                    # model stores raw radii, so the planning buffer is
+                    # folded in here alongside the pose-error margin
+                    self_margin=self.self_radius + self.sphere_buffer,
                 )
             )
         if not saw_frame:
@@ -870,9 +949,15 @@ class CamerasNode(Node):
             max_boxes=self.max_boxes,
         )
         if total > len(boxes):
-            self.get_logger().warn(
-                "%d clusters found, capped to nearest %d" % (total, len(boxes))
-            )
+            # every tick on a busy bench — once per episode is enough
+            if "cap" not in self._warned:
+                self._warned.add("cap")
+                self.get_logger().warn(
+                    "%d clusters found, capped to nearest %d (warning once "
+                    "until the scene fits again)" % (total, len(boxes))
+                )
+        else:
+            self._warned.discard("cap")
         named = self.tracker.assign(boxes)
         self._publish_markers(named)
         if self._last_sent is not None and not boxes_changed(named, self._last_sent):
@@ -1037,6 +1122,11 @@ class CamerasNode(Node):
         response.success = True
         self.get_logger().info(response.message)
         return response
+
+    def destroy_node(self):
+        if self._reg_pool is not None:
+            self._reg_pool.shutdown(wait=False, cancel_futures=True)
+        super().destroy_node()
 
 
 def main(args=None):

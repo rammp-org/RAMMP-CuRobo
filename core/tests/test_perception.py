@@ -567,3 +567,117 @@ def test_self_registrar_survives_all_empty_frames():
     out = reg.feed(np.empty((0, 3)), sph)
     assert out is not None and not out["ok"] and reg.done
     assert "too few" in out["reason"]
+
+
+def _sphere_chain_arm(rng, cam):
+    """A quasi-periodic straight run (10 spheres, period 0.08, r 0.05)
+    plus an elbow stub — the feature that pins the period when the camera
+    can see it. Returns per-sphere point lists so tests crop visibility."""
+    sph = [[0.0, 0.0, 0.2 + k * 0.08, 0.05] for k in range(10)]
+    sph += [[x, 0.0, 0.52, 0.05] for x in (0.08, 0.16, 0.24)]
+    sph = np.array(sph)
+    pts = []
+    for c in sph:
+        u = rng.normal(size=(400, 3))
+        u /= np.linalg.norm(u, axis=1)[:, None]
+        u = u[(u @ (np.asarray(cam) - c[:3])) > 0.0]
+        pts.append(c[:3] + c[3] * u)
+    return sph, pts
+
+
+def test_register_refuses_an_ambiguous_periodic_chain():
+    """With only the straight run's middle band visible, candidates one
+    period apart tie EXACTLY: argmax used to pick one at random and the
+    fine stage polished the wrong period into a tight all-gates-green
+    fit 0.08 m off. It must refuse instead — and solve again once the
+    period-pinning features (elbow, ends) are in view, the remedy the
+    registrar's reason string tells the operator to apply."""
+    from rammp_curobo.perception import register_points_to_spheres
+
+    rng = np.random.default_rng(9)
+    cam = [0.0, 0.7, 0.55]
+    sph, per = _sphere_chain_arm(rng, cam)
+    delta = np.array([0.0, 0.0, 0.04])
+    mid = np.vstack(per[2:8]) + delta            # elbow and ends occluded
+    mid += rng.normal(scale=0.002, size=mid.shape)
+    assert register_points_to_spheres(mid, sph, cam_origin=cam) is None
+    full = np.vstack(per) + delta                # everything visible
+    full += rng.normal(scale=0.002, size=full.shape)
+    out = register_points_to_spheres(full, sph, cam_origin=cam)
+    assert out is not None
+    assert np.linalg.norm(out[0] + delta) < 0.005, out[0]
+
+
+def test_register_survives_an_obstacle_touching_the_arm():
+    # a blob centred 0.08 m off the forward-run axis, spanning to the
+    # arm SURFACE: the shrinking-gate trim must shed it, not fit it
+    from rammp_curobo.perception import register_points_to_spheres
+
+    rng = np.random.default_rng(13)
+    cam = [0.08, 0.70, 0.30]
+    sph, true_pts = _synthetic_arm(rng, cam)
+    delta = np.array([0.05, -0.07, 0.03])
+    blob = np.array([0.35, 0.08, 0.5]) + rng.uniform(-0.05, 0.05, size=(600, 3))
+    seen = np.vstack([true_pts, blob]) + delta
+    seen += rng.normal(scale=0.003, size=seen.shape)
+    out = register_points_to_spheres(seen, sph, cam_origin=cam)
+    assert out is not None
+    assert np.linalg.norm(out[0] + delta) < 0.008, (out[0], delta)
+
+
+def test_self_registrar_rejects_a_loose_fit():
+    """Converged-but-noisy must report 'fit rejected', not shift the
+    world. The shrinking ICP gate truncates residuals near 0.009 m, so
+    noise alone can never trip the stock max_rms=0.02 — the gate is
+    exercised through a tighter ctor value."""
+    from rammp_curobo.perception import SelfRegistrar
+
+    rng = np.random.default_rng(21)
+    cam = [0.08, 0.70, 0.30]
+    sph, true_pts = _synthetic_arm(rng, cam)
+    reg = SelfRegistrar(frames=2, max_rms=0.006)
+    assert reg.feed(true_pts + rng.normal(scale=0.02, size=true_pts.shape),
+                    sph, cam) is None
+    out = reg.feed(true_pts + rng.normal(scale=0.02, size=true_pts.shape),
+                   sph, cam)
+    assert out is not None and not out["ok"]
+    assert out["used"] >= reg.min_points
+    assert out["rms"] > reg.max_rms
+    assert "fit rejected" in out["reason"]
+
+
+def test_self_registrar_deferred_solve_round_trip():
+    from rammp_curobo.perception import SelfRegistrar
+
+    rng = np.random.default_rng(5)
+    cam = [0.08, 0.70, 0.30]
+    sph, true_pts = _synthetic_arm(rng, cam)
+    delta = np.array([0.03, -0.05, 0.02])
+    seen = true_pts + delta
+    reg = SelfRegistrar(frames=2, solve_inline=False)
+    assert reg.feed(seen, sph, cam) is None
+    out = reg.feed(seen, sph, cam)
+    assert set(out) == {"pending"}               # buffer full: solve deferred
+    assert reg.feed(seen, sph, cam) is None      # parked while pending
+    assert not reg.done
+    res = reg.complete(out["pending"])
+    assert set(res) == {"ok", "shift", "used", "rms", "reason", "tries", "final"}
+    assert res["ok"] and res["final"] and res["tries"] == 1
+    assert np.linalg.norm(res["shift"] + delta) < 0.005
+    assert reg.done and reg.result is res
+    assert reg.feed(seen, sph, cam) is None      # done: silent thereafter
+
+
+def test_load_self_model_returns_buffer_and_defaults_to_zero(tmp_path):
+    from rammp_curobo.perception import load_self_model
+
+    body = "spheres:\n  base_link:\n  - [0.0, 0.0, 0.05, 0.06]\n"
+    new = tmp_path / "self_new.yaml"
+    new.write_text("buffer: 0.005\n" + body)
+    model, buf = load_self_model(str(new))
+    assert buf == 0.005
+    assert np.allclose(model["base_link"], [[0.0, 0.0, 0.05, 0.06]])
+    old = tmp_path / "self_old.yaml"             # pre-buffer schema
+    old.write_text(body)
+    model, buf = load_self_model(str(old))
+    assert buf == 0.0 and model["base_link"].shape == (1, 4)

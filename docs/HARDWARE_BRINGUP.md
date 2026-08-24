@@ -492,9 +492,12 @@ and prints, and nothing moves.
   and the joints they land on are remembered; every later stroke plans
   to those JOINTS, so cuRobo's IK cannot pick the other elbow/wrist
   family for the same pose and connect them with a half-turn.
-- **`max_joint_span_deg`** (default 120): a plan in which one joint
-  travels more than that is a contortion for a sweep stroke and is
-  refused and re-planned. Every plan logs its per-joint spans.
+- **`max_joint_span_deg`** (default 120): a plan in which one joint's
+  travel EXCEEDS its direct end-to-start move by more than that is a
+  contortion and is refused and re-planned. (Excess, not absolute span:
+  a long first approach from a far pose is direct and legitimate; the
+  bench contortion swept the shoulder 193 deg on a near-zero net move.)
+  Every plan logs its per-joint spans.
 - The core planner refuses any plan with a joint span over 270 deg
   (`WINDING`) regardless of caller.
 
@@ -506,7 +509,8 @@ and prints, and nothing moves.
 - **Hold the prop still.** A voxel needs `occupied_at` confirmations, so
   something waved quickly may never confirm. Keep it above the `min_z`
   crop (not resting on the bench) and *ahead* of the arm — anything
-  within `self_radius` of a link is erased as part of the arm.
+  within (sphere radius + the `self_radius` margin) of the arm's
+  collision-sphere model is erased as part of the arm.
 - **Obstacles can linger.** Decay only forgets a voxel the camera can
   prove it sees through, so a withdrawn prop can persist while the arm
   occludes that spot. Call `~/set_ignore_region` to purge if it sticks.

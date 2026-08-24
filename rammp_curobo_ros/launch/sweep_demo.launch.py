@@ -11,9 +11,9 @@ the Orbbec driver — start those first, in their own terminals:
     ros2 launch orbbec_camera gemini_330_series.launch.py
 
 Perception defaults here are the REACTIVE ones, not the cameras node's:
-5 Hz with occupied_at 2 confirms an obstacle in ~0.4 s instead of ~1.5 s,
-and self_radius is opened up to cover the camera-extrinsic residual plus
-TF/depth skew while the arm is sweeping.
+5 Hz with occupied_at 2 confirms an obstacle in ~0.4 s instead of ~1.5 s.
+self_radius stays at the node's 0.08 m margin — startup registration
+(auto_register) absorbs the camera-extrinsic error.
 """
 
 from launch import LaunchDescription

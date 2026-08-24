@@ -83,20 +83,24 @@ def robot_mask(points, link_pts, radius):
 
 
 def load_self_model(path):
-    """{link: (k,4) array of [x,y,z,r] in that LINK's frame} from YAML.
+    """-> ({link: (k,4) [x,y,z,r] in that LINK's frame}, buffer_m) from YAML.
 
     The arm's own collision geometry — the same spheres cuRobo plans
-    against — keyed by the TF frame each set rides on. Baked by
+    against — keyed by the TF frame each set rides on. Radii are RAW
+    (the physical surface); the mask inflation lives in the top-level
+    `buffer` key (0.0 for pre-buffer files, which stored raw radii too)
+    so each consumer picks its own margin. Baked by
     scripts/bake_self_model.py; never hand-edit.
     """
     import yaml
 
     with open(path) as f:
         raw = yaml.safe_load(f)
-    return {
+    model = {
         str(link): np.asarray(rows, dtype=float).reshape(-1, 4)
         for link, rows in raw["spheres"].items()
     }
+    return model, float(raw.get("buffer", 0.0))
 
 
 def self_model_spheres(model, link_tf):
@@ -195,23 +199,38 @@ def register_points_to_spheres(points, spheres, cam_origin=None, search=0.15,
 
     # --- coarse grid, on a subsample, two resolutions
     rng = np.random.default_rng(0)
-    sub = pts if len(pts) <= 1500 else pts[rng.choice(len(pts), 1500, replace=False)]
+    sub = pts if len(pts) <= 600 else pts[rng.choice(len(pts), 600, replace=False)]
     best = np.zeros(3)
-    for span, step in ((search, 0.03), (0.045, 0.01)):
+    for level, (span, step) in enumerate(((search, 0.03), (0.045, 0.01))):
         axis = np.arange(-span, span + 1e-9, step)
         cands = best + np.stack(np.meshgrid(axis, axis, axis, indexing="ij"), -1).reshape(-1, 3)
         scores = np.empty(len(cands))
+        hits = np.empty(len(cands))
         for k, t in enumerate(cands):
             d, _n, ok = _surface_terms(sub + t, sph, None if cam is None else cam + t)
             hit = ok & (np.abs(d) < inlier)
-            scores[k] = hit.sum() - 0.25 * np.abs(d[ok]).clip(0, inlier).sum() / inlier
-        best = cands[int(np.argmax(scores))]
+            hits[k] = hit.sum()
+            scores[k] = hits[k] - 0.25 * np.abs(d[ok]).clip(0, inlier).sum() / inlier
+        win = int(np.argmax(scores))
+        if level == 0 and hits[win] > 0.05 * len(sub):
+            # quasi-periodic geometry (a straight sphere chain with its
+            # ends hidden) ties EXACTLY one period apart; argmax would
+            # pick a period at random and the fine stage would polish the
+            # WRONG one into a fit every gate accepts. Refuse to guess.
+            # Ties compare raw inlier COUNTS, not the penalized score: the
+            # distance penalty is grid-sensitive, and an alias landing
+            # exactly on a grid node out-scores a truth between nodes.
+            rival = np.linalg.norm(cands - cands[win], axis=1) >= 0.06
+            if (hits[rival] >= 0.95 * hits[win]).any():
+                return None
+        best = cands[win]
 
-    # --- fine: ICP from the coarse winner
+    # --- fine: ICP from the coarse winner (capped: each sweep is O(N*M))
+    fine = pts if len(pts) <= 8000 else pts[rng.choice(len(pts), 8000, replace=False)]
     shift = best.copy()
     used, rms, g = 0, float("inf"), float(gate)
     for _ in range(int(iters)):
-        p = pts + shift
+        p = fine + shift
         d, n, ok = _surface_terms(p, sph, None if cam is None else cam + shift)
         sel = ok & (np.abs(d) < g)
         used = int(sel.sum())
@@ -229,6 +248,10 @@ def register_points_to_spheres(points, spheres, cam_origin=None, search=0.15,
             g = max(g * 0.6, 0.03)
         if np.linalg.norm(step) < 1e-4:
             break
+    # a planar/cylindrical patch pins only its normal direction — the
+    # tangential axes drift freely, so a tight rms proves nothing there
+    if used and float(np.linalg.eigvalsh(ns.T @ ns)[0]) / len(ns) < 0.03:
+        return None
     return shift, used, rms
 
 
@@ -243,24 +266,32 @@ class SelfRegistrar:
     returns an outcome dict; the gates make a bad fit report itself
     rather than shift the world: enough arm points, a tight residual, a
     plausible magnitude. After `attempts` failed solves it gives up.
+
+    With solve_inline=False the multi-second solve is handed back to the
+    caller instead of running inside feed(): a full buffer makes feed()
+    return {"pending": payload}, further frames park (feed() -> None)
+    until complete(payload) runs the solve — same outcome dict, same
+    attempts/done bookkeeping — on whatever thread the caller likes.
     """
 
     def __init__(self, frames=8, still_m=0.01, min_points=300, max_rms=0.02,
-                 max_shift=0.20, attempts=3):
+                 max_shift=0.20, attempts=3, solve_inline=True):
         self.frames = int(frames)
         self.still_m = float(still_m)
         self.min_points = int(min_points)
         self.max_rms = float(max_rms)
         self.max_shift = float(max_shift)
         self.attempts = int(attempts)
+        self.solve_inline = bool(solve_inline)
         self._buf = []
         self._last = None
+        self._pending = False
         self._tries = 0
         self.done = False
         self.result = None
 
     def feed(self, points, spheres, cam_origin=None):
-        if self.done:
+        if self.done or self._pending:
             return None
         sph = np.asarray(spheres, dtype=float)
         if self._last is not None and (
@@ -275,11 +306,26 @@ class SelfRegistrar:
         bufs = [b for b in self._buf if len(b)]
         pts = np.vstack(bufs) if bufs else np.empty((0, 3))
         self._buf = []
+        if not self.solve_inline:
+            self._pending = True
+            return {"pending": (pts, sph, cam_origin)}
+        return self._solve(pts, sph, cam_origin)
+
+    def complete(self, payload):
+        """Run a solve deferred by solve_inline=False: pass the value under
+        feed()'s "pending" key; returns the outcome dict an inline feed()
+        would have returned."""
+        self._pending = False
+        pts, sph, cam_origin = payload
+        return self._solve(pts, sph, cam_origin)
+
+    def _solve(self, pts, sph, cam_origin):
         self._tries += 1
         out = register_points_to_spheres(pts, sph, cam_origin=cam_origin,
                                          min_points=self.min_points)
         if out is None:
-            reason = "too few points near the arm (is it in view?)"
+            reason = ("too few points near the arm, or ambiguous geometry "
+                      "— show the elbow/gripper to the camera")
             shift, used, rms = None, 0, float("inf")
         else:
             shift, used, rms = out

@@ -79,3 +79,17 @@ def test_sphere_self_model_is_preferred_over_capsules():
     big = np.array([[0.0, 0.0, 1.0, 3.0]])
     assert len(_run(depth, intr, link_pts=None, self_radius=0.0,
                     self_spheres=big, self_margin=0.0)) == 0
+
+
+def test_sphere_margin_is_applied_exactly():
+    """The node folds the model YAML's planning buffer into self_margin;
+    the pure function must apply the margin exactly as given — a point
+    just inside radius+margin is erased, just outside survives."""
+    depth = np.full((1, 1), 0.5, dtype=np.float32)
+    intr = dict(fx=100.0, fy=100.0, cx=0.0, cy=0.0)
+    # the single deprojected point lands at (0, 0, 0.5) in base_link
+    radius, margin = 0.10, 0.05
+    inside = np.array([[0.0, 0.0, 0.5 - (radius + margin) + 0.01, radius]])
+    outside = np.array([[0.0, 0.0, 0.5 - (radius + margin) - 0.01, radius]])
+    assert len(_run(depth, intr, self_spheres=inside, self_margin=margin)) == 0
+    assert len(_run(depth, intr, self_spheres=outside, self_margin=margin)) == 1

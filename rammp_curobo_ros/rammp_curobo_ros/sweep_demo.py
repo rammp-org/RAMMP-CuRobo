@@ -51,6 +51,7 @@ from rammp_curobo_ros.conversions import msg_arrays
 from rammp_curobo_ros.tour_demo import HOME
 
 STILL_RAD_S = 0.02          # below this the arm counts as stopped
+BLIND_CHECKS = 3            # consecutive dropped watchdog checks = blocked
 
 
 def joint_spans_deg(traj_msg):
@@ -60,12 +61,62 @@ def joint_spans_deg(traj_msg):
     return np.degrees(pos.max(axis=0) - pos.min(axis=0))
 
 
+def span_excess_deg(traj_msg):
+    """Per-joint travel EXCESS (deg) over the direct start->end move.
+
+    An absolute span cannot tell a contortion from a legitimate long
+    approach (sim starts at q=0, far from the pinned endpoints): a direct
+    move of any length has excess ~0, while the bench contortion swept j2
+    193 deg on a ~0 deg net move — excess ~190."""
+    pos, _vel, _t = msg_arrays(traj_msg)
+    spans = np.degrees(pos.max(axis=0) - pos.min(axis=0))
+    return spans - np.degrees(np.abs(pos[-1] - pos[0]))
+
+
 def traj_index(times, elapsed_s, speed_scale):
     """Which trajectory point the arm has reached after `elapsed_s` of wall
     clock. The executor dilates time by 1/speed_scale, so trajectory time
     advances at speed_scale x wall clock — get this backwards and the
     watchdog checks a span the arm has already driven through."""
     return int(np.searchsorted(times, elapsed_s * float(speed_scale)))
+
+
+def progress_index(times, progress):
+    """Trajectory index from the executor's progress feedback. Progress is
+    the fraction of scheduled SCALED time; scaling is a uniform dilation,
+    so it is the same fraction of unscaled trajectory time."""
+    return int(np.searchsorted(times, float(progress) * float(times[-1])))
+
+
+def watchdog_index(times, progress, elapsed_s, speed_scale):
+    """Where the collision check starts.
+
+    The wall clock starts at goal ACCEPTANCE but motion starts after the
+    executor's validation handshake, so a clock-only estimate runs AHEAD
+    of the arm — and the unchecked gap is exactly where the arm is.
+    Executor progress feedback is ground truth once it arrives; until
+    then use the clock, clamped to index 0 for the first second so the
+    handshake lag cannot skip the span the arm actually occupies."""
+    if progress is not None:
+        return progress_index(times, progress)
+    if elapsed_s < 1.0:
+        return 0
+    return traj_index(times, elapsed_s, speed_scale)
+
+
+def blind_update(count, verdict):
+    """Consecutive dropped watchdog checks -> (new_count, action|None).
+
+    One dropped check is a DDS hiccup, not evidence (tripped() ignores
+    it); a STREAK means the arm is driving blind. Warn on the first drop
+    and treat BLIND_CHECKS in a row as blocked — failing open forever
+    would drive through anything once the check service dies."""
+    if verdict is not None:
+        return 0, None
+    count += 1
+    if count >= BLIND_CHECKS:
+        return count, "blocked"
+    return count, "warn" if count == 1 else None
 
 
 class SweepDemo(Node):
@@ -84,6 +135,10 @@ class SweepDemo(Node):
         self.sweep_deg = float(p("sweep_deg", 30.0).value)
         self.pose_a = [float(v) for v in p("pose_a", [0.0, 0.0, 0.0]).value]
         self.pose_b = [float(v) for v in p("pose_b", [0.0, 0.0, 0.0]).value]
+        if any(self.pose_a) != any(self.pose_b):
+            # silently yaw-sweeping instead would look like a bug to the
+            # operator who set one pose and mistyped the other
+            raise SystemExit("pose mode needs BOTH pose_a and pose_b — got only one")
         self.pose_mode = any(self.pose_a) and any(self.pose_b)
         # pose mode only: wrist flat, tool along +x. Keep waypoints
         # outside ~0.5 m radius: tool_frame sits 0.12 m ahead of the
@@ -103,10 +158,12 @@ class SweepDemo(Node):
         # outright.
         self.margin = float(p("clearance_margin", 0.0).value)
         self.hold_retry_s = float(p("hold_retry_s", 0.5).value)
-        # A sweep stroke never needs any single joint to move more than
-        # this. Plans that do are contortions — the shoulder arcing over
-        # the top (j2 193 deg on the bench), the wrist rolling half a turn
-        # — and are refused and re-planned rather than executed.
+        # Max joint travel EXCESS over the direct start->end move. The
+        # first stroke legitimately travels far (sim starts at q=0, the
+        # endpoints are pinned in the HOME family), so an ABSOLUTE span
+        # cap would refuse every approach and retry the identical plan
+        # forever. Contortions are all excess: the shoulder arcing over
+        # the top was j2 sweeping 193 deg on a ~0 deg net move.
         self.max_span_deg = float(p("max_joint_span_deg", 120.0).value)
         self.settle_timeout = float(p("settle_timeout_s", 3.0).value)
         self.execute = bool(p("execute", False).value)
@@ -245,10 +302,11 @@ class SweepDemo(Node):
         """Plan to waypoint idx (0 = A, 1 = B). -> (trajectory|None, message).
 
         First visit: plan to the POSE and remember the joints it landed
-        on. After that: plan to those JOINTS. Either way, a plan whose
-        largest joint travel exceeds max_joint_span_deg is a contortion
-        and is refused — the caller waits and tries again (cuRobo
-        re-seeds, and the world may have moved on).
+        on. After that: plan to those JOINTS. Either way, a plan in which
+        any joint travels more than max_joint_span_deg BEYOND its direct
+        start->end move is a contortion and is refused — the caller waits
+        and tries again (cuRobo re-seeds, and the world may have moved
+        on).
         """
         pinned = self._pinned[idx]
         if pinned is not None:
@@ -273,17 +331,21 @@ class SweepDemo(Node):
                 return None, message
         traj = res.trajectory
         spans = joint_spans_deg(traj)
-        worst = int(np.argmax(spans))
+        excess = span_excess_deg(traj)
+        worst = int(np.argmax(excess))
         self.get_logger().info(
             "plan: %d pts, joint spans %s deg%s"
             % (len(traj.points),
                " ".join("j%d=%.0f" % (i + 1, d) for i, d in enumerate(spans)),
-               "   <-- big" if spans.max() > self.max_span_deg else "")
+               "   <-- contorted" if excess[worst] > self.max_span_deg else "")
         )
-        if spans.max() > self.max_span_deg:
-            return None, ("contorted: joint_%d sweeps %.0f deg (limit %.0f) — "
-                          "refused, replanning" % (worst + 1, spans[worst],
-                                                   self.max_span_deg))
+        if excess[worst] > self.max_span_deg:
+            return None, ("contorted: joint_%d sweeps %.0f deg on a %.0f deg "
+                          "net move (excess %.0f over limit %.0f) — refused, "
+                          "replanning"
+                          % (worst + 1, spans[worst],
+                             spans[worst] - excess[worst], excess[worst],
+                             self.max_span_deg))
         if pinned is None:
             self._pinned[idx] = [float(v) for v in traj.points[-1].positions]
         return traj, message
@@ -319,7 +381,9 @@ class SweepDemo(Node):
 
     # ----------------------------------------------------------------- modes
     def watch(self, traj):
-        """Dry run: poll the watchdog over one stroke's worth of time."""
+        """Dry run: poll the watchdog over one stroke's worth of time.
+        -> done|blocked, so run() keeps the same waypoint books as
+        execute mode instead of advancing past a blocked stroke."""
         _pos, _vel, times = msg_arrays(traj)
         end = time.monotonic() + float(times[-1]) / self.speed_scale
         last = None
@@ -331,8 +395,9 @@ class SweepDemo(Node):
                     self.get_logger().info("dry run: %s — %s" % (state, v.message))
                     last = state
                 if state == "BLOCKED":
-                    return
+                    return "blocked"
             self._nap(1.0 / self.watchdog_hz)
+        return "done"
 
     def drive(self, traj, use_margin=True):
         """Execute one stroke under the watchdog. -> arrived|blocked|<error>."""
@@ -340,7 +405,12 @@ class SweepDemo(Node):
         goal = ExecuteTrajectory.Goal()
         goal.trajectory = traj
         goal.speed_scale = self.speed_scale
-        sent = self.exec_cli.send_goal_async(goal)
+        progress = [None]     # latest executor feedback (executor thread writes)
+
+        def _feedback(msg):
+            progress[0] = float(msg.feedback.progress)
+
+        sent = self.exec_cli.send_goal_async(goal, feedback_callback=_feedback)
         send = self._await(sent, 10.0)
         if send is None:
             # We stopped waiting — but the server may have accepted it and
@@ -355,18 +425,48 @@ class SweepDemo(Node):
                 send.cancel_goal_async()
                 self.wait_until_still()
                 self._active = None
+            elif send is None:
+                # still pending: reap whatever the future eventually
+                # yields, or an accepted goal would drive the arm with
+                # nobody watching it
+                def _reap(fut):
+                    try:
+                        handle = fut.result()
+                    except Exception:
+                        return
+                    if handle is not None and handle.accepted:
+                        self.get_logger().warning(
+                            "orphaned execution goal accepted after we "
+                            "gave up — cancelling it"
+                        )
+                        handle.cancel_goal_async()
+
+                sent.add_done_callback(_reap)
             return "gave up waiting for the execution goal"
         if not send.accepted:
             return "execution goal rejected (is execute:=true on the planner?)"
         self._active = send
         result_future = send.get_result_async()
         t0 = time.monotonic()
+        blind = 0
         try:
             while not result_future.done():
                 if self.stop or not rclpy.ok():
                     return self._cancel(send, result_future, "stopped")
-                idx = traj_index(times, time.monotonic() - t0, self.speed_scale)
-                if self.tripped(self.check(traj, idx), use_margin):
+                idx = watchdog_index(
+                    times, progress[0], time.monotonic() - t0, self.speed_scale
+                )
+                v = self.check(traj, idx)
+                blind, action = blind_update(blind, v)
+                if action == "warn":
+                    self.report("warning", "watchdog check dropped — driving blind")
+                elif action == "blocked":
+                    self.get_logger().warning(
+                        "watchdog: %d consecutive checks dropped — "
+                        "treating as blocked" % blind
+                    )
+                    return self._cancel(send, result_future, "blocked")
+                if self.tripped(v, use_margin):
                     self.get_logger().warning("watchdog: path blocked ahead")
                     return self._cancel(send, result_future, "blocked")
                 self._nap(1.0 / self.watchdog_hz)
@@ -417,8 +517,10 @@ class SweepDemo(Node):
                 self._nap(self.hold_retry_s)
                 continue
             if not self.execute:
-                self.watch(traj)
-                i += 1
+                if self.watch(traj) == "done":
+                    i += 1
+                else:
+                    self.get_logger().info("replanning around it")
                 continue
             # A margin wider than what this plan actually achieves would
             # trip the instant the stroke starts, cancel, replan, and trip

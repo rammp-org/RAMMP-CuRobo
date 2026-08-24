@@ -43,8 +43,13 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image, JointState
 from visualization_msgs.msg import MarkerArray
 
-from rammp_curobo.perception import SelfRegistrar, quat_to_mat
-from rammp_curobo_ros.cameras import cropped_points, load_camera_config
+from rammp_curobo.config import resolve_config
+from rammp_curobo.perception import SelfRegistrar, load_self_model, quat_to_mat
+from rammp_curobo_ros.cameras import (
+    REGISTER_DEFAULTS,
+    cropped_points,
+    load_camera_config,
+)
 
 
 def main():
@@ -64,6 +69,10 @@ def main():
     print("loading kinematics (%s)..." % args.config)
     planner = CuRoboPlanner.from_config(args.config, planner_overrides={"warmup": False})
     names = list(planner.joint_names)
+    # depth sees the PHYSICAL surface, but link_spheres radii carry cuRobo's
+    # load-time collision_sphere_buffer — register against raw radii or the
+    # fit pulls the mount ~buffer toward the camera every run
+    _, self_buffer = load_self_model(resolve_config("self_model_gen3_2f85.yaml"))
     cfg = load_camera_config(args.camera_config)
     if cfg.get("parent_frame") != "base_link":
         sys.exit("%s is not a fixed camera (parent_frame base_link) — registration "
@@ -114,7 +123,7 @@ def main():
     seen, detail, worst_gap = collections.Counter(), {}, {}
     counts = collections.Counter()
     ticks, last = 0, -1.0
-    reg = SelfRegistrar(frames=10)
+    reg = SelfRegistrar(frames=REGISTER_DEFAULTS["frames"])
     reg_out, frames_fed = None, 0
     end = time.monotonic() + args.seconds
     while time.monotonic() < end and rclpy.ok():
@@ -125,12 +134,18 @@ def main():
         spheres = spheres[spheres[:, 3] > 0.0]
         # --- 2. camera registration off the raw frames
         if state["depth"] is not None and state["info"] is not None and not reg.done:
+            # same crop the cameras node registers on — this tool writes the
+            # config that node then uses, so it must measure the same cloud
+            rd = REGISTER_DEFAULTS
             pts = cropped_points(state["depth"], state["info"], rot, mount_xyz,
-                                 2, float(cfg.get("min_range", 0.2)),
-                                 float(cfg.get("max_range", 2.0)), 1.2, -0.10, 1.3)
+                                 rd["stride"], float(cfg.get("min_range", 0.2)),
+                                 float(cfg.get("max_range", 2.0)),
+                                 rd["xy_extent"], rd["min_z"], rd["max_z"])
             state["depth"] = None
             frames_fed += 1
-            out = reg.feed(pts, spheres, mount_xyz)
+            reg_sph = spheres.copy()
+            reg_sph[:, 3] -= self_buffer
+            out = reg.feed(pts, reg_sph, mount_xyz)
             if out is not None:
                 reg_out = out
         # --- 1. the map
@@ -154,6 +169,9 @@ def main():
 
     node.destroy_node()
     rclpy.shutdown()
+
+    if state["q"] is None:
+        sys.exit("never saw /joint_states — is the arm bringup running?")
 
     # ------------------------------------------------------------- report 1
     if ticks:
@@ -190,7 +208,8 @@ def main():
         print("  no depth frames on %s — is the camera driver running?" % cfg["depth_topic"])
         return
     if reg_out is None:
-        print("  %d frames fed but the arm never held still for 10 in a row" % frames_fed)
+        print("  %d frames fed but the arm never held still for %d in a row"
+              % (frames_fed, reg.frames))
         return
     if not reg_out["ok"]:
         print("  could not register: %s" % reg_out["reason"])
@@ -214,14 +233,15 @@ def main():
     out_lines, done = [], False
     for ln in text.splitlines():
         if ln.startswith("mount_xyz:") and not done:
+            # append-only history: prior patch notes stay, new note goes on top
             out_lines.append("# registered off the arm by perception_debug --apply")
             out_lines.append("# (was %s)" % ln.strip())
             out_lines.append("mount_xyz: [%.5f, %.5f, %.5f]" % tuple(new))
             done = True
-        elif ln.startswith("# registered off the arm") or ln.startswith("# (was mount_xyz"):
-            continue                                 # drop a previous patch note
         else:
             out_lines.append(ln)
+    if not done:
+        sys.exit("mount_xyz: line not found in %s — nothing applied" % path)
     with open(path, "w") as f:
         f.write("\n".join(out_lines) + "\n")
     print("  APPLIED to %s — restart the cameras node" % path)
