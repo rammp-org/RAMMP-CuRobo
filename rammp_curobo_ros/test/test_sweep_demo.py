@@ -196,3 +196,53 @@ def test_probe_msg_matches_the_checker_convention():
     assert list(msg.points[0].positions) == [0.1] * 7
     # msg_arrays needs a positive, monotonic time_from_start
     assert msg.points[0].time_from_start.nanosec > 0
+
+
+def test_nearest_free_yaw_finds_the_closest_clear_point():
+    from rammp_curobo_ros.sweep_demo import nearest_free_yaw
+
+    step = np.radians(5.0)
+    # obstacle blocks yaws beyond +15 deg; sweep family spans -30..+30
+    got = nearest_free_yaw(np.radians(30), np.radians(-30),
+                           lambda y: y < np.radians(15.0) + 1e-9, step=step)
+    assert got is not None
+    assert abs(got - np.radians(15.0)) < step + 1e-9      # closest clear
+    assert got < np.radians(30)                            # short of target
+    # mirrored direction
+    got = nearest_free_yaw(np.radians(-30), np.radians(30),
+                           lambda y: y > np.radians(-12.0), step=step)
+    assert got is not None and got > np.radians(-30) and got < 0
+
+
+def test_nearest_free_yaw_searches_past_a_parked_arm():
+    # after a watchdog cancel the arm stands right beside the obstacle;
+    # the frontier BEHIND it must still be found (the bench failure)
+    from rammp_curobo_ros.sweep_demo import nearest_free_yaw
+
+    got = nearest_free_yaw(np.radians(-30), np.radians(30),
+                           lambda y: y > np.radians(-2.0),
+                           step=np.radians(5.0))
+    assert got is not None and abs(got) < np.radians(5.0) + 1e-9
+
+
+def test_nearest_free_yaw_holds_when_nothing_meaningful_is_free():
+    from rammp_curobo_ros.sweep_demo import nearest_free_yaw
+
+    assert nearest_free_yaw(0.5, -0.5, lambda y: False) is None
+    # free only within min-stroke of the OTHER endpoint: no real stroke
+    assert nearest_free_yaw(0.5, -0.5, lambda y: y < -0.45) is None
+    # a sweep too small to shrink
+    assert nearest_free_yaw(0.05, 0.0, lambda y: True) is None
+
+
+def test_nearest_free_yaw_treats_dropped_checks_as_blocked():
+    from rammp_curobo_ros.sweep_demo import nearest_free_yaw
+
+    calls = []
+
+    def flaky(y):
+        calls.append(y)
+        return None if len(calls) < 3 else True
+
+    got = nearest_free_yaw(np.radians(30), np.radians(-30), flaky)
+    assert got is not None and len(calls) == 3

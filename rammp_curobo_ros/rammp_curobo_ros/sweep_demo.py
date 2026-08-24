@@ -15,7 +15,10 @@ Three outcomes, and the third is the one a hand actually triggers:
 
   clear    keep going.
   blocked  cancel (controller stops and holds), wait for the arm to be
-           still, replan from there — cuRobo routes over or around.
+           still, replan from there — cuRobo routes over or around. An
+           obstacle ON an endpoint shrinks the stroke instead: the arm
+           sweeps to the closest clear yaw short of it and keeps
+           re-trying the full stroke every cycle.
   HOLD     the planner refuses outright with INVALID_START_STATE_WORLD_
            COLLISION: the obstacle overlaps the arm's own body, so there
            is no path to plan. Measured on this arm, that begins around
@@ -54,6 +57,38 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from rammp_curobo_ros.tour_demo import HOME
 
 JOINT_NAMES = ["joint_%d" % i for i in range(1, 8)]
+PARTIAL_STEP = np.radians(5.0)      # yaw scan resolution for partial strokes
+MIN_PARTIAL = np.radians(6.0)       # a frontier this close to the resting end
+                                    # leaves no meaningful stroke: hold instead
+
+
+def nearest_free_yaw(target, other, is_free, step=PARTIAL_STEP,
+                     min_stroke=MIN_PARTIAL):
+    """The yaw closest to a BLOCKED `target` endpoint that is still clear.
+
+    Scans from the target back across the WHOLE sweep family toward the
+    `other` endpoint — not merely to wherever the arm happens to stand:
+    after a watchdog cancel the arm is parked right beside the obstacle,
+    and the nearest clear yaw is often BEHIND it (a short retreat is a
+    perfectly good stroke; the ping-pong then runs other <-> frontier,
+    re-probing the true endpoint every cycle). Stops min_stroke short of
+    `other`: a frontier that close means no meaningful stroke toward the
+    blocked side exists at all. `is_free` answering None (a dropped
+    check) skips that candidate — never plan into space the checker
+    could not vouch for.
+    """
+    span = other - target
+    if abs(span) <= min_stroke:
+        return None
+    n = int(abs(span) / step)
+    for k in range(1, n + 1):
+        yaw = target + np.sign(span) * k * step
+        if abs(other - yaw) <= min_stroke:
+            return None
+        ok = is_free(yaw)
+        if ok is not None and bool(ok):
+            return float(yaw)
+    return None
 
 STILL_RAD_S = 0.02          # below this the arm counts as stopped
 BLIND_CHECKS = 3            # consecutive dropped watchdog checks = blocked
@@ -322,12 +357,23 @@ class SweepDemo(Node):
             # and the log fills with IK_FAIL. Ask the state checker first:
             # one point, ~40 ms, and a calm HOLD instead.
             verdict = self.check(self._probe_msg(pinned), 0)
+            goal_joints = pinned
             if verdict is not None and not verdict.collision_free:
-                return None, ("endpoint blocked — an obstacle occupies the "
-                              "sweep's far end; holding until it clears "
-                              "(watch :8766)")
+                partial = self._closest_clear(idx)
+                if partial is None:
+                    return None, ("endpoint blocked — an obstacle occupies "
+                                  "the sweep's far end and nothing short of "
+                                  "it is clear; holding (watch :8766)")
+                goal_joints = list(pinned)
+                goal_joints[0] = partial
+                self.report(
+                    "warning",
+                    "endpoint blocked — sweeping to the closest clear point, "
+                    "%+.0f of %+.0f deg" % (np.degrees(partial),
+                                            np.degrees(pinned[0])),
+                )
             goal = PlanToJoints.Goal()
-            goal.target_joints = [float(v) for v in pinned]
+            goal.target_joints = [float(v) for v in goal_joints]
             res, message = self._send(self.joint_cli, goal)
             if res is None or not res.success:
                 return None, message
@@ -365,6 +411,28 @@ class SweepDemo(Node):
         if pinned is None:
             self._pinned[idx] = [float(v) for v in traj.points[-1].positions]
         return traj, message
+
+    def _closest_clear(self, idx):
+        """Nearest clear yaw short of blocked endpoint idx, or None.
+
+        The whole sweep is home-with-a-different-base-yaw, so 'the
+        closest available point to the endpoint' is exactly the largest
+        yaw toward it whose configuration the state checker clears. The
+        TRUE endpoint stays pinned: every cycle re-probes it, so the arm
+        works the obstacle's edge and resumes the full sweep the moment
+        it clears. Pose mode has no yaw family — it keeps the plain hold.
+        """
+        if self.pose_mode:
+            return None
+
+        def is_free(yaw):
+            q = list(self._pinned[idx])
+            q[0] = float(yaw)
+            v = self.check(self._probe_msg(q), 0)
+            return None if v is None else bool(v.collision_free)
+
+        return nearest_free_yaw(self._pinned[idx][0],
+                                self._pinned[1 - idx][0], is_free)
 
     @staticmethod
     def _probe_msg(joints):

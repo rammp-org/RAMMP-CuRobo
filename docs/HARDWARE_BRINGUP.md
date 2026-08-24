@@ -309,6 +309,7 @@ gets in the way is planned around. Three outcomes, all deliberate:
 |---|---|
 | stroke completes | nothing in the corridor |
 | stroke is cancelled, arm arcs around | the watchdog found the remaining path blocked |
+| stroke SHRINKS toward one end | an obstacle occupies that endpoint: the arm sweeps to the closest clear yaw short of it and re-tries the full stroke every cycle |
 | arm stops and waits — **HOLD** | the obstacle overlaps the arm's own body, so `INVALID_START_STATE_WORLD_COLLISION`: there is no path to plan. Measured on this arm, that begins around **15 cm**. Not a fault |
 
 **The watchdog is the safety-relevant part.** `validate_goal_msg` checks
