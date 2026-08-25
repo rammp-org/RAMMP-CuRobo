@@ -1,8 +1,10 @@
 # Plan a collision-free trajectory to a tool_frame pose in the base frame.
-# Planning only — nothing moves. Execute the result via ExecuteTrajectory.
+# Planning only — nothing moves, and this planner never touches the arm.
 geometry_msgs/Pose target
-# optional: plan from these joints instead of the live state (rad,
-# joint_1..7; empty = live). Enables pre-planning chained segments.
+# REQUIRED: the configuration the plan starts from (rad, joint_1..7).
+# The caller owns the arm and its state; supplying the measured q is what
+# keeps this planner decoupled from the robot. An empty or wrong-length
+# vector is rejected — there is no "look at /joint_states" fallback.
 float64[] start_joints
 ---
 bool success

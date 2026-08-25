@@ -27,7 +27,6 @@ PLANNER_DEFAULTS = {
         "joint_6",
         "joint_7",
     ],
-    "home_pose_rad": [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571],
     "planner": {
         "interpolation_dt": 0.02,
         "max_attempts": 8,

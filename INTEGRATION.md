@@ -13,18 +13,23 @@ executing it is your side's job.
 from rammp_curobo import CuRoboPlanner
 
 planner = CuRoboPlanner.from_config("gen3.yaml")   # ~20 s GPU init, keep it alive
-res = planner.plan_to_joints([0.2, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571])
+res = planner.plan_to_joints(q_goal, q_now)        # start is REQUIRED, not optional
 if res.success:                                     # res is a PlanResult
     hand_off(res.joint_traj)   # numpy: joint_names, positions (N,7), velocities, dt
 ```
 
-Also available: `planner.plan_to_pose(pos, quat)` (quat is **xyzw** by
-default — pass `quat_order='wxyz'` for cuRobo order),
+Also available: `planner.plan_to_pose(pos, quat, start)` (quat is **xyzw**
+by default — pass `quat_order='wxyz'` for cuRobo order),
 `planner.update_world(obstacles)` (list of dicts, a Scene, or a world YAML),
 `planner.fk(q)`, `planner.check_state_valid(q)`. Slow a plan down for
 execution with `res.joint_traj.scaled(0.25)` — exact time dilation, never
-faster than planned. `start=` defaults to the configured home pose; pass the
-arm's live joints for real use.
+faster than planned.
+
+`start` is a required positional argument on both plan calls. The planner
+does not know where the arm is, holds no default pose to fall back on, and
+will not guess — pass the arm's measured joints. `planner.retract_pose` is
+the IK seed read from the robot config; it is a planner parameter, not a
+home, and it is not a substitute for a measurement.
 
 Config is one YAML (`core/rammp_curobo/configs/gen3.yaml` — robot file,
 world file, planner knobs). Copy it next to your code and point
@@ -34,45 +39,50 @@ defaults. No cuRobo types cross the API.
 Requirements: the pinned GPU stack from the README (torch + cuRobo v0.7.8)
 and `pip install --user --no-build-isolation -e <repo>/core`.
 
-## Over ROS 2 (plan + execute on the arm)
+## Over ROS 2 (planning)
 
-Depend on `rammp_curobo_interfaces` (dependency-free rosidl package —
-mirrors `arm_interfaces` conventions). With the planner node running
-(`ros2 launch rammp_curobo_ros planner.launch.py execute:=true` — see the
-README for the sim/real bringup on the other side):
+Depend on `rammp_curobo_interfaces` (dependency-free rosidl package). With
+the planner node running (`ros2 launch rammp_curobo_ros planner.launch.py`):
 
 ```python
-from rammp_curobo_interfaces.action import PlanToJoints, ExecuteTrajectory
+from rammp_curobo_interfaces.action import PlanToJoints
 from rclpy.action import ActionClient
 
 plan_client = ActionClient(node, PlanToJoints, '/rammp_curobo/plan_to_joints')
-exec_client = ActionClient(node, ExecuteTrajectory, '/rammp_curobo/execute_trajectory')
 
-goal = PlanToJoints.Goal(target_joints=[0.2, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571])
+goal = PlanToJoints.Goal(
+    target_joints=[0.2, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571],
+    start_joints=measured_q,     # REQUIRED — you own the arm's state
+)
 plan = plan_client.send_goal(goal).result          # sync form; async works too
 if plan.success:
-    ex = ExecuteTrajectory.Goal(trajectory=plan.trajectory, speed_scale=0.25)
-    exec_client.send_goal(ex)                      # cancel this goal = abort+hold
+    execute(plan.trajectory)     # your controller, your gates, your e-stop
 ```
 
-The node re-validates every execution goal (limits, continuity, live
-start-state match) and refuses anything stale — plan again if the arm moved.
-`/rammp_curobo/plan_to_pose` takes a `geometry_msgs/Pose`;
-`/rammp_curobo/set_world` swaps the collision world;
-`/rammp_curobo/open_gripper` / `close_gripper` are `std_srvs/Trigger`.
+`start_joints` is **not optional**. This planner holds no `/joint_states`
+subscription and no view of any robot, so a goal without it is aborted with
+`"start_joints is required"`. Sending the arm's freshly measured `q` is also
+what makes the plan safe to run: its first point *is* where the arm is, so
+there is no stale-plan catch-up sweep to guard against.
 
-## Adopting into Demo-Software
+`/rammp_curobo/plan_to_pose` takes a `geometry_msgs/Pose`;
+`/rammp_curobo/set_world` swaps the collision world. That is the entire
+public surface — there is nothing here that can move an arm.
+
+## Adopting into a RAMMP module
 
 - Clone this repo into the workspace `src/` (or add as a submodule under
   `third_party/`); colcon picks up the two ament packages, the pip core
   installs once per machine (add to setup.sh alongside the other pip deps,
   rosdep-stub pattern like `python3-kortex-api`).
-- **Mutual exclusion:** execution drives ros2_kortex's
-  `joint_trajectory_controller` — `hardware/arm_driver` must NOT be running
-  at the same time (both own the arm at 192.168.1.10). Sequencing that
-  handover is a team decision, not something this repo enforces.
-- `ExecuteTrajectory` here has the same goal shape as
-  `arm_interfaces/ExecuteTrajectory` (a `trajectory_msgs/JointTrajectory`),
-  plus `speed_scale` — a future `arm_driver` integration could accept the
-  same trajectories, but note arm_driver currently discards trajectory
-  timing (0.5 s/waypoint), which defeats cuRobo's parameterization.
+- **The dependency arrow points one way.** Your package depends on
+  `rammp_curobo_interfaces`; this repo depends on nothing of yours. If you
+  find yourself adding your driver's IDL to `rammp_curobo_ros/package.xml`,
+  the design has gone wrong — see issue #6.
+- **No mutual-exclusion problem to solve.** This planner never claims the
+  arm, a `/controller_manager`, or a gripper, so it can run alongside any
+  driver. Exactly one thing should execute; that thing is not this.
+- On this bench the caller is **`kinova_arm_ros2`**: its `GoToEEPose` and
+  `GoToJointConfig` actions plan here, hand the trajectory to the supervisor
+  with a path tolerance, and own the arm end to end. Its `CuroboPlanClient`
+  is a worked reference for a well-behaved caller.

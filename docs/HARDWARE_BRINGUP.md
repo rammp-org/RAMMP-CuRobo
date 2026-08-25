@@ -3,9 +3,11 @@
 Follow this in order. **A human holds the physical e-stop from the moment
 the kortex bringup starts until the last motion ends. No exceptions.**
 
-The execution code path is byte-identical to the sim-verified one — same
-controller names, same action, same gates. What changes on hardware is the
-world model, the timing source, and the consequences.
+**This repo cannot move the arm.** It plans; something else executes. So
+this runbook covers the planning side of a hardware session — bench, world,
+network, and proving the plans are sane — and hands off to the arm owner
+(`kinova_arm_ros2`) for first motion and the abort drill. What changes on
+hardware is the world model, the timing source, and the consequences.
 
 ## 0. Coordination — who has the arm?
 
@@ -76,61 +78,53 @@ ros2 control list_controllers   # joint_state_broadcaster, joint_trajectory_cont
 ros2 topic hz /joint_states     # streaming
 ```
 
-## 3. Planner node — dry-run first
+## 3. Planner node — plans only, always
 
 ```bash
 source ~/RAMMP-CuRobo/install/setup.zsh    # on top of the two above
 ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml
 ```
 
-No `execute:=true` yet: this node plans but refuses motion. Sanity-check a
-dry-run plan of a tiny move from wherever the arm is:
+There is no arming step, because there is nothing to arm: this node has no
+execution surface. Sanity-check a plan of a tiny move from wherever the arm
+is. Read the arm's configuration yourself (the bringup publishes it) and
+hand it to the planner as `start_joints`:
 
 ```bash
-python3 examples/plan_and_execute.py --joints-relative 0.15 0 0 0 0 0 0
+ros2 topic echo /joint_states --once          # note joint_1..7 positions
+ros2 action send_goal /rammp_curobo/plan_to_joints \
+    rammp_curobo_interfaces/action/PlanToJoints \
+    "{target_joints: [<q1+0.15>, <q2>, <q3>, <q4>, <q5>, <q6>, <q7>],
+      start_joints:  [<q1>, <q2>, <q3>, <q4>, <q5>, <q6>, <q7>]}"
 ```
 
-Read the excursion table. It should show ~0.15 rad on joint_1 and ~0
-elsewhere (`--joints-relative` + native joint-space planning = the motion
-you asked for, nothing else). If the plan fails or looks wrong, stop here.
+Expect `success: true`, a low `goal_mismatch_rad`, and a trajectory whose
+last point is ~0.15 rad from the start on joint_1 and ~0 elsewhere. If the
+plan fails or looks wrong, stop here — a bad plan is a bad plan whoever
+runs it.
 
-## 4. First motion: small joint move near home, then the abort drill
+`ros2 run rammp_curobo_ros tour_demo` is the broader check: it chain-plans
+a whole tour from `HOME` and moves nothing.
 
-Restart the node with execution armed, at a crawl:
+## 4. First motion — the arm owner's runbook
 
-```bash
-ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml execute:=true
-python3 examples/plan_and_execute.py --joints-relative 0.15 0 0 0 0 0 0 \
-    --execute --speed-scale 0.15
-```
+First motion, speed ramping and the abort drill are **not this repo's** and
+are not performed with this repo's tools. Use `kinova_arm_ros2`'s `GoToEEPose`
+/ `GoToJointConfig` actions and follow its runbook, with a human on the
+physical e-stop. Prove the software abort (goal cancel → arm stops and
+holds) on a trivial move before anything larger.
 
-Type `yes` only when the e-stop hand is ready. The move is a slow base-yaw
-sweep away from the table.
+The planning-side rules still apply throughout:
 
-**Abort drill (required before anything else):** run the reverse move and
-press Ctrl+C mid-motion:
-
-```bash
-python3 examples/plan_and_execute.py --joints-relative -0.15 0 0 0 0 0 0 \
-    --execute --speed-scale 0.15
-# Ctrl+C while it moves -> goal cancel -> controller stops and holds
-```
-
-Confirm the arm freezes and holds. This is the software abort you'll reach
-for before the e-stop; prove it works while the motion is trivial.
-
-## 5. Only after 3 & 4 are clean
-
-- Repeat with other single-joint deltas; then 25% speed (`--speed-scale 0.25`).
 - Keep `world_real_bench.yaml` matching reality (step 1) — obstacles are
   measured and edited by hand, or pushed live from another module via
-  `/rammp_curobo/set_world`.
-- Gripper: `ros2 service call /rammp_curobo/close_gripper std_srvs/srv/Trigger`
-  (and open) — the arm doesn't move, but keep clear of the fingers.
-- Cartesian goals (`--pos ... --quat ...`) only AFTER the world file has
-  been validated against reality, and never near surfaces on the first day.
-- Raise `speed_scale` gradually; 1.0 means "as planned", which is full
-  cuRobo time-parameterization — do not go there this week.
+  `/rammp_curobo/set_world`. A plan is only as safe as the world it dodged.
+- Cartesian goals only AFTER the world file has been validated against
+  reality, and never near surfaces on the first day.
+- Plans come back at full cuRobo time-parameterization. Anything slower is
+  the executor's business — cuRobo's `velocity_scale` stays 1.0.
+- Re-plan after any manual repositioning of the arm: `start_joints` is the
+  configuration you measured, so a stale one plans from a fiction.
 
 ## Faults / recovery
 
@@ -151,12 +145,13 @@ for before the e-stop; prove it works while the motion is trivial.
   1. `ros2 service call /fault_controller/reset_fault example_interfaces/srv/Trigger`
   2. `ros2 control switch_controllers --deactivate joint_trajectory_controller`
   3. `ros2 control switch_controllers --activate joint_trajectory_controller`
-  (the planner node also runs this sequence automatically on the
-  no-motion signature). Verify low-level servoing (mode 3) is back via a
-  parallel Kortex query before commanding motion. The transient form fires
-  at controller goal TRANSITIONS (a new goal right after a completed one)
-  — which is why tour_demo merges its whole tour into ONE trajectory and
-  retries from a standstill only.
+  Verify low-level servoing (mode 3) is back via a parallel Kortex query
+  before commanding motion. The transient form fires at controller goal
+  TRANSITIONS (a new goal right after a completed one) — which is why a
+  chained tour is best executed as ONE merged trajectory, retrying from a
+  standstill only. (This repo's planner used to run the recovery sequence
+  itself; it no longer touches the arm, so recovery belongs to whoever
+  owns the driver.)
 - **Reset succeeded, no fault spam, arm STILL ignores everything** (also
   2026-08-13): the arm itself reports SERVOING_READY (verifiable with a
   parallel Kortex session) but nothing moves — the DRIVER is wedged, not
@@ -169,6 +164,7 @@ for before the e-stop; prove it works while the motion is trivial.
   READY/SERVOING via a direct Kortex query. (Do not rely on
   /fault_controller/internal_fault — it read `true` on this stack even
   while the arm was healthy in low-level servoing.)
-- After any e-stop or fault, RE-RUN the dry-run step before arming again
-  (the arm may have been moved by hand; stale plans are refused, but check
-  the world still matches reality too).
+- After any e-stop or fault, RE-RUN step 3 before commanding motion again:
+  the arm may have been moved by hand, so re-read `/joint_states` and plan
+  from the configuration it is actually in — and check the world still
+  matches reality too.

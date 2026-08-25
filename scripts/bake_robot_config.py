@@ -14,7 +14,7 @@ that plans is the one you can read and diff:
   * the arm-link spheres wholesale replaced with the audit-tuned set
     (mesh-vs-sphere protrusion p95 ~0 vs stock's 64 mm worst case, verified
     self-collision-free at home and all scene targets),
-  * cspace retract_config rewritten to the RAMMP home pose — the bundled
+  * cspace retract_config rewritten to RETRACT_POSE — the bundled
     retract lives in the OPPOSITE elbow family and makes IK seed flipped,
     winding reconfigurations.
 
@@ -30,9 +30,6 @@ from pathlib import Path
 
 import yaml
 
-# The canonical home pose lives in rammp_curobo.config.PLANNER_DEFAULTS —
-# imported (not copied) so the baked retract_config can never de-sync from
-# the runtime home, which would break the elbow-family IK seeding.
 from rammp_curobo.config import PLANNER_DEFAULTS
 
 OUT = (
@@ -43,7 +40,12 @@ OUT = (
     / "robot_gen3_2f85.yaml"
 )
 
-HOME_POSE = list(PLANNER_DEFAULTS["home_pose_rad"])
+# The IK seed baked into cspace.retract_config, and the ONLY place this
+# pose is defined. The planner deliberately holds no pose of its own
+# (issue #6) — it reads the seed back out of the baked file. cuRobo's
+# bundled Gen3 retract sits in the OPPOSITE elbow family, which makes every
+# crossing plan wind; joint_3 must stay near +pi.
+RETRACT_POSE = [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]
 JOINT_NAMES = list(PLANNER_DEFAULTS["joint_names"])
 PAD_SPHERE_RADIUS = 0.02
 
@@ -149,7 +151,7 @@ def main():
 
     cspace = kin["cspace"]
     assert cspace["joint_names"] == JOINT_NAMES
-    cspace["retract_config"] = [float(v) for v in HOME_POSE]
+    cspace["retract_config"] = [float(v) for v in RETRACT_POSE]
 
     buf = io.StringIO()
     yaml.safe_dump(cfg, buf, sort_keys=False, default_flow_style=None, width=100)

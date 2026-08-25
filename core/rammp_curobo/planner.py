@@ -3,8 +3,8 @@
     from rammp_curobo import CuRoboPlanner
 
     planner = CuRoboPlanner.from_config('gen3.yaml')
-    res = planner.plan_to_pose([0.45, 0.0, 0.35], [1, 0, 0, 0], quat_order='wxyz')
-    res = planner.plan_to_joints(planner.home_pose)
+    res = planner.plan_to_pose([0.45, 0.0, 0.35], [1, 0, 0, 0], q_now, quat_order='wxyz')
+    res = planner.plan_to_joints(q_goal, q_now)
     planner.update_world([{'name': 'box', 'position': [0.5, 0, 0], 'dims': [0.1, 0.1, 0.1]}])
 
 Everything cuRobo stays behind this class; results come back as plain
@@ -54,7 +54,6 @@ class CuRoboPlanner:
         self._config_dir = config_dir
         p = config["planner"]
         self.joint_names = list(config["joint_names"])
-        self.home_pose = [float(v) for v in config["home_pose_rad"]]
         self.interpolation_dt = float(p["interpolation_dt"])
         self.max_attempts = int(p["max_attempts"])
         self.finetune_attempts = int(p["finetune_attempts"])
@@ -73,9 +72,13 @@ class CuRoboPlanner:
 
         robot_path = resolve_config(config["robot"], relative_to=config_dir)
         world_path = resolve_config(config["world"], relative_to=config_dir)
-        self._robot_cfg = load_robot_config(
-            robot_path, home_pose_rad=self.home_pose, joint_names=self.joint_names
-        )
+        self._robot_cfg = load_robot_config(robot_path)
+        # The IK seed / null-space reference, in controller order. A planner
+        # fact (it fixes the elbow family), NOT a statement about where the
+        # arm belongs — this planner has no such opinion (issue #6).
+        cspace = self._robot_cfg["kinematics"]["cspace"]
+        by_name = dict(zip(cspace["joint_names"], cspace["retract_config"]))
+        self.retract_pose = [float(by_name[n]) for n in self.joint_names]
         self._scene = load_scene(world_path)
         self._init_curobo(warmup=bool(p["warmup"]))
 
@@ -145,7 +148,7 @@ class CuRoboPlanner:
         self,
         position,
         quaternion,
-        start=None,
+        start,
         quat_order="xyzw",
         apply_tool_correction=None,
     ):
@@ -156,7 +159,8 @@ class CuRoboPlanner:
             Gen3 config that is 0.120 m beyond the wrist flange, roughly the
             fingertip midpoint). quat_order says how it is packed: 'xyzw'
             (ROS, the default) or 'wxyz' (cuRobo).
-        start: joint positions in controller order; None = configured home.
+        start: joint positions in controller order. REQUIRED — the planner
+            does not know where the arm is and will not guess.
         apply_tool_correction: apply the configured tool spin/tip-offset
             calibration (authored-fingertip goals). None = apply whenever
             the config carries non-zero values.
@@ -201,7 +205,7 @@ class CuRoboPlanner:
             )
         return self._finish(result, t0)
 
-    def plan_to_joints(self, q_goal, start=None, method=None):
+    def plan_to_joints(self, q_goal, start, method=None):
         """Plan a collision-free trajectory to a joint configuration.
 
         method 'auto' (default): try native plan_single_js — exact joint
@@ -222,8 +226,7 @@ class CuRoboPlanner:
                 "q_goal has %d values for %d joints"
                 % (len(q_goal), len(self.joint_names))
             )
-        ref = self.home_pose if start is None else [float(v) for v in start]
-        q_goal = self._nearest_branch(q_goal, ref)
+        q_goal = self._nearest_branch(q_goal, [float(v) for v in start])
         q_goal, err = self._clamp_to_limits(q_goal, "goal")
         if err is not None:
             return PlanResult.failure("GOAL_OUTSIDE_LIMITS", err)
@@ -403,7 +406,8 @@ class CuRoboPlanner:
         tolerance absorbs the difference); anything larger is a genuine
         configuration problem and is refused with the joint named.
 
-        Returns (clamped_q or None, error or None). q may be None (= home).
+        Returns (clamped_q or None, error or None). q may be None (nothing
+        to clamp).
         """
         if q is None:
             return None, None
@@ -437,8 +441,8 @@ class CuRoboPlanner:
             return clamped.tolist(), None
         return arr.tolist(), None
 
-    def _start_state(self, q=None):
-        q = self.home_pose if q is None else [float(v) for v in q]
+    def _start_state(self, q):
+        q = [float(v) for v in q]
         if len(q) != len(self.joint_names):
             raise ValueError(
                 "start has %d values for %d joints" % (len(q), len(self.joint_names))
