@@ -15,10 +15,9 @@ world: world_sim_kitchen.yaml        # collision world; swap for your scene
 # Controller joint order — matches ros2_kortex and the MuJoCo sim alike.
 joint_names: [joint_1, joint_2, joint_3, joint_4, joint_5, joint_6, joint_7]
 
-# Kinova "Home" (bent elbow) — well-conditioned; the default start state and
-# the IK retract/seed family. Keep in sync with the robot YAML's
-# retract_config (the loader re-applies it there at startup anyway).
-home_pose_rad: [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]
+# No home/start pose here on purpose: the planner is told where to start on
+# every call (issue #6). The IK seed lives in the robot YAML's
+# retract_config, baked by scripts/bake_robot_config.py.
 
 planner:
   interpolation_dt: 0.02             # dense waypoints replay smoothest on the JTC

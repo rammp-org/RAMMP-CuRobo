@@ -14,9 +14,7 @@ NODE_NAMESPACE = "/rammp_curobo"
 def spin_until_done(node, future, timeout_s):
     """Spin `node` until `future` resolves; None on timeout.
 
-    For single-threaded clients (demos, scripts). The planner node itself
-    uses executor.await_future — an event wait suited to its multithreaded
-    executor.
+    For single-threaded clients (demos, scripts).
     """
     t0 = time.monotonic()
     while not future.done():

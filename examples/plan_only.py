@@ -3,14 +3,21 @@
 
 Nothing here can move an arm: this is the Layer-1 library alone. Examples:
 
-    # joint-space goal (native js planning; FK-pose fallback automatic), from home
-    python3 examples/plan_only.py --joints 0.3 0.262 3.142 -2.269 0.0 0.960 1.571
+--start is REQUIRED on every call: the planner does not know where the arm
+is and will not guess one for you. Examples (start = a mild variation of the
+robot config's retract pose):
+
+    # joint-space goal (native js planning; FK-pose fallback automatic)
+    python3 examples/plan_only.py --start 0.0 0.262 3.142 -2.269 0.0 0.960 1.571 \
+        --joints 0.3 0.262 3.142 -2.269 0.0 0.960 1.571
 
     # tool_frame pose goal: position + roll/pitch/yaw in degrees
-    python3 examples/plan_only.py --pos 0.45 0.12 0.30 --rpy-deg 180 0 0
+    python3 examples/plan_only.py --start 0.0 0.262 3.142 -2.269 0.0 0.960 1.571 \
+        --pos 0.45 0.12 0.30 --rpy-deg 180 0 0
 
     # same goal, quarter-speed preview of what an executor would send
-    python3 examples/plan_only.py --pos 0.45 0.12 0.30 --rpy-deg 180 0 0 --speed-scale 0.25
+    python3 examples/plan_only.py --start 0.0 0.262 3.142 -2.269 0.0 0.960 1.571 \
+        --pos 0.45 0.12 0.30 --rpy-deg 180 0 0 --speed-scale 0.25
 """
 
 import argparse
@@ -64,7 +71,9 @@ def main():
         type=float,
         nargs=7,
         metavar="RAD",
-        help="start joints (default: configured home)",
+        required=True,
+        help="joint configuration to plan FROM (rad, joint_1..7). Required "
+        "— the planner holds no default start pose",
     )
     ap.add_argument(
         "--speed-scale",
@@ -80,7 +89,7 @@ def main():
     planner = CuRoboPlanner.from_config(args.config)
 
     if args.joints is not None:
-        res = planner.plan_to_joints(args.joints, start=args.start)
+        res = planner.plan_to_joints(args.joints, args.start)
         label = "joints %s" % np.round(args.joints, 3).tolist()
     else:
         if args.quat is not None:
@@ -89,7 +98,7 @@ def main():
             quat = euler_deg_to_quat_xyzw(args.rpy_deg)
         else:
             ap.error("--pos needs --rpy-deg or --quat")
-        res = planner.plan_to_pose(args.pos, quat, start=args.start)
+        res = planner.plan_to_pose(args.pos, quat, args.start)
         label = "pose %s" % np.round(args.pos, 3).tolist()
 
     if not res.success:

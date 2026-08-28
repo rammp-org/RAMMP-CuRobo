@@ -1,24 +1,15 @@
 """Launch the rammp_curobo planner node.
 
-The node is a planning service: it takes an end position (a tool pose or a
-joint goal) and returns the collision-free joint trajectory. It never owns
-the arm — execution goes to whatever ros2_control stack is already running
-(started separately; on this lab's Jetson that is the RAMMP-Kinova
-workspace's kortex bringup or MuJoCo sim).
+The node is a planning service: it takes a start configuration and an end
+position (a tool pose or a joint goal) and returns the collision-free joint
+trajectory. It never owns the arm — it holds no driver, no controller
+client, and no /joint_states subscription. Executing the returned
+trajectory is the caller's job (kinova_arm_ros2 on this bench).
 
-Planning-only (the Docker/service use — nothing can move):
-
+    ros2 launch rammp_curobo_ros planner.launch.py
     ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml
 
-Plan + execute against an existing bringup (sim or real):
-
-    ros2 launch rammp_curobo_ros planner.launch.py use_sim_time:=true \
-        execute:=true                                                   # sim
-    ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml \
-        execute:=true                                                   # real
-
-Execution stays disabled until execute:=true is passed — the node plans
-(dry-run) but refuses ExecuteTrajectory goals.
+There is no execute flag: nothing this node does can move the arm.
 """
 
 from launch import LaunchDescription
@@ -40,24 +31,9 @@ def generate_launch_description():
             description="world YAML override (empty = config default)",
         ),
         DeclareLaunchArgument(
-            "execute",
-            default_value="false",
-            description="allow motion (default: dry-run only)",
-        ),
-        DeclareLaunchArgument(
-            "speed_scale",
-            default_value="0.0",
-            description="execution speed scale; 0 = config default (0.25)",
-        ),
-        DeclareLaunchArgument(
             "use_sim_time",
             default_value="false",
-            description="true when running against the MuJoCo sim",
-        ),
-        DeclareLaunchArgument(
-            "controller_action",
-            default_value="/joint_trajectory_controller/follow_joint_trajectory",
-            description="FollowJointTrajectory action of the arm's controller",
+            description="true when planning against the MuJoCo sim world",
         ),
     ]
 
@@ -71,10 +47,7 @@ def generate_launch_description():
             {
                 "config": LaunchConfiguration("config"),
                 "world": LaunchConfiguration("world"),
-                "execute": LaunchConfiguration("execute"),
-                "speed_scale": LaunchConfiguration("speed_scale"),
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
-                "controller_action": LaunchConfiguration("controller_action"),
             }
         ],
     )

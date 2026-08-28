@@ -18,7 +18,7 @@ setup(
     zip_safe=True,
     maintainer="RAMMP",
     maintainer_email="chrisman4247@gmail.com",
-    description="ROS 2 wrapper for the rammp_curobo planning core",
+    description="ROS 2 plan-only wrapper for the rammp_curobo planning core",
     license="Apache-2.0",
     tests_require=["pytest"],
     entry_points={

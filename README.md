@@ -2,31 +2,30 @@
 
 GPU motion planning (NVIDIA cuRobo) for the RAMMP Kinova Gen3 7-DoF, as a
 standalone planning service any RAMMP module can adopt: **in** goes an end
-position (tool pose or joint goal), **out** comes the collision-free,
-time-parameterized joint trajectory for the arm to execute. The planner
-never owns the arm — execution is the caller's (or the optional
-safety-gated executor's, pointed at an existing ros2_control bringup).
+start configuration and an end position (tool pose or joint goal), **out**
+comes the collision-free, time-parameterized joint trajectory for the arm
+to execute. The planner never touches the arm: it holds no driver, no
+controller client and no `/joint_states` subscription, and execution is
+entirely the caller's.
 
 ```
 core/                     Layer 1 — pip package `rammp-curobo`: pure-Python
                           cuRobo wrapper, NO ROS imports (configs baked in)
 rammp_curobo_interfaces/  ROS 2 action/srv definitions (dependency-free)
-rammp_curobo_ros/         Layer 2 — planner node + safety-gated executor
-                          + tour_demo (the showcase: 4 random points, one
-                          merged full-speed trajectory)
-examples/                 plan_only.py (no ROS) / plan_and_execute.py
-scripts/                  config baking, live sim checks
+rammp_curobo_ros/         Layer 2 — plan-only planner node + tour_demo
+                          (the showcase: 4 random points chain-planned
+                          into one merged trajectory; nothing moves)
+examples/                 plan_only.py (no ROS)
+scripts/                  config baking
 docker/                   the planning service as a container (Jetson/JP6)
 docs/HARDWARE_BRINGUP.md  the real-arm runbook — READ BEFORE TOUCHING HARDWARE
 ```
 
-> **Hardware safety, non-negotiable:** a human holds the physical e-stop
-> during ALL hardware runs. Execution is opt-in at three separate layers
-> (node `execute:=true`, example/demo `--execute`, typed confirmation),
-> defaults to 25% speed (`tour_demo` alone runs full-speed, behind its
-> own all-caps warning and typed 'go'), and every plan is re-validated
-> against limits and the arm's live state before anything reaches the
-> controller.
+> **Nothing in this repo can move the arm.** There is no executor, no
+> controller client and no execute flag — a plan is data until whoever
+> owns the robot chooses to run it, under their gates (on this bench,
+> `kinova_arm_ros2`). A human still holds the physical e-stop during ALL
+> hardware runs. See **issue #6** for why the boundary is drawn here.
 
 ## Install (Jetson AGX Orin)
 
@@ -113,47 +112,46 @@ ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml
 ```
 
 That's the whole service: `/rammp_curobo/plan_to_pose` and
-`/rammp_curobo/plan_to_joints` take a goal (optionally with explicit
-`start_joints` — no `/joint_states` needed) and return the trajectory.
-See **INTEGRATION.md** for client code, and **docker/** to run the same
-thing as a container.
+`/rammp_curobo/plan_to_joints` take a goal carrying the configuration to
+plan from (`start_joints`, **required** — the planner has no view of any
+arm) and return the trajectory. See **INTEGRATION.md** for client code,
+and **docker/** to run the same thing as a container.
 
-## Run with execution (this bench)
-
-Start the arm side first — this repo never launches it:
+## The showcase
 
 ```bash
-# sim (terminal 1):
-export ROS_LOCALHOST_ONLY=1
-source /opt/ros/humble/setup.zsh && source ~/RAMMP-Kinova/ros2_ws/install/setup.zsh
-ros2 launch mujoco_sim mujoco_bringup.launch.py
-# real arm instead: the kortex bringup per docs/HARDWARE_BRINGUP.md —
-# human on the e-stop
+ros2 run rammp_curobo_ros tour_demo            # 4 random points
+ros2 run rammp_curobo_ros tour_demo --points 6 --seed 3
 ```
 
-Then arm the planner and run the demo (terminals sourced the same way,
-plus this repo's `install/setup.zsh`):
+`tour_demo` samples reachable targets in the frontal cone and chain-plans
+`start → P1 → … → Pn → start`, each segment starting from the previous
+segment's planned endpoint, then merges the lot into one continuous
+trajectory and prints it. No arm need exist — the start configuration is
+given (`--start`, defaulting to the planner's retract pose), so it doubles
+as the repo's end-to-end smoke test: if it prints a tour, the node, the
+world and chained planning all work.
 
-```bash
-ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml execute:=true
-ros2 run rammp_curobo_ros tour_demo --execute   # 4 random points, one
-                                                # merged trajectory, lap time
-```
+The demo deliberately has no notion of "home". Where the arm belongs is
+the arm layer's call, not the planner's.
 
-Without `--execute`, `tour_demo` pre-plans and prints the tour dry.
-`scripts/sim_execution_checks.py` additionally verifies the refusal gates
-and mid-motion cancel against the live sim.
+## Execution is not here
 
-## Safety model (execution gates)
+This repo plans. It does not execute, and it cannot: there is no
+`ExecuteTrajectory` action, no `FollowJointTrajectory` client, no
+`/joint_states` subscription, no controller-manager client, no gripper
+client, no `execute` parameter.
 
-Every `ExecuteTrajectory` goal must pass, in order: node `execute`
-parameter true → speed scale in (0, 1] (default 0.25, exact time dilation
-— plans are never sped up) → joint names match → finite, within position
-AND velocity limits → monotonic timing and step-continuity (rejects the
-stale-buffer/discontinuity failure mode) → arm's live `/joint_states`
-within 0.05 rad of the trajectory start (stale plans refused) → controller
-accepts. Cancel at any time stops the controller and holds position; after
-completion the executor verifies arrival within 0.08 rad.
+Executing a plan means handing the returned `trajectory_msgs/JointTrajectory`
+to whoever owns the robot, with their gates and their e-stop discipline.
+On this bench that is **`kinova_arm_ros2`**, whose `GoToEEPose` /
+`GoToJointConfig` actions call this planner, supply the arm's measured `q`
+as `start_joints`, validate what comes back, and run it through the
+supervisor and driver with a path tolerance.
+
+Two safety authorities with different rules is worse than either alone —
+that, plus plans made from a joint state up to 2 s stale, is why the
+executor that used to live here was removed (**issue #6**).
 
 ## Troubleshooting
 
@@ -163,15 +161,14 @@ completion the executor verifies arrival within 0.08 rad.
 | pytest crashes collecting (`No module named '_pytest.scope'`) | user-site anyio plugin vs system pytest; repo `pytest.ini` disables it (`-p no:anyio`) — run pytest from the repo root |
 | first plan takes minutes | one-time CUDA kernel compile (warmup); subsequent runs ~20 s init, ~0.2-2 s per plan |
 | `plan_single_js` fails / `DT_EXCEPTION` on older Jetson wheels | known torch-wheel cuSOLVER gap; `joint_space_method: auto` falls back to FK-pose planning automatically. Keep `enable_graph: false` on Jetson always |
-| plan succeeds but joints differ from a joint goal | FK-pose fallback reached the POSE via another joint family — check `goal_mismatch_rad`; the example refuses >0.5 rad without `--allow-mismatch` |
-| execution refused: "arm is X rad from the trajectory start" | plan is stale (arm moved since planning) — re-plan; this gate is intentional |
+| plan succeeds but joints differ from a joint goal | FK-pose fallback reached the POSE via another joint family — check `goal_mismatch_rad` before acting on it |
+| goal aborted: "start_joints is required" | `start_joints` is not optional — the planner has no view of any arm, so the caller must send the configuration to plan from |
 | node warns about SIM world without sim time | you're (probably) on the real arm with the kitchen world — relaunch with `world:=world_real_bench.yaml` (measured!) |
 | nodes can't see each other's topics | `ROS_LOCALHOST_ONLY=1` must be exported in EVERY shell (non-interactive shells skip `~/.zshrc` — export explicitly; RAMMP-Kinova's `tools/launch_stack.zsh` does) |
 | both bringups fight / controllers flap | MuJoCo sim and kortex bringup both claim `/controller_manager` — run exactly one |
 | `update_world` seems ignored / obstacles missing | cuRobo v0.7.8: cylinders/spheres in a WorldConfig are silently dropped (cuboids only), and an empty world silently keeps the previous one — the library guards both, custom worlds go in as boxes |
 | `AttributeError: wp.torch` in mesh collision | newer warp needs explicit `import warp.torch` — the library does this; if embedding cuRobo yourself, copy that |
 | `ros2 topic echo` prints "A message was lost!!!" | benign QoS depth artifact of echo on a 500 Hz topic |
-| arm won't move, controller error mentions tolerances | check speed scale isn't absurdly low (goal-time), and that `arm_driver`'s persisted 25 deg/s soft limit isn't what you're seeing |
 
 ## Integrating from another RAMMP module
 

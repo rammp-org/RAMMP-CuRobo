@@ -5,13 +5,13 @@ warp 1.5.1) + ROS 2 Humble + this repo's planner node, planning-only.
 Another codebase talks to it over two ROS actions and never has to touch
 the cuRobo install again:
 
-    in:  /rammp_curobo/plan_to_pose   (geometry_msgs/Pose [+ start_joints])
-         /rammp_curobo/plan_to_joints (7 joint angles    [+ start_joints])
+    in:  /rammp_curobo/plan_to_pose   (geometry_msgs/Pose + start_joints)
+         /rammp_curobo/plan_to_joints (7 joint angles    + start_joints)
     out: trajectory_msgs/JointTrajectory — full cuRobo time-parameterization
 
-The container holds **no arm driver** and starts with `execute:=false`:
-executing the returned trajectory is the caller's job, on whatever
-controller stack owns the arm.
+The container holds **no arm driver** and nothing inside it can move an
+arm: executing the returned trajectory is the caller's job, on whatever
+controller stack owns the robot.
 
 ## Where to build
 
@@ -99,8 +99,8 @@ goal = PlanToPose.Goal()
 goal.target.position.x, goal.target.position.y, goal.target.position.z = p
 (goal.target.orientation.x, goal.target.orientation.y,
  goal.target.orientation.z, goal.target.orientation.w) = quat_xyzw
-goal.start_joints = list(q_now)   # RECOMMENDED: explicit start; empty = the
-                                  # planner's /joint_states subscription
+goal.start_joints = list(q_now)   # REQUIRED: the configuration to plan
+                                  # from. You own the arm's state.
 
 # action calls only complete while the node spins — spin between the two
 # futures (send_goal() without a spinning executor would block forever)
@@ -117,10 +117,10 @@ if res.success:
 `spin_until_future_complete` calls and await/collect the same futures —
 see `tour_demo.py` + `ros_util.spin_until_done` for the in-repo pattern.)
 
-Passing `start_joints` explicitly keeps the container fully stateless — it
-then needs no `/joint_states` from your side at all, and you can pre-plan
-chained segments from planned endpoints (see `tour_demo.py` for the
-pattern, including merging chained plans into one continuous trajectory).
+`start_joints` is what keeps the container stateless: it needs no
+`/joint_states` from your side at all, and you can pre-plan chained
+segments from planned endpoints (see `tour_demo.py` for the pattern,
+including merging chained plans into one continuous trajectory).
 
 ## Verify the image (no arm needed)
 

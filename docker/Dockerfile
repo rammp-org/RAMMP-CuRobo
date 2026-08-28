@@ -3,8 +3,8 @@
 # In: an end position (tool pose or joint goal) on the ROS 2 actions
 #   /rammp_curobo/plan_to_pose  /rammp_curobo/plan_to_joints
 # Out: the collision-free, time-parameterized JointTrajectory.
-# The container never owns the arm: it ships planning-only (execute:=false)
-# and holds no arm driver — the caller executes the trajectory.
+# The container never owns the arm: it holds no arm driver and the node it
+# runs has no execution surface at all — the caller executes the trajectory.
 #
 # Build ON the Jetson (nvcc for sm_87 comes from the base image; the cuRobo
 # kernel compile makes this a ~1 h, ~15 GB build):

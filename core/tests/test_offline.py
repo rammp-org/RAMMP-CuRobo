@@ -56,7 +56,6 @@ def test_gen3_yaml_matches_planner_defaults():
     for section in ("planner", "tool", "execution"):
         assert cfg[section] == PLANNER_DEFAULTS[section], section
     assert cfg["joint_names"] == PLANNER_DEFAULTS["joint_names"]
-    assert cfg["home_pose_rad"] == pytest.approx(PLANNER_DEFAULTS["home_pose_rad"])
 
 
 def test_baked_robot_config_carries_the_patches():

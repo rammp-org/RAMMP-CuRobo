@@ -22,74 +22,82 @@ def planner():
     return CuRoboPlanner.from_config("gen3.yaml")
 
 
+@pytest.fixture
+def start(planner):
+    """Every plan states where it starts — the planner has no default and
+    will not guess (issue #6). The retract pose is simply a known-valid
+    configuration to use here, not a "home"."""
+    return list(planner.retract_pose)
+
+
 def _pose_error(planner, q, target_pos):
     pos, _ = planner.fk(q)
     return float(np.linalg.norm(np.asarray(pos) - np.asarray(target_pos)))
 
 
-def test_plan_to_pose_from_home(planner):
+def test_plan_to_pose_from_retract(planner, start):
     # A guaranteed-reachable goal: the FK of a mild elbow/wrist variation
     # of home. No tool corrections — raw tool_frame pose in, pose reached.
-    q_target = list(planner.home_pose)
+    q_target = list(planner.retract_pose)
     q_target[0] += 0.4
     q_target[5] -= 0.3
     pos, quat = planner.fk(q_target)
 
-    res = planner.plan_to_pose(pos, quat)
+    res = planner.plan_to_pose(pos, quat, start)
     assert res.success, res.error
     assert res.validated
     traj = res.joint_traj
     assert traj.n_points > 5
     assert traj.dt == pytest.approx(0.02)
     assert traj.duration > 0.1
-    # starts where we started: home
-    assert np.abs(traj.positions[0] - np.asarray(planner.home_pose)).max() < 0.15
+    # starts where we said we started
+    assert np.abs(traj.positions[0] - np.asarray(planner.retract_pose)).max() < 0.15
     # ends at the requested pose (joints may differ from q_target — that is
     # allowed; the POSE is the contract here)
     assert _pose_error(planner, res.final_joints, pos) < 0.005
 
 
-def test_plan_to_joints_default_is_exact(planner):
+def test_plan_to_joints_default_is_exact(planner, start):
     # default method 'auto' uses native plan_single_js on this wheel:
     # the JOINT goal is the contract, not just the pose
-    q_goal = list(planner.home_pose)
+    q_goal = list(planner.retract_pose)
     q_goal[1] -= 0.25
     q_goal[3] += 0.30
 
-    res = planner.plan_to_joints(q_goal)
+    res = planner.plan_to_joints(q_goal, start)
     assert res.success, res.error
     assert res.goal_mismatch_rad is not None and res.goal_mismatch_rad < 1e-3
 
 
-def test_plan_to_joints_fk_pose_fallback(planner):
-    q_goal = list(planner.home_pose)
+def test_plan_to_joints_fk_pose_fallback(planner, start):
+    q_goal = list(planner.retract_pose)
     q_goal[1] -= 0.25
     q_goal[3] += 0.30
 
-    res = planner.plan_to_joints(q_goal, method="fk_pose")
+    res = planner.plan_to_joints(q_goal, start, method="fk_pose")
     assert res.success, res.error
     assert res.goal_mismatch_rad is not None
     goal_pos, _ = planner.fk(q_goal)
     assert _pose_error(planner, res.final_joints, goal_pos) < 0.005
 
 
-def test_unreachable_goal_fails_cleanly(planner):
-    res = planner.plan_to_pose([2.5, 0.0, 1.5], [0, 0, 0, 1])
+def test_unreachable_goal_fails_cleanly(planner, start):
+    res = planner.plan_to_pose([2.5, 0.0, 1.5], [0, 0, 0, 1], start)
     assert not res.success
     assert res.joint_traj is None
     assert res.error
 
 
-def test_retimed_trajectory_stays_valid(planner):
+def test_retimed_trajectory_stays_valid(planner, start):
     # +joint_1 swings toward the kitchen's open left side (-0.5 rad heads
     # into the cabinet corner and rightly IK_FAILs on goal collision).
-    q_target = list(planner.home_pose)
+    q_target = list(planner.retract_pose)
     q_target[0] += 0.2
     q_target[4] += 0.4
     ok, detail = planner.check_state_valid(q_target)
     assert ok, "test goal invalid in this world: %s" % detail
     pos, quat = planner.fk(q_target)
-    res = planner.plan_to_pose(pos, quat)
+    res = planner.plan_to_pose(pos, quat, start)
     assert res.success, res.error
 
     slow = res.joint_traj.scaled(0.25)
@@ -105,15 +113,15 @@ def test_retimed_trajectory_stays_valid(planner):
 
 
 def test_check_state_valid(planner):
-    ok, _ = planner.check_state_valid(planner.home_pose)
+    ok, _ = planner.check_state_valid(planner.retract_pose)
     assert ok
-    bad = list(planner.home_pose)
+    bad = list(planner.retract_pose)
     bad[1] = 3.0  # joint_2 limit is ±2.41 rad
     ok, _ = planner.check_state_valid(bad)
     assert not ok
 
 
-def test_update_world_guards_and_round_trip(planner):
+def test_update_world_guards_and_round_trip(planner, start):
     with pytest.raises(ValueError, match="empty"):
         planner.update_world([])
     too_many = [
@@ -127,14 +135,14 @@ def test_update_world_guards_and_round_trip(planner):
         planner.update_world(
             [{"name": "crate", "position": [1.5, 1.5, 0.5], "dims": [0.2, 0.2, 0.2]}]
         )
-        pos, quat = planner.fk(planner.home_pose)
+        pos, quat = planner.fk(planner.retract_pose)
         pos[2] -= 0.10
-        res = planner.plan_to_pose(pos, quat)
+        res = planner.plan_to_pose(pos, quat, start)
         assert res.success, res.error
     finally:
         planner.update_world("world_sim_kitchen.yaml")
-    pos, quat = planner.fk(planner.home_pose)
-    res = planner.plan_to_pose(pos, quat)
+    pos, quat = planner.fk(planner.retract_pose)
+    res = planner.plan_to_pose(pos, quat, start)
     assert res.success, res.error
 
 
@@ -142,7 +150,7 @@ def test_park_pose_outside_model_limits_is_clamped(planner):
     # The real Gen3 parks with joint_4 ~0.8 deg past cuRobo's URDF bound
     # (found on first hardware contact) — tiny violations clamp inward,
     # large ones are refused with the joint named.
-    park = list(planner.home_pose)
+    park = list(planner.retract_pose)
     park[3] = -2.674  # model limit is ±2.66
     clamped, err = planner._clamp_to_limits(park, "start")
     assert err is None
@@ -152,7 +160,7 @@ def test_park_pose_outside_model_limits_is_clamped(planner):
     clamped, err = planner._clamp_to_limits(park, "start")
     assert clamped is None and "joint_4" in err
 
-    res = planner.plan_to_joints(planner.home_pose, start=park)
+    res = planner.plan_to_joints(planner.retract_pose, start=park)
     assert not res.success
     assert res.status == "START_OUTSIDE_LIMITS"
     assert "joint_4" in res.error
@@ -161,9 +169,9 @@ def test_park_pose_outside_model_limits_is_clamped(planner):
 def test_joint_goal_normalized_to_start_branch(planner):
     # arm reports joint_3 = -pi (wrapped), goal authored at +pi: the plan
     # must NOT wind a full revolution — the goal shifts to the -pi branch
-    start = list(planner.home_pose)
+    start = list(planner.retract_pose)
     start[2] = -3.1416
-    goal = list(planner.home_pose)  # joint_3 = +3.142
+    goal = list(planner.retract_pose)  # joint_3 = +3.142
     goal[0] = 0.15
     res = planner.plan_to_joints(goal, start=start)
     assert res.success, res.error
