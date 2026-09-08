@@ -155,20 +155,20 @@ executor that used to live here was removed (**issue #6**).
 
 ## Troubleshooting
 
-| symptom | cause / fix |
-|---|---|
-| `pip install -e` fails (`build_editable` hook / permission denied) | old pip + isolated build env; use `python3 -m pip install --user --no-build-isolation -e ./core` |
-| pytest crashes collecting (`No module named '_pytest.scope'`) | user-site anyio plugin vs system pytest; repo `pytest.ini` disables it (`-p no:anyio`) — run pytest from the repo root |
-| first plan takes minutes | one-time CUDA kernel compile (warmup); subsequent runs ~20 s init, ~0.2-2 s per plan |
-| `plan_single_js` fails / `DT_EXCEPTION` on older Jetson wheels | known torch-wheel cuSOLVER gap; `joint_space_method: auto` falls back to FK-pose planning automatically. Keep `enable_graph: false` on Jetson always |
-| plan succeeds but joints differ from a joint goal | FK-pose fallback reached the POSE via another joint family — check `goal_mismatch_rad` before acting on it |
-| goal aborted: "start_joints is required" | `start_joints` is not optional — the planner has no view of any arm, so the caller must send the configuration to plan from |
-| node warns about SIM world without sim time | you're (probably) on the real arm with the kitchen world — relaunch with `world:=world_real_bench.yaml` (measured!) |
-| nodes can't see each other's topics | `ROS_LOCALHOST_ONLY=1` must be exported in EVERY shell (non-interactive shells skip `~/.zshrc` — export explicitly; RAMMP-Kinova's `tools/launch_stack.zsh` does) |
-| both bringups fight / controllers flap | MuJoCo sim and kortex bringup both claim `/controller_manager` — run exactly one |
-| `update_world` seems ignored / obstacles missing | cuRobo v0.7.8: cylinders/spheres in a WorldConfig are silently dropped (cuboids only), and an empty world silently keeps the previous one — the library guards both, custom worlds go in as boxes |
-| `AttributeError: wp.torch` in mesh collision | newer warp needs explicit `import warp.torch` — the library does this; if embedding cuRobo yourself, copy that |
-| `ros2 topic echo` prints "A message was lost!!!" | benign QoS depth artifact of echo on a 500 Hz topic |
+| symptom                                                            | cause / fix                                                                                                                                                                                       |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pip install -e` fails (`build_editable` hook / permission denied) | old pip + isolated build env; use `python3 -m pip install --user --no-build-isolation -e ./core`                                                                                                  |
+| pytest crashes collecting (`No module named '_pytest.scope'`)      | user-site anyio plugin vs system pytest; repo `pytest.ini` disables it (`-p no:anyio`) — run pytest from the repo root                                                                            |
+| first plan takes minutes                                           | one-time CUDA kernel compile (warmup); subsequent runs ~20 s init, ~0.2-2 s per plan                                                                                                              |
+| `plan_single_js` fails / `DT_EXCEPTION` on older Jetson wheels     | known torch-wheel cuSOLVER gap; `joint_space_method: auto` falls back to FK-pose planning automatically. Keep `enable_graph: false` on Jetson always                                              |
+| plan succeeds but joints differ from a joint goal                  | FK-pose fallback reached the POSE via another joint family — check `goal_mismatch_rad` before acting on it                                                                                        |
+| goal aborted: "start_joints is required"                           | `start_joints` is not optional — the planner has no view of any arm, so the caller must send the configuration to plan from                                                                       |
+| node warns about SIM world without sim time                        | you're (probably) on the real arm with the kitchen world — relaunch with `world:=world_real_bench.yaml` (measured!)                                                                               |
+| nodes can't see each other's topics                                | `ROS_LOCALHOST_ONLY=1` must be exported in EVERY shell (non-interactive shells skip `~/.zshrc` — export explicitly; RAMMP-Kinova's `tools/launch_stack.zsh` does)                                 |
+| both bringups fight / controllers flap                             | MuJoCo sim and kortex bringup both claim `/controller_manager` — run exactly one                                                                                                                  |
+| `update_world` seems ignored / obstacles missing                   | cuRobo v0.7.8: cylinders/spheres in a WorldConfig are silently dropped (cuboids only), and an empty world silently keeps the previous one — the library guards both, custom worlds go in as boxes |
+| `AttributeError: wp.torch` in mesh collision                       | newer warp needs explicit `import warp.torch` — the library does this; if embedding cuRobo yourself, copy that                                                                                    |
+| `ros2 topic echo` prints "A message was lost!!!"                   | benign QoS depth artifact of echo on a 500 Hz topic                                                                                                                                               |
 
 ## Integrating from another RAMMP module
 

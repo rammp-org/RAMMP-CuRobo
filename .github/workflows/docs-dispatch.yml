@@ -1,0 +1,27 @@
+name: docs dispatch
+
+on:
+  push:
+    branches: [main]
+    paths: ['docs/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-22.04
+    # DOCS_DISPATCH_TOKEN may not be provisioned for this repo; skip cleanly
+    # rather than failing red on every docs push. `secrets` is not a usable
+    # context in an `if:` at any level, so it is routed through `env:` first,
+    # which the step's `if:` can read. (Same shape as kinova-gen3-ros2's.)
+    env:
+      DOCS_DISPATCH_TOKEN: ${{ secrets.DOCS_DISPATCH_TOKEN }}
+    steps:
+      - if: ${{ env.DOCS_DISPATCH_TOKEN != '' }}
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ env.DOCS_DISPATCH_TOKEN }}
+          repository: rammp-org/rammp-org.github.io
+          event-type: docs-updated

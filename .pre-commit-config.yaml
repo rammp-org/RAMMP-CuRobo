@@ -1,23 +1,65 @@
-# Mirrors Demo-Software's hooks (minus clang-format — no C++ here).
+# Style and hygiene gates. Hook revisions are pinned; updating them is a
+# deliberate PR (`pre-commit autoupdate`), never silent drift.
+#
+# Mirrors kinova-gen3-driver and kinova-gen3-ros2, minus clang-format — there is
+# no C++ here. The bulk reformat that adopting mdformat repo-wide required is
+# recorded in .git-blame-ignore-revs.
 repos:
+  # General housekeeping
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.5.0
     hooks:
       - id: trailing-whitespace
+        # Markdown gives trailing double-space a meaning (a hard line break),
+        # so stripping it there silently rewrites documents.
+        exclude: '(\.md$|\.markdown$)'
       - id: end-of-file-fixer
-      - id: check-yaml
       - id: check-added-large-files
         args: [--maxkb=1000]  # the bench photos in docs/ are ~900 KB
+      - id: check-yaml
+      # Two package.xml files define the ament packages; a malformed one fails
+      # the colcon build with a far less obvious message than this hook gives.
+      - id: check-xml
       - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  # Python
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.3.0
     hooks:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+
+  # Markdown
   - repo: https://github.com/executablebooks/mdformat
     rev: 0.7.17
     hooks:
       - id: mdformat
         additional_dependencies:
           - mdformat-gfm
+
+  # The Dockerfile is this repo's primary shared artifact — the thing other
+  # RAMMP codebases consume — so it gets a linter. .hadolint.yaml records the
+  # rules it violates deliberately, with reasons.
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.12.0
+    hooks:
+      - id: hadolint-docker
+
+  # GitHub Actions. The workflows are a load-bearing artifact now, so they get a
+  # linter of their own.
+  # v1.7.12, not v1.6.27: the older release predates GitHub's arm64 hosted
+  # runners and rejects `ubuntu-22.04-arm` as an unknown label.
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
+  # docker/entrypoint.sh is what every container run executes before the node,
+  # so a quoting bug there is not a style problem.
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.9.0.6
+    hooks:
+      - id: shellcheck

@@ -1,0 +1,187 @@
+name: JetPack Image
+
+on:
+  # A PR into main is, by construction, the dev -> main promotion PR: the last
+  # gate before a tag. Feature PRs into dev do NOT build the image -- they get
+  # the fast gates in build.yml instead, and the merge to dev below is what
+  # catches a container break, blaming one merge rather than a promotion's worth.
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, dev]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# The ~1 h gate. Everything the fast gates cannot reach lives here:
+#
+#   - the pinned dependency chain still RESOLVES: torch 2.10.0 / torchvision
+#     0.25.0 from pypi.jetson-ai-lab.io/jp6/cu126, nvidia-cudss-cu12 0.8.0.10
+#   - cuRobo v0.7.8 still builds: the commit-hash assertion catches a moved tag,
+#     and ~12 min of nvcc compiles the sm_87 kernels against torch 2.10 /
+#     warp 1.5.1 / numpy 1.26.4
+#   - the two hand-found runtime deps (libopenblas0, the cudss ldconfig entry) --
+#     the Dockerfile's build-time `import torch` gate only fires here
+#   - arm64 jammy ROS apt availability, including rmw-cyclonedds-cpp
+#
+# What it does NOT prove, and must not be read as proving: hosted runners have
+# no GPU. torch.cuda.is_available() is False, core/tests/test_smoke.py skips,
+# the first-plan CUDA kernel JIT never runs and --runtime nvidia never happens.
+# This is a BUILD AND LINK gate. The functional gate is the Jetson, via
+# .hil.yml (`hil.py exec -- ... make build` then the verify task).
+#
+# Native arm64 throughout: nvcr.io/nvidia/l4t-jetpack is aarch64-only and
+# GitHub gives public repositories arm64 runners at no cost, so nothing here
+# emulates. A QEMU cross build would translate every instruction of a CUDA
+# kernel compile and is not a serious option.
+#
+# No GPU is needed to COMPILE: TORCH_CUDA_ARCH_LIST="8.7+PTX" is set in the
+# Dockerfile, so nvcc never queries a device.
+
+jobs:
+  image:
+    name: Build the Jetson image (arm64)
+    runs-on: ubuntu-22.04-arm
+    # The base is 5.6 GB compressed / ~14 GB unpacked, plus torch and the cuRobo
+    # build tree: roughly 25 GB against a runner's ~65 GB free.
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      published: ${{ steps.publish.outcome }}
+    steps:
+      # Full history: the tag-is-on-main check below needs to see the branches.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: docker/setup-buildx-action@v3
+
+      # A tag is just a ref -- git does not stop anyone tagging a feature branch,
+      # and that tag would otherwise publish to ghcr as a release. Releases come
+      # off main; this refuses anything else before the hour of build, not after.
+      - name: A v* tag must point at a commit on main
+        if: github.ref_type == 'tag'
+        run: |
+          if ! git branch -r --contains "$GITHUB_SHA" | grep -qE 'origin/main$'; then
+            echo "::error::${GITHUB_REF_NAME} does not point at a commit on main; refusing to publish."
+            exit 1
+          fi
+          echo "${GITHUB_REF_NAME} is on main."
+
+      # ghcr rejects an uppercase path and this repository is mixed case.
+      - id: image
+        name: Compute the lowercase image name
+        run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.image.outputs.name }}
+          # Semver only. An image is a release artifact; branch and sha tags
+          # would just accumulate in the registry. `latest` follows the newest
+          # non-prerelease tag, which is what a bare `docker pull` gets.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Log in to ghcr
+        if: github.ref_type == 'tag'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Single platform, so there is no push-by-digest and no manifest-merge job:
+      # the tag resolves to one arm64 image directly. Non-tag runs export nothing
+      # (type=cacheonly) -- they compile without touching the registry.
+      - id: publish
+        name: Build the image (and push it on a tag)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: ${{ github.ref_type == 'tag' && 'type=image,push=true' || 'type=cacheonly' }}
+
+      # Prints what the tag now resolves to, so a broken release is visible in
+      # the log rather than only on the machine that later fails to pull it.
+      - name: Show what was published
+        if: github.ref_type == 'tag'
+        env:
+          IMAGE: ghcr.io/${{ steps.image.outputs.name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: docker buildx imagetools inspect "${IMAGE}:${VERSION}"
+
+  # A failed PR build is already a red X on the PR, so this reports only on
+  # merges and tags -- where nobody is necessarily watching the run.
+  report-failure:
+    needs: [image]
+    if: failure() && github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # Deduplicated deliberately. Without the lookup, a break that survives
+      # several merges files a fresh issue each time and the label stops being
+      # worth reading; one issue accumulating comments shows how long it has
+      # been broken.
+      - name: File or update the ci-failure issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          REF: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # shellcheck disable=SC2016  # the backticks are literal markdown, and
+          # the single quotes are what keeps them that way.
+          body=$(printf 'The JetPack image build failed on `%s` (%s) at `%s`.\n\n%s\n\nThis is the build/link gate, not a functional one: it covers the pinned dependency chain, the cuRobo v0.7.8 compile and the arm64 ROS apt packages. A failure here means the container no longer builds.' \
+            "$REF" "$EVENT" "$SHA" "$RUN_URL")
+          existing=$(gh issue list --label ci-failure --state open --limit 1 --json number -q '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+            echo "Commented on #${existing}."
+          else
+            gh issue create --label ci-failure \
+              --title "JetPack image build failing on ${REF}" --body "$body"
+          fi
+
+  # Closes the issue the moment a build goes green again, so the label keeps
+  # meaning "the container is broken right now" rather than "was, once".
+  report-recovery:
+    needs: [image]
+    if: success() && github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Close any open ci-failure issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          REF: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          existing=$(gh issue list --label ci-failure --state open --limit 1 --json number -q '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue close "$existing" \
+              --comment "The JetPack image builds again on \`${REF}\`: ${RUN_URL}"
+            echo "Closed #${existing}."
+          else
+            echo "No open ci-failure issue."
+          fi

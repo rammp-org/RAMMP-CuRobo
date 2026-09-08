@@ -1,0 +1,8 @@
+# Bulk reformats -- commits that changed formatting and nothing else.
+#
+# Enable locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# GitHub honours this file automatically.
+
+# style: apply mdformat repo-wide
+f19bcb649cacfd270fabc0af1c84b9e5dcfd2a50
