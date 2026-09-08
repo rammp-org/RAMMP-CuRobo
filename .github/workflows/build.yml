@@ -1,0 +1,125 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [main, dev]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A push to a PR branch supersedes the run already in flight, so rapid pushes
+# do not stack four runners deep.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# The FAST gates -- minutes, not the hour the JetPack image costs (image.yml).
+# Everything here is hardware-free and GPU-free by construction, which is why it
+# can gate every PR.
+#
+# Both architectures run because the deployment target is an aarch64 Jetson while
+# development happens on x86-64 workstations; a gate that only ran amd64 would
+# test an architecture nobody deploys. GitHub gives public repositories both
+# natively, so nothing here emulates.
+#
+# NOTE: there is deliberately no amd64 CONTAINER job. The image in docker/ is
+# Jetson-only by construction -- nvcr.io/nvidia/l4t-jetpack has no x86 variant,
+# the ROS apt source is pinned [arch=arm64], and pypi.jetson-ai-lab.io publishes
+# aarch64 wheels only. An x86 planner image is worth having and is tracked in
+# issue #8, but it is a second Dockerfile (CUDA 12.8 base for Blackwell sm_120,
+# stock PyPI torch), not a matrix axis on this one.
+
+jobs:
+  # The pure-Python core: configs, scene parsing, retiming, geometry. No ROS,
+  # no torch, no cuRobo -- core/ has no ROS imports by policy and imports the
+  # GPU stack lazily, and this job is what keeps that true.
+  core:
+    name: Core tests (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.10 is what Ubuntu 22.04 / Humble ships and what the Jetson runs.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install the core package
+        run: python3 -m pip install --no-build-isolation -e './core[test]'
+
+      # test_offline.py is the gate. test_smoke.py importorskips torch/cuRobo and
+      # additionally needs a live CUDA device, so it SKIPS here by design -- the
+      # runners have no GPU. That half runs on the Jetson via hil.py, and CI
+      # green does not claim otherwise.
+      - name: Offline tests
+        run: python3 -m pytest core/tests -q
+
+      # A guard, not ceremony. The step above passes if test_smoke.py skips and
+      # test_offline.py is somehow empty; this one names the file that must
+      # actually run, and pytest exits 5 ("no tests collected") if it does not.
+      # Deliberately unpiped -- a pipeline's exit status is the LAST command's,
+      # so `pytest ... | tail` reports tail's success and hides pytest's failure.
+      - name: The offline suite actually ran
+        run: python3 -m pytest core/tests/test_offline.py -q
+
+  # The IDL regenerates and the node package builds against a stock Humble.
+  # This is what catches an interface change that does not compile, without
+  # anyone waiting on the container.
+  colcon:
+    name: colcon build + node tests (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: ros:humble-ros-base
+    steps:
+      - uses: actions/checkout@v4
+
+      # core/ carries a COLCON_IGNORE -- it is a pip package, not an ament one --
+      # so --packages-select here matches what the Dockerfile and hil.py build.
+      - name: Build the interfaces and the node
+        shell: bash
+        run: |
+          . /opt/ros/humble/setup.sh
+          colcon build --symlink-install \
+            --packages-select rammp_curobo_interfaces rammp_curobo_ros
+
+      # test_start_joints_contract.py skips itself on ImportError when the
+      # message packages are not on PYTHONPATH. That is right for a laptop and
+      # wrong for CI: a broken IDL would show up as a SKIPPED test in a green
+      # run. Import the generated types explicitly first, so the skip path can
+      # never be the reason this job passes.
+      - name: The generated IDL imports (a skipped contract test is a false green)
+        shell: bash
+        run: |
+          . /opt/ros/humble/setup.sh
+          . install/setup.sh
+          python3 -c "
+          from rammp_curobo_interfaces.action import PlanToJoints, PlanToPose
+          from rammp_curobo_interfaces.srv import SetWorld
+          print('IDL OK:', PlanToPose, PlanToJoints, SetWorld)
+          "
+
+      - name: Node tests
+        shell: bash
+        run: |
+          . /opt/ros/humble/setup.sh
+          . install/setup.sh
+          python3 -m pytest rammp_curobo_ros/test -q -p no:anyio

@@ -1,0 +1,30 @@
+name: Lint
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # Runs the same hooks a commit does, including hadolint on the Jetson
+      # Dockerfile and actionlint on these workflows. Hook revisions are pinned
+      # in .pre-commit-config.yaml; updating them is a deliberate PR.
+      - uses: pre-commit/action@v3.0.1
