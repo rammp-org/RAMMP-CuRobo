@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>rammp_curobo_interfaces</name>
-  <version>0.1.0</version>
+  <version>1.0.0</version>
   <description>Action/service definitions for the rammp_curobo planner node.
     Dependency-free by policy (std interface packages only, no logic) so any
     RAMMP module can depend on it without pulling in the GPU stack.</description>
