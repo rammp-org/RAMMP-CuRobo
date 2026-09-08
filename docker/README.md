@@ -5,9 +5,11 @@ warp 1.5.1) + ROS 2 Humble + this repo's planner node, planning-only.
 Another codebase talks to it over two ROS actions and never has to touch
 the cuRobo install again:
 
-    in:  /rammp_curobo/plan_to_pose   (geometry_msgs/Pose + start_joints)
-         /rammp_curobo/plan_to_joints (7 joint angles    + start_joints)
-    out: trajectory_msgs/JointTrajectory — full cuRobo time-parameterization
+```
+in:  /rammp_curobo/plan_to_pose   (geometry_msgs/Pose + start_joints)
+     /rammp_curobo/plan_to_joints (7 joint angles    + start_joints)
+out: trajectory_msgs/JointTrajectory — full cuRobo time-parameterization
+```
 
 The container holds **no arm driver** and nothing inside it can move an
 arm: executing the returned trajectory is the caller's job, on whatever
@@ -27,10 +29,12 @@ cuRobo v0.7.8 tag→commit pin verified against the registries 2026-08-14.
 at the bottom of this file passes **23/23**. Checked inside the running
 container:
 
-    torch 2.10.0, cuda_built 12.6      # --no-deps kept CUDA 12.9 out
-    sys.flags.utf8_mode == 1
-    RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-    libopenblas.so.0 and libcudss_*.so.0 both resolve via ldconfig
+```
+torch 2.10.0, cuda_built 12.6      # --no-deps kept CUDA 12.9 out
+sys.flags.utf8_mode == 1
+RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+libopenblas.so.0 and libcudss_*.so.0 both resolve via ldconfig
+```
 
 What that does *not* prove: layers 2–5 (apt/ROS, torch, the torch runtime deps,
 cuRobo) were Docker **cache hits** from an earlier build on the same machine.
@@ -70,8 +74,7 @@ docker run --rm -it --runtime nvidia --network host --ipc host \
 - The cache volume keeps compiled CUDA kernels — without it every cold
   container pays the minutes-long first-plan warmup again.
 - Different world: append the launch invocation with your own args, e.g.
-  `... rammp-curobo:jp6 ros2 launch rammp_curobo_ros planner.launch.py
-  config:=gen3_real.yaml world:=/path/mounted/world.yaml`.
+  `... rammp-curobo:jp6 ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml world:=/path/mounted/world.yaml`.
 - **Verify the bridge on first start** (the container runs as root; mixed
   root/non-root Fast DDS shared memory is a classic silent-delivery
   failure): from a host shell, `ros2 action list | grep rammp_curobo`
