@@ -1,0 +1,19 @@
+# Rules docker/Dockerfile violates deliberately. Everything else stays on.
+ignored:
+  # DL3008 "pin versions in apt-get install". The apt packages here are ROS 2
+  # Humble's own (ros-humble-ros-base and friends) plus libopenblas0. Pinning
+  # those to exact Debian versions breaks the build the first time the ROS
+  # archive refreshes, and buys nothing: the pins that decide what this planner
+  # actually does are the pip and cuRobo ones, which ARE exact.
+  - DL3008
+  # DL3013 "pin versions in pip". Every version-critical package IS pinned
+  # (torch, torchvision, numpy, warp-lang, nvidia-cudss-cu12, and cuRobo by
+  # commit hash). The unpinned one is `ninja`, a build accelerator that has no
+  # effect on the resulting image.
+  - DL3013
+  # DL3003 "use WORKDIR to switch directory". The `cd /opt/curobo && ...` lines
+  # are deliberately inside a single RUN: splitting them into WORKDIR layers
+  # changes the layer boundaries the Dockerfile's comments carefully arrange
+  # around the ~12 min cuRobo kernel compile, so a cache-preserving edit becomes
+  # a cache-busting one.
+  - DL3003

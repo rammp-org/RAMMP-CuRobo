@@ -13,11 +13,11 @@ hardware is the world model, the timing source, and the consequences.
 
 Three mutually exclusive stacks on this bench can claim the Gen3:
 
-| stack | how it talks to the arm |
-|---|---|
+| stack                                           | how it talks to the arm                           |
+| ----------------------------------------------- | ------------------------------------------------- |
 | **this repo via ros2_kortex** (RAMMP-Kinova ws) | ros2_control @ 1 kHz, joint_trajectory_controller |
-| Demo-Software `arm_driver` | Kortex Python API, high-level servoing |
-| `~/atdev/kinova-gen3-driver` | custom C++ 1 kHz low-level driver |
+| Demo-Software `arm_driver`                      | Kortex Python API, high-level servoing            |
+| `~/atdev/kinova-gen3-driver`                    | custom C++ 1 kHz low-level driver                 |
 
 Only one may run. Before starting, confirm with the team nobody else is
 mid-session, and check locally:
@@ -63,6 +63,7 @@ This must be the ONLY bringup: never combine it with the MuJoCo sim or a
 second kortex bringup (one /controller_manager per arm).
 
 Gotchas (from the ros2_kortex source, all defaults):
+
 - `robot_ip` is REQUIRED (no default) — the launch fails without it.
 - `gripper:=robotiq_2f_85` must be passed or the gripper controller is
   simply not spawned.
@@ -143,15 +144,15 @@ The planning-side rules still apply throughout:
   build it restores single-level mode, and the JTC's stale hold position
   is a jump hazard):
   1. `ros2 service call /fault_controller/reset_fault example_interfaces/srv/Trigger`
-  2. `ros2 control switch_controllers --deactivate joint_trajectory_controller`
-  3. `ros2 control switch_controllers --activate joint_trajectory_controller`
-  Verify low-level servoing (mode 3) is back via a parallel Kortex query
-  before commanding motion. The transient form fires at controller goal
-  TRANSITIONS (a new goal right after a completed one) — which is why a
-  chained tour is best executed as ONE merged trajectory, retrying from a
-  standstill only. (This repo's planner used to run the recovery sequence
-  itself; it no longer touches the arm, so recovery belongs to whoever
-  owns the driver.)
+  1. `ros2 control switch_controllers --deactivate joint_trajectory_controller`
+  1. `ros2 control switch_controllers --activate joint_trajectory_controller`
+     Verify low-level servoing (mode 3) is back via a parallel Kortex query
+     before commanding motion. The transient form fires at controller goal
+     TRANSITIONS (a new goal right after a completed one) — which is why a
+     chained tour is best executed as ONE merged trajectory, retrying from a
+     standstill only. (This repo's planner used to run the recovery sequence
+     itself; it no longer touches the arm, so recovery belongs to whoever
+     owns the driver.)
 - **Reset succeeded, no fault spam, arm STILL ignores everything** (also
   2026-08-13): the arm itself reports SERVOING_READY (verifiable with a
   parallel Kortex session) but nothing moves — the DRIVER is wedged, not

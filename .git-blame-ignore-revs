@@ -1,0 +1,11 @@
+# Bulk reformats -- commits that changed formatting and nothing else.
+#
+# Enable locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# GitHub honours this file automatically.
+#
+# Empty on purpose. The repo-wide mdformat run was squash-merged together with
+# the change that added it (#9), so there is no formatting-only commit left to
+# ignore -- listing that squashed commit would hide a real change from blame.
+# Add future bulk reformats here, and land them as their own merge so this stays
+# usable.
