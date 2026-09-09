@@ -23,9 +23,11 @@ Without `uv`: `pip install pre-commit && pre-commit install`.
 Hook revisions are pinned. Updating them is a deliberate PR
 (`pre-commit autoupdate`), never silent drift.
 
-One bulk reformat is recorded in `.git-blame-ignore-revs` (mdformat, applied
-repo-wide when CI started running the hooks over every file). Enable it so
-`git blame` reaches the author rather than the reformat:
+Bulk reformats are recorded in `.git-blame-ignore-revs`. It is currently empty —
+the repo-wide mdformat run was squash-merged with the change that added it, so
+there is no formatting-only commit to ignore. Land future ones as their own
+merge, and enable the file so `git blame` reaches the author rather than the
+reformat:
 
 ```bash
 git config blame.ignoreRevsFile .git-blame-ignore-revs
@@ -103,13 +105,70 @@ uv run ~/.claude/skills/hardware-loop/scripts/hil.py exec -- bash -lc \
 An x86-64 CUDA image — which *could* be functionally tested in CI, unlike the
 Jetson one — is tracked in issue #8.
 
-## Releases
+## Versioning
 
-Tags are cut on `main` and publish to
-`ghcr.io/rammp-org/rammp-curobo`. `image.yml` refuses to publish a `v*` tag
-that does not point at a commit on `main`, before spending the hour rather than
-after. Semver tags only: `{{version}}`, `{{major}}.{{minor}}`, `{{major}}`, and
-`latest` follows the newest non-prerelease tag.
+Semantic versioning, from **1.0.0** on. **Downstream repos pin an exact tag,
+never a branch.** `kinova_arm_ros2` is the consumer that matters.
+
+- **MAJOR** — a breaking change to the public surface.
+- **MINOR** — additive: new optional config, new core functions, a new service.
+- **PATCH** — fixes that change no declared message, signature, or contract.
+
+### The public surface
+
+- `rammp_curobo_interfaces/` — the `.action` and `.srv` definitions. This is the
+  contract `kinova_arm_ros2` compiles against, and the one that matters most.
+- The `rammp_curobo` core API: everything in `core/rammp_curobo/__init__.py`'s
+  `__all__`.
+- The container's ROS surface: the action and service *names*, and the
+  behavioural guarantees this file states — chiefly that `start_joints` is
+  required and that nothing here can move the arm.
+
+Not covered: `scripts/`, tests, docs, the tuning inside `configs/`, and the
+internals of any module not exported above.
+
+### The rule that is easy to get wrong
+
+**In ROS 2, adding a field to an existing message is a MAJOR change**, even
+though adding things is usually minor. rosidl folds the definition into a type
+hash used for discovery and endpoint matching, so a node built against the old
+`.action` and one built against the new one do not talk — they fail to match, or
+fail on deserialization, rather than degrading gracefully.
+
+This binds hardest on `PlanToPose.action` and `PlanToJoints.action`, which
+`kinova_arm_ros2` builds against. Adding a *new* action or service alongside the
+existing ones is genuinely minor; growing one of these three is not.
+
+The milder case is the core Python API, where adding a keyword argument with a
+default is additive as usual.
+
+### Cutting a release
+
+Open a `release: vX.Y.Z` PR into `dev` containing **only** the bump and the
+changelog, so the diff is the claim and is reviewable on its own:
+
+1. Bump the version in all five places it lives — `core/pyproject.toml`,
+   `core/rammp_curobo/__init__.py`, `rammp_curobo_interfaces/package.xml`,
+   `rammp_curobo_ros/package.xml`, and `rammp_curobo_ros/setup.py`. Unlike the
+   driver, nothing here derives the number from a single file; a mismatch is a
+   silently wrong `ros2 pkg` listing, so grep before you push.
+1. In `CHANGELOG.md`, rename `Unreleased` to the new version, date it, and add
+   the comparison links at the bottom.
+1. Merge that PR, then open the `dev` → `main` promotion PR. That PR runs the
+   full JetPack build — the last gate before a tag.
+1. **Wait for CI to go green on `main`**, then tag it `vX.Y.Z` and push the tag,
+   so the tag points at a commit that has passed the gates rather than one you
+   hope will. The tag build refuses to publish a tag that is not on `main`.
+1. Confirm the image is pullable, then move the consuming repo's pin to the new
+   tag. This ordering is forced: a consumer can only pin a tag that exists.
+
+Tags publish to `ghcr.io/rammp-org/rammp-curobo`. Semver tags only —
+`{{version}}`, `{{major}}.{{minor}}`, `{{major}}` — and `latest` follows the
+newest non-prerelease tag, which is what a bare `docker pull` gets.
+
+Bump at release time, not on every merge — you cannot know whether the next
+release is minor or major until you see what landed. And the sharpest signal for
+MAJOR is not the diff: it is whether `kinova_arm_ros2` needed an adoption commit.
 
 ## On hardware
 
