@@ -41,6 +41,27 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
 - `feature/<issue-number>-<brief-description>` — forked from the latest `dev`.
   Use `bug/<issue-number>-<brief-description>` for fixes.
 
+## Merge strategy
+
+**It differs by target branch, and getting it wrong on the promotion PR costs
+you the next release's reviewability.**
+
+- `feature/*`, `bug/*` → `dev`: **squash**. One commit per unit of work keeps
+  `dev` readable, and the branch's intermediate commits are noise once it lands.
+- `dev` → `main`: **merge commit, never squash.** A squash creates a brand-new
+  commit on `main` instead of recording `dev`'s commits as ancestors, so the two
+  long-lived branches stop sharing history. Nothing breaks and no content is
+  lost — but GitHub diffs a PR from its merge base, so the *next* promotion PR
+  re-shows every change already on `main` as though it were new, and it
+  compounds each release. The one PR that most needs to be reviewable becomes
+  the least.
+- `main` → `dev` (a back-merge, after a promotion that was squashed, or after a
+  hotfix): **merge commit**, same reason.
+
+A ruleset on `main` enforces this — the squash button is not offered on a PR
+targeting it. `dev` is deliberately left unrestricted, because a back-merge into
+it needs a merge commit while ordinary feature work wants a squash.
+
 ## What CI actually gates
 
 Three workflows, deliberately split by cost, because the container build is an
@@ -155,7 +176,9 @@ changelog, so the diff is the claim and is reviewable on its own:
 1. In `CHANGELOG.md`, rename `Unreleased` to the new version, date it, and add
    the comparison links at the bottom.
 1. Merge that PR, then open the `dev` → `main` promotion PR. That PR runs the
-   full JetPack build — the last gate before a tag.
+   full JetPack build — the last gate before a tag. **Merge it with a merge
+   commit, not a squash** — see [Merge strategy](#merge-strategy). A ruleset on
+   `main` enforces it, so the button will not offer you the wrong one.
 1. **Wait for CI to go green on `main`**, then tag it `vX.Y.Z` and push the tag,
    so the tag points at a commit that has passed the gates rather than one you
    hope will. The tag build refuses to publish a tag that is not on `main`.
