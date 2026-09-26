@@ -178,3 +178,69 @@ def test_joint_goal_normalized_to_start_branch(planner):
     j3 = res.joint_traj.positions[:, 2]
     assert abs(j3[-1] - (-3.1416)) < 0.05  # stayed on the start's branch
     assert np.abs(np.diff(j3)).sum() < 0.2  # no winding
+
+
+def test_constrained_plan_holds_orientation(planner, start):
+    """A held-axis plan keeps roll and pitch fixed for the WHOLE path, not
+    just at the endpoints — checked by FK over every point."""
+    from rammp_curobo import PoseConstraint
+    from rammp_curobo.geometry import rotvec_between
+
+    q_target = list(planner.retract_pose)
+    q_target[0] += 0.4
+    pos, quat = planner.fk(q_target)
+
+    ok, why = planner.constraint_satisfied_at_start(
+        start, pos, quat, PoseConstraint(hold_roll=True, hold_pitch=True)
+    )
+    if not ok:
+        pytest.skip("retract start is not level for this goal: %s" % why)
+
+    res = planner.plan_to_pose(
+        pos, quat, start, constraint=PoseConstraint(hold_roll=True, hold_pitch=True)
+    )
+    assert res.success, res.error
+
+    _, quat0 = planner.fk(res.joint_traj.positions[0])
+    worst = 0.0
+    for q in res.joint_traj.positions:
+        _, qk = planner.fk(q)
+        rot = rotvec_between(quat0, qk)
+        worst = max(worst, abs(rot[0]), abs(rot[1]))
+    assert worst < 0.05, "roll/pitch drifted %.4f rad along the path" % worst
+
+
+def test_via_point_does_not_stop_the_arm(planner, start):
+    """The whole point of the via point: a blended approach with no
+    zero-velocity dip. A chained two-segment plan would show one."""
+    from rammp_curobo import ViaPoint
+
+    q_target = list(planner.retract_pose)
+    q_target[0] += 0.4
+    q_target[5] -= 0.3
+    pos, quat = planner.fk(q_target)
+
+    res = planner.plan_to_pose(pos, quat, start, via=ViaPoint(offset_m=0.10))
+    assert res.success, res.error
+    vel = res.joint_traj.velocities
+    assert vel is not None
+
+    speed = np.abs(vel).max(axis=1)
+    interior = speed[2:-2]  # ends are legitimately at rest
+    assert interior.min() > 1e-3, (
+        "commanded motion stalls mid-path (min |qd| = %.5f) — the via point "
+        "is behaving like a stop, not a blend" % interior.min()
+    )
+
+
+def test_unconstrained_plan_is_unchanged(planner, start):
+    """The feature must be inert when nobody asks for it."""
+    q_target = list(planner.retract_pose)
+    q_target[0] += 0.4
+    pos, quat = planner.fk(q_target)
+
+    a = planner.plan_to_pose(pos, quat, start)
+    b = planner.plan_to_pose(pos, quat, start, constraint=None, via=None)
+    assert a.success and b.success
+    assert a.joint_traj.dof == b.joint_traj.dof
+    assert abs(a.joint_traj.duration - b.joint_traj.duration) < 0.5
