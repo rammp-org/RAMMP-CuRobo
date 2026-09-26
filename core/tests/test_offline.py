@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from rammp_curobo.config import PACKAGED_CONFIG_DIR, load_planner_config, resolve_config
+from rammp_curobo.constraints import PoseConstraint, ViaPoint
 from rammp_curobo.geometry import (
     euler_deg_to_quat_xyzw,
     spin_about_tool,
@@ -223,3 +224,56 @@ def test_wrap_aware_start_match():
     current[2] = -3.1416  # same physical angle, wrapped report
     ok, err = start_state_matches(traj, current, tol_rad=0.05)
     assert ok and err < 0.01
+
+
+def test_pose_constraint_inactive_by_default():
+    c = PoseConstraint()
+    assert not c.is_active()
+    assert c.hold_vec_weight() == [0.0] * 6
+
+
+def test_hold_vec_weight_is_orientation_first():
+    """cuRobo's vec_weight is [rx, ry, rz, x, y, z] — orientation FIRST.
+    Getting this backwards silently constrains position instead of
+    orientation, which still plans, so no test but this one would catch it."""
+    c = PoseConstraint(hold_roll=True, hold_pitch=True)
+    assert c.hold_vec_weight() == [1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+
+    c = PoseConstraint(hold_z=True)
+    assert c.hold_vec_weight() == [0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+
+def test_pose_constraint_is_active_when_any_axis_held():
+    assert PoseConstraint(hold_yaw=True).is_active()
+    assert PoseConstraint(hold_x=True).is_active()
+
+
+def test_via_point_inactive_at_zero_offset():
+    assert not ViaPoint().is_active()
+    assert not ViaPoint(offset_m=0.0, linear_axis=2).is_active()
+    assert ViaPoint(offset_m=0.1).is_active()
+
+
+def test_via_point_rejects_out_of_range_fraction():
+    for bad in (1.5, -0.2, 0.0, 1.0):
+        with pytest.raises(ValueError, match="tstep_fraction"):
+            ViaPoint(offset_m=0.1, tstep_fraction=bad).validate()
+
+
+def test_via_point_rejects_non_finite():
+    with pytest.raises(ValueError, match="finite"):
+        ViaPoint(offset_m=float("nan")).validate()
+    with pytest.raises(ValueError, match="finite"):
+        ViaPoint(offset_m=0.1, tstep_fraction=float("inf")).validate()
+
+
+def test_via_point_rejects_bad_axis():
+    with pytest.raises(ValueError, match="linear_axis"):
+        ViaPoint(offset_m=0.1, linear_axis=7).validate()
+
+
+def test_inactive_via_point_validates_clean():
+    """An all-defaults ViaPoint arrives from every caller that wants
+    nothing; it must never raise."""
+    ViaPoint().validate()
+    PoseConstraint().validate()

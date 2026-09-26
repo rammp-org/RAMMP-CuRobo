@@ -27,25 +27,29 @@
 Five things the spec implies that no task's happy path exercises. Each has a test assigned to the task that owns the code.
 
 1. **A constraint and a via point requested together** — this is cuRobo's own grasp-approach combination, and the two write to overlapping fields of one `PoseCostMetric`. If the second silently overwrites the first, a caller carrying a level plate through an approach gets an unconstrained plate. → Task 2, Step 9.
-2. **`via_tstep_fraction` outside `(0, 1)`** — a client sending `1.5` or `-0.2` must be refused with a reason, not handed to cuRobo where it becomes an unhelpful status. → Task 1, Step 5 (validation) and Task 4, Step 7 (rejection at the ROS boundary).
-3. **Non-finite values** in the via offset or a constraint — NaN from a client's uninitialised struct must be refused before it reaches the GPU. → Task 1, Step 5.
-4. **All six axes held** — this asks for a goal pose identical to the start pose. cuRobo rejects it with a bare enum; we must say something a person can act on. → Task 3, Step 7.
-5. **A start that satisfies the held axes only marginally** — cuRobo's pre-check tolerances are 0.05 rad and 0.005 m, so a start 0.049 rad off passes and then behaves unpredictably. The caller deserves a distinguishable warning rather than a mystery. → Task 3, Step 5.
+1. **`via_tstep_fraction` outside `(0, 1)`** — a client sending `1.5` or `-0.2` must be refused with a reason, not handed to cuRobo where it becomes an unhelpful status. → Task 1, Step 5 (validation) and Task 4, Step 7 (rejection at the ROS boundary).
+1. **Non-finite values** in the via offset or a constraint — NaN from a client's uninitialised struct must be refused before it reaches the GPU. → Task 1, Step 5.
+1. **All six axes held** — this asks for a goal pose identical to the start pose. cuRobo rejects it with a bare enum; we must say something a person can act on. → Task 3, Step 7.
+1. **A start that satisfies the held axes only marginally** — cuRobo's pre-check tolerances are 0.05 rad and 0.005 m, so a start 0.049 rad off passes and then behaves unpredictably. The caller deserves a distinguishable warning rather than a mystery. → Task 3, Step 5.
 
----
+______________________________________________________________________
 
 ### Task 1: The value layer — `PoseConstraint` and `ViaPoint`
 
 Pure Python. This is where the axis ordering lives, tested, once — it is the single easiest thing in this feature to get backwards.
 
 **Files:**
+
 - Create: `core/rammp_curobo/constraints.py`
 - Modify: `core/rammp_curobo/__init__.py:8-23` (exports)
 - Test: `core/tests/test_offline.py` (append; it is the GPU-free suite)
 
 **Interfaces:**
+
 - Consumes: nothing.
+
 - Produces:
+
   - `PoseConstraint(hold_roll: bool = False, hold_pitch: bool = False, hold_yaw: bool = False, hold_x: bool = False, hold_y: bool = False, hold_z: bool = False, in_base_frame: bool = True)`, frozen dataclass, with `is_active() -> bool`, `hold_vec_weight() -> list[float]` (6 floats), `validate() -> None` (raises `ValueError`).
   - `ViaPoint(offset_m: float = 0.0, linear_axis: int = 2, tstep_fraction: float = 0.8)`, frozen dataclass, with `is_active() -> bool` and `validate() -> None`.
 
@@ -257,15 +261,17 @@ The cuRobo vec_weight ordering ([rx, ry, rz, x, y, z], orientation first)
 is converted in exactly one tested place."
 ```
 
----
+______________________________________________________________________
 
 ### Task 2: Translate into a `PoseCostMetric` and thread it through `plan_to_pose`
 
 **Files:**
+
 - Modify: `core/rammp_curobo/planner.py:452-467` (`_plan_config`), `:147-206` (`plan_to_pose`)
 - Test: `core/tests/test_offline.py`
 
 **Interfaces:**
+
 - Consumes: `PoseConstraint`, `ViaPoint` from Task 1.
 - Produces:
   - `CuRoboPlanner._pose_cost_kwargs(constraint, via) -> dict | None` — a **plain-value** dict (no tensors), or `None` when neither is active. Keys when active: `hold_partial_pose: bool`, `hold_vec_weight: list[float]`, `project_to_goal_frame: bool`, and when a via point is active `offset_position: float`, `linear_axis: int`, `offset_tstep_fraction: float`.
@@ -471,19 +477,23 @@ git add core/tests/test_offline.py
 git commit -m "test(core): constraint and via point compose without clobbering"
 ```
 
----
+______________________________________________________________________
 
 ### Task 3: The start-state pre-check and an honest failure message
 
 cuRobo refuses a held-axis plan when the start pose does not already satisfy the held axes — 0.05 rad angular, 0.005 m linear — and returns `INVALID_PARTIAL_POSE_COST_METRIC`, for which `_explain` has no branch. So "keep the tool level" is inherently two-phase, and the caller needs to be told that in words.
 
 **Files:**
+
 - Modify: `core/rammp_curobo/geometry.py` (add `rotvec_between`), `core/rammp_curobo/planner.py` (`_explain`, new public method)
 - Test: `core/tests/test_offline.py`
 
 **Interfaces:**
+
 - Consumes: `PoseConstraint` (Task 1), `CuRoboPlanner.fk` (existing, `planner.py:318-326`).
+
 - Produces:
+
   - `geometry.rotvec_between(q_a_xyzw, q_b_xyzw) -> list[float]` — the rotation from a to b as an axis×angle 3-vector in the base frame.
   - `CuRoboPlanner.constraint_satisfied_at_start(start, position, quaternion, constraint, quat_order="xyzw") -> tuple[bool, str | None]` — `(True, None)`, `(True, "marginal: ...")` or `(False, reason)`.
 
@@ -722,13 +732,14 @@ cuRobo returns a bare INVALID_PARTIAL_POSE_COST_METRIC; this turns it
 into a sentence that names the axis and what to do about it."
 ```
 
----
+______________________________________________________________________
 
 ### Task 4: The ROS interface — named message types, not a bool array
 
 ROS-native shape: two small message types with **named fields and named constants**, embedded in the goal. No positional arrays — the whole point of Task 1 was to stop the axis ordering being something a human has to remember, and a `bool[6]` on the wire would hand that trap straight back to every client.
 
 **Files:**
+
 - Create: `rammp_curobo_interfaces/msg/PoseAxisLock.msg`
 - Create: `rammp_curobo_interfaces/msg/ApproachVia.msg`
 - Modify: `rammp_curobo_interfaces/CMakeLists.txt:13-18` (register both)
@@ -738,7 +749,9 @@ ROS-native shape: two small message types with **named fields and named constant
 - Modify: `CHANGELOG.md`
 
 **Interfaces:**
+
 - Consumes: `PoseConstraint`, `ViaPoint` (Task 1), `plan_to_pose(..., constraint=, via=)` (Task 2).
+
 - Produces: `planner_node.constraint_from_goal(request) -> tuple[PoseConstraint, ViaPoint, str | None]` — a module-level function (not a method), so it is testable without a ROS runtime, exactly like `check_start_joints`.
 
 - [ ] **Step 1: Write the two message types**
@@ -1020,7 +1033,7 @@ Fields are appended with defaults, so an older client is unconstrained —
 a minor bump under the interfaces repo's Humble/Cyclone rules."
 ```
 
----
+______________________________________________________________________
 
 ### Task 5: A service to ask before you plan
 
@@ -1029,13 +1042,16 @@ The two-phase workflow — bring the locked axes to the goal's values, then plan
 A **new** service is a minor bump (`CONTRIBUTING.md:114`); nothing existing changes.
 
 **Files:**
+
 - Create: `rammp_curobo_interfaces/srv/CheckPoseLock.srv`
 - Modify: `rammp_curobo_interfaces/CMakeLists.txt` (register it)
 - Modify: `rammp_curobo_ros/rammp_curobo_ros/planner_node.py` (server)
 - Test: `rammp_curobo_ros/test/test_constraint_mapping.py`
 
 **Interfaces:**
+
 - Consumes: `constraint_from_goal` (Task 4), `CuRoboPlanner.constraint_satisfied_at_start` (Task 3).
+
 - Produces: the service `~/check_pose_lock`.
 
 - [ ] **Step 1: Write the service definition**
@@ -1189,18 +1205,21 @@ A locked axis is held at the goal's value, so the start must already
 match it. This answers that without planning and without the plan lock."
 ```
 
----
+______________________________________________________________________
 
 ### Task 6: Prove it on the Jetson
 
 Everything above is mapping and validation. Nothing so far has run cuRobo. This task is where the feature is either real or not, and it is also where the two unverified details get settled: whether `PoseCostMetric` takes the via-point fields as constructed in Task 2, and whether `in_base_frame` actually means level with gravity.
 
 **Files:**
+
 - Modify: `core/tests/test_smoke.py`
 - Modify: `docs/HARDWARE_BRINGUP.md`
 
 **Interfaces:**
+
 - Consumes: everything from Tasks 1-5.
+
 - Produces: no code interface; a verified answer recorded in the docs.
 
 - [ ] **Step 1: Write the constraint smoke test**
@@ -1327,7 +1346,7 @@ Verified on the Jetson against the real planner, including which frame
 sense keeps the tool level with gravity."
 ```
 
----
+______________________________________________________________________
 
 ## Notes for the reviewer
 
