@@ -66,8 +66,9 @@ what makes the plan safe to run: its first point *is* where the arm is, so
 there is no stale-plan catch-up sweep to guard against.
 
 `/rammp_curobo/plan_to_pose` takes a `geometry_msgs/Pose`;
-`/rammp_curobo/set_world` swaps the collision world. That is the entire
-public surface — there is nothing here that can move an arm.
+`/rammp_curobo/set_world` swaps the collision world; `/rammp_curobo/check_pose_lock`
+answers whether a locked-axis plan is attemptable from a given start, without
+planning. There is nothing here that can move an arm.
 
 ## Adopting into a RAMMP module
 
