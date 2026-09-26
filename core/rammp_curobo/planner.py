@@ -557,6 +557,15 @@ class CuRoboPlanner:
 
         Deliberately tensor-free so the mapping is testable without a GPU;
         _plan_config does the one-line tensor conversion.
+
+        The via-point construction (passing `offset_position` /
+        `linear_axis` / `offset_tstep_fraction` as plain values straight to
+        `PoseCostMetric(...)`) was read from cuRobo v0.7.8 source, not
+        executed — this repo has no GPU to run it against, and it HAS
+        NEVER RUN. If `PoseCostMetric`'s constructor rejects these kwargs
+        on a real GPU, the named fallback is its classmethod
+        `PoseCostMetric.create_grasp_approach_metric(...)`, which builds
+        the same offset-approach shape through a different entry point.
         """
         constraint = constraint or PoseConstraint()
         via = via or ViaPoint()

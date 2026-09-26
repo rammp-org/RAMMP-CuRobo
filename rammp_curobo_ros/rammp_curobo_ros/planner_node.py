@@ -105,6 +105,9 @@ def constraint_from_goal(request):
             tstep_fraction=float(approach.at_fraction),
         )
     try:
+        # PoseConstraint.validate() is a permanent no-op today — only
+        # ViaPoint.validate() can raise. It's still called so this keeps
+        # validating both if PoseConstraint ever grows a rule of its own.
         constraint.validate()
         via.validate()
     except ValueError as exc:

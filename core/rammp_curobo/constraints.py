@@ -7,7 +7,10 @@ getting it backwards produces a plan that is constrained in the wrong
 three axes and still succeeds.
 
 Which of rx/ry/rz is roll vs pitch vs yaw follows cuRobo's base-frame
-axis order (x, y, z). Verified on hardware in the smoke suite, not here.
+axis order (x, y, z). This is TO BE verified on hardware — it has never
+run there — and the smoke suite's
+`test_constrained_plan_holds_orientation` exists for that purpose, not
+here.
 """
 
 import math

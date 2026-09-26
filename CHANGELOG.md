@@ -22,6 +22,10 @@ that heading to the new version and bumps the five places the number lives.
   "off", so a client that sets neither plans exactly as before. And
   `~/check_pose_lock`, which answers whether a locked-axis plan can be
   attempted from a given start without planning or moving anything.
+  **Neither the constrained nor the via-point path has yet been exercised
+  against a GPU** — the smoke tests that would run real cuRobo plans for
+  both are in place, but this development machine has no CUDA device, so
+  they have only been read against cuRobo v0.7.8 source, not run.
 
 ## [1.0.0] — 2026-09-08
 
