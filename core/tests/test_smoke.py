@@ -190,11 +190,15 @@ def test_constrained_plan_holds_orientation(planner, start):
     q_target[0] += 0.4
     pos, quat = planner.fk(q_target)
 
+    # joint_1 is a rotation about the base's own z axis, so it changes
+    # neither roll nor pitch — this setup is constructed to satisfy the
+    # pre-check, so require that rather than skip past it. A skip here
+    # would let the constrained smoke test quietly stop testing itself on
+    # exactly the machine it exists to validate.
     ok, why = planner.constraint_satisfied_at_start(
         start, pos, quat, PoseConstraint(hold_roll=True, hold_pitch=True)
     )
-    if not ok:
-        pytest.skip("retract start is not level for this goal: %s" % why)
+    assert ok, "pre-check failed for a goal constructed to satisfy it: %s" % why
 
     res = planner.plan_to_pose(
         pos, quat, start, constraint=PoseConstraint(hold_roll=True, hold_pitch=True)
@@ -212,7 +216,12 @@ def test_constrained_plan_holds_orientation(planner, start):
 
 def test_via_point_does_not_stop_the_arm(planner, start):
     """The whole point of the via point: a blended approach with no
-    zero-velocity dip. A chained two-segment plan would show one."""
+    zero-velocity dip (a chained two-segment plan would show one), AND a
+    path that actually differs from the unconstrained plan. The no-stall
+    check alone is true of nearly every cuRobo plan — if PoseCostMetric
+    accepted the via fields but silently ignored the offset, that check
+    would still pass while the feature did nothing, so this also requires
+    the joint paths to diverge measurably."""
     from rammp_curobo import ViaPoint
 
     q_target = list(planner.retract_pose)
@@ -230,6 +239,23 @@ def test_via_point_does_not_stop_the_arm(planner, start):
     assert interior.min() > 1e-3, (
         "commanded motion stalls mid-path (min |qd| = %.5f) — the via point "
         "is behaving like a stop, not a blend" % interior.min()
+    )
+
+    res_plain = planner.plan_to_pose(pos, quat, start)
+    assert res_plain.success, res_plain.error
+    common = min(
+        res.joint_traj.positions.shape[0], res_plain.joint_traj.positions.shape[0]
+    )
+    max_diff = float(
+        np.abs(
+            res.joint_traj.positions[:common] - res_plain.joint_traj.positions[:common]
+        ).max()
+    )
+    assert max_diff > 1e-2, (
+        "via-point path is indistinguishable from the unconstrained plan "
+        "(max per-joint diff = %.5f rad over %d shared points) — "
+        "PoseCostMetric may be accepting the via fields but ignoring the "
+        "offset" % (max_diff, common)
     )
 
 
