@@ -70,8 +70,7 @@ class ViaPoint:
             return None
         if not math.isfinite(self.tstep_fraction):
             raise ValueError(
-                "via tstep_fraction must be finite, got %r"
-                % (self.tstep_fraction,)
+                "via tstep_fraction must be finite, got %r" % (self.tstep_fraction,)
             )
         if self.linear_axis not in (0, 1, 2):
             raise ValueError(
@@ -79,7 +78,6 @@ class ViaPoint:
             )
         if not (0.0 < self.tstep_fraction < 1.0):
             raise ValueError(
-                "via tstep_fraction must be in (0, 1), got %r"
-                % (self.tstep_fraction,)
+                "via tstep_fraction must be in (0, 1), got %r" % (self.tstep_fraction,)
             )
         return None
