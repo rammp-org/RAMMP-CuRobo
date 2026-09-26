@@ -3,13 +3,20 @@
 No ROS runtime and no GPU — same shape as test_start_joints_contract.py.
 """
 
+import math
+import threading
+
 import pytest
 
 try:
     from rammp_curobo_interfaces.action import PlanToPose
     from rammp_curobo_interfaces.srv import CheckPoseLock
 
-    from rammp_curobo_ros.planner_node import check_reply, constraint_from_goal
+    from rammp_curobo_ros.planner_node import (
+        RammpCuroboNode,
+        check_reply,
+        constraint_from_goal,
+    )
 except ImportError:  # pragma: no cover
     pytest.skip(
         "ROS message packages not on PYTHONPATH (source ROS 2 first)",
@@ -124,9 +131,17 @@ def test_check_reply_clean():
 
 
 def test_check_reply_marginal():
-    rep = check_reply(True, "marginal: held axis 'pitch' is 0.0450 from the goal")
+    """Full producer shape, error-then-limit — a hand-truncated string here
+    would leave the number ORDER untested (see the item-4 end-to-end test
+    below, which pins it against the real producer)."""
+    rep = check_reply(
+        True,
+        "marginal: held axis 'pitch' is 0.0450 from the goal (limit 0.050, 90% of it)",
+    )
     assert rep["satisfied"] is True and rep["marginal"] is True
     assert rep["worst_axis"] == "pitch"
+    assert rep["worst_error"] == pytest.approx(0.045)
+    assert rep["limit"] == pytest.approx(0.05)
 
 
 def test_check_reply_goal_frame_not_pre_checked_is_reported_clean():
@@ -145,3 +160,82 @@ def test_check_reply_goal_frame_not_pre_checked_is_reported_clean():
     assert rep["worst_error"] == 0.0
     assert rep["limit"] == 0.0
     assert rep["message"] == reason
+
+
+class _StubFk:
+    """Equivalent to core/tests/test_offline.py's _StubFk — duplicated here
+    rather than imported, since this file and core/tests live in separate
+    pytest roots (see CheckPoseLock's docker test invocation, which only
+    puts core/ itself on PYTHONPATH)."""
+
+    def __init__(self, pos, quat_xyzw):
+        self._pos, self._quat_xyzw = pos, quat_xyzw
+
+    def fk(self, q, quat_order="xyzw"):
+        return self._pos, self._quat_xyzw
+
+
+def test_check_reply_carries_the_real_producer_numbers_end_to_end():
+    """The real point of item 4: feed check_reply the ACTUAL string
+    `constraint_satisfied_at_start` produces (not a hand-written stand-in),
+    for both a marginal start and a rejected one, and assert worst_axis /
+    worst_error / limit against the values the core actually computed."""
+    from rammp_curobo.constraints import PoseConstraint
+    from rammp_curobo.geometry import euler_deg_to_quat_xyzw
+    from rammp_curobo.planner import CuRoboPlanner
+
+    goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
+    constraint = PoseConstraint(hold_roll=True)
+
+    # Marginal: 2.6 deg ~= 0.0454 rad against a 0.05 rad tolerance (91%).
+    stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([2.6, 0.0, 0.0]))
+    ok, reason = CuRoboPlanner.constraint_satisfied_at_start(
+        stub, [0.0] * 7, [0.6, 0.0, 0.4], goal_q, constraint
+    )
+    rep = check_reply(ok, reason)
+    assert rep["satisfied"] is True and rep["marginal"] is True
+    assert rep["worst_axis"] == "roll"
+    assert rep["worst_error"] == pytest.approx(math.radians(2.6), abs=1e-4)
+    assert rep["limit"] == pytest.approx(0.05)
+
+    # Rejected: 12 deg is well past the tolerance.
+    stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([12.0, 0.0, 0.0]))
+    ok, reason = CuRoboPlanner.constraint_satisfied_at_start(
+        stub, [0.0] * 7, [0.6, 0.0, 0.4], goal_q, constraint
+    )
+    rep = check_reply(ok, reason)
+    assert rep["satisfied"] is False
+    assert rep["worst_axis"] == "roll"
+    assert rep["worst_error"] == pytest.approx(math.radians(12.0), abs=1e-4)
+    assert rep["limit"] == pytest.approx(0.05)
+
+
+class _FakeNodeForLockTest:
+    """Just enough of RammpCuroboNode for _check_pose_lock_cb's busy path:
+    it must bail out on `self._plan_lock` before touching anything else
+    (self.planner, etc.), so no real node/GPU init is needed here."""
+
+    def __init__(self):
+        self._plan_lock = threading.Lock()
+
+
+def test_check_pose_lock_replies_busy_when_a_plan_is_in_flight():
+    """Item 2: the check shares cuRobo's preallocated CUDA buffers with
+    planning, so it must serialise against a plan in flight rather than
+    race it. Hold the lock (as an in-flight plan would) and confirm the
+    callback replies busy instead of touching planner state."""
+    node = _FakeNodeForLockTest()
+    node._plan_lock.acquire()
+    try:
+        response = RammpCuroboNode._check_pose_lock_cb(
+            node, CheckPoseLock.Request(), CheckPoseLock.Response()
+        )
+    finally:
+        node._plan_lock.release()
+    assert response.satisfied is False
+    assert response.message == "planner busy — a plan is in flight; retry"
+    # every other field is left at its message default
+    assert response.worst_axis == ""
+    assert response.worst_error == 0.0
+    assert response.limit == 0.0
+    assert response.marginal is False

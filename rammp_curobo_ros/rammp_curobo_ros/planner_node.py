@@ -327,35 +327,47 @@ class RammpCuroboNode(Node):
         return response
 
     def _check_pose_lock_cb(self, request, response):
-        """FK and arithmetic only — no plan lock, so this never blocks (or
-        is blocked by) a plan in flight, and a UI may poll it freely."""
-        why = check_start_joints(request.start_joints, self.planner.joint_names)
-        if why is not None:
+        """FK and arithmetic only — this never plans. But it reaches into
+        cuRobo for forward kinematics on the same preallocated CUDA buffers
+        that `plan_single` uses, so it still serialises against a plan in
+        flight via the non-blocking plan lock rather than running
+        concurrently with one. Whether concurrent FK-vs-planning access to
+        those buffers would actually be safe on the GPU is an open hardware
+        question we have not verified — so it isn't attempted."""
+        if not self._plan_lock.acquire(blocking=False):
             response.satisfied = False
-            response.message = why
+            response.message = "planner busy — a plan is in flight; retry"
             return response
-        pos = [
-            request.target.position.x,
-            request.target.position.y,
-            request.target.position.z,
-        ]
-        quat = [
-            request.target.orientation.x,
-            request.target.orientation.y,
-            request.target.orientation.z,
-            request.target.orientation.w,
-        ]
-        constraint, _, bad = constraint_from_goal(request)
-        if bad is not None:
-            response.satisfied = False
-            response.message = bad
+        try:
+            why = check_start_joints(request.start_joints, self.planner.joint_names)
+            if why is not None:
+                response.satisfied = False
+                response.message = why
+                return response
+            pos = [
+                request.target.position.x,
+                request.target.position.y,
+                request.target.position.z,
+            ]
+            quat = [
+                request.target.orientation.x,
+                request.target.orientation.y,
+                request.target.orientation.z,
+                request.target.orientation.w,
+            ]
+            constraint, _, bad = constraint_from_goal(request)
+            if bad is not None:
+                response.satisfied = False
+                response.message = bad
+                return response
+            ok, reason = self.planner.constraint_satisfied_at_start(
+                [float(v) for v in request.start_joints], pos, quat, constraint
+            )
+            for k, v in check_reply(ok, reason).items():
+                setattr(response, k, v)
             return response
-        ok, reason = self.planner.constraint_satisfied_at_start(
-            [float(v) for v in request.start_joints], pos, quat, constraint
-        )
-        for k, v in check_reply(ok, reason).items():
-            setattr(response, k, v)
-        return response
+        finally:
+            self._plan_lock.release()
 
 
 def main(args=None):
