@@ -337,6 +337,66 @@ class CuRoboPlanner:
         wxyz = [float(v) for v in state.ee_quaternion[0].tolist()]
         return pos, (wxyz if quat_order == "wxyz" else geometry.wxyz_to_xyzw(wxyz))
 
+    # cuRobo's own gate inside update_pose_cost_metric. Mirrored here so a
+    # caller gets a sentence instead of INVALID_PARTIAL_POSE_COST_METRIC.
+    HOLD_TOL_RAD = 0.05
+    HOLD_TOL_M = 0.005
+
+    def constraint_satisfied_at_start(
+        self, start, position, quaternion, constraint, quat_order="xyzw"
+    ):
+        """Can this constrained plan even be attempted from `start`?
+
+        cuRobo requires the HELD components of the start pose to already
+        match the goal, so 'keep the tool level' is two-phase: level it
+        with an unconstrained move, then transport under the constraint.
+
+        Returns (ok, reason). reason is None when clean, a 'marginal: ...'
+        string when inside tolerance but close to it, and an explanation
+        when not.
+        """
+        if constraint is None or not constraint.is_active():
+            return True, None
+
+        cur_pos, cur_quat = self.fk(start, quat_order=quat_order)
+        if quat_order == "wxyz":
+            goal_quat = geometry.wxyz_to_xyzw(quaternion)
+        else:
+            goal_quat = [float(v) for v in quaternion]
+
+        rot = geometry.rotvec_between(cur_quat, goal_quat)
+        lin = [float(position[i]) - float(cur_pos[i]) for i in range(3)]
+        held = constraint.hold_vec_weight()
+        names = ("roll", "pitch", "yaw", "x", "y", "z")
+
+        worst_ratio, worst = 0.0, None
+        for i in range(6):
+            if held[i] == 0.0:
+                continue
+            err = abs(rot[i]) if i < 3 else abs(lin[i - 3])
+            tol = CuRoboPlanner.HOLD_TOL_RAD if i < 3 else CuRoboPlanner.HOLD_TOL_M
+            ratio = err / tol
+            if ratio > worst_ratio:
+                worst_ratio, worst = ratio, (names[i], err, tol)
+
+        if worst is None:
+            return True, None
+        name, err, tol = worst
+        if worst_ratio > 1.0:
+            return False, (
+                "held axis '%s' differs by %.4f between start and goal "
+                "(limit %.3f): a held axis is held AT THE GOAL'S VALUE, so "
+                "the start must already match it — move there with an "
+                "unconstrained plan first, then plan the constrained one"
+                % (name, err, tol)
+            )
+        if worst_ratio > 0.8:
+            return True, (
+                "marginal: held axis '%s' is %.4f from the goal (limit "
+                "%.3f, %.0f%% of it)" % (name, err, tol, 100.0 * worst_ratio)
+            )
+        return True, None
+
     def joint_limits(self):
         """{'position': (2, dof) [lower; upper], 'velocity': (dof,)} in
         CONTROLLER joint order (numpy, radians)."""
@@ -595,6 +655,14 @@ class CuRoboPlanner:
     @staticmethod
     def _explain(status):
         s = str(status).upper().replace(" ", "_")
+        if "PARTIAL_POSE" in s:
+            return (
+                "the constrained plan was refused because the START pose "
+                "does not already match the GOAL on the held axes — a held "
+                "axis is held at the goal's value, so an unconstrained move "
+                "has to bring those axes there first (see "
+                "constraint_satisfied_at_start)."
+            )
         if "IK" in s:
             return (
                 "no collision-free joint solution AT the goal — move it "

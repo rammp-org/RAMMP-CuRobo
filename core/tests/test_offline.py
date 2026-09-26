@@ -315,3 +315,94 @@ def test_constraint_and_via_point_compose():
     assert kw["hold_vec_weight"][3:] == [1.0, 1.0, 0.0]
     assert kw["offset_position"] == 0.10
     assert kw["offset_tstep_fraction"] == 0.8
+
+
+def test_rotvec_between_is_zero_for_equal_quaternions():
+    from rammp_curobo.geometry import rotvec_between
+
+    q = euler_deg_to_quat_xyzw([10.0, -20.0, 35.0])
+    assert max(abs(v) for v in rotvec_between(q, q)) < 1e-9
+
+
+def test_rotvec_between_recovers_a_single_axis_rotation():
+    from rammp_curobo.geometry import rotvec_between
+
+    a = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
+    b = euler_deg_to_quat_xyzw([12.0, 0.0, 0.0])
+    v = rotvec_between(a, b)
+    assert abs(v[0] - math.radians(12.0)) < 1e-6
+    assert abs(v[1]) < 1e-6 and abs(v[2]) < 1e-6
+
+
+class _StubFk:
+    """Minimal stand-in for CuRoboPlanner: only fk() is exercised."""
+
+    def __init__(self, pos, quat):
+        self._pos, self._quat = pos, quat
+
+    def fk(self, q, quat_order="xyzw"):
+        return self._pos, self._quat
+
+
+def _check(stub, goal_pos, goal_quat, constraint):
+    from rammp_curobo.planner import CuRoboPlanner
+
+    return CuRoboPlanner.constraint_satisfied_at_start(
+        stub, [0.0] * 7, goal_pos, goal_quat, constraint
+    )
+
+
+def test_pre_check_passes_when_held_axes_already_match():
+    q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
+    stub = _StubFk([0.3, 0.0, 0.4], q)
+    ok, why = _check(stub, [0.6, 0.2, 0.4], q, PoseConstraint(hold_roll=True))
+    assert ok and why is None
+
+
+def test_pre_check_rejects_a_tilted_start():
+    stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([12.0, 0.0, 0.0]))
+    goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
+    ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, PoseConstraint(hold_roll=True))
+    assert not ok
+    assert "roll" in why
+    assert "0.05" in why  # the tolerance is named, so the caller can act
+
+
+def test_pre_check_passes_a_tilted_start_when_the_goal_is_equally_tilted():
+    """A held axis is held at the GOAL'S value, not at zero. A tool at 45
+    degrees planning to a 45-degree goal is perfectly legal and stays at 45
+    the whole way — 'held' means unchanged, not level."""
+    tilted = euler_deg_to_quat_xyzw([45.0, 0.0, 0.0])
+    stub = _StubFk([0.3, 0.0, 0.4], tilted)
+    ok, why = _check(
+        stub, [0.6, 0.2, 0.4], tilted, PoseConstraint(hold_roll=True, hold_pitch=True)
+    )
+    assert ok and why is None
+
+
+def test_pre_check_flags_a_marginal_start():
+    """0.045 rad passes cuRobo's 0.05 rad gate but only just. Silence here
+    turns into an unreproducible planning failure later."""
+    stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([2.6, 0.0, 0.0]))
+    goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
+    ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, PoseConstraint(hold_roll=True))
+    assert ok
+    assert why is not None and "marginal" in why
+
+
+def test_pre_check_explains_when_every_axis_is_held():
+    """Holding all six axes asks for a goal identical to the start. The
+    caller must be told that, not handed a status enum."""
+    stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([0.0, 0.0, 0.0]))
+    goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
+    all_held = PoseConstraint(
+        hold_roll=True,
+        hold_pitch=True,
+        hold_yaw=True,
+        hold_x=True,
+        hold_y=True,
+        hold_z=True,
+    )
+    ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, all_held)
+    assert not ok
+    assert "'x'" in why
