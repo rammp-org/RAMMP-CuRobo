@@ -297,3 +297,21 @@ def test_pose_cost_kwargs_for_a_held_constraint():
     # in_base_frame=True means DON'T project into the goal frame
     assert kw["project_to_goal_frame"] is False
     assert "offset_position" not in kw
+
+
+def test_constraint_and_via_point_compose():
+    """cuRobo's own grasp-approach metric is exactly this combination: hold
+    the orientation, free the axis the approach travels along. If one
+    overwrote the other, a carried plate would tilt during the approach."""
+    from rammp_curobo.planner import CuRoboPlanner
+
+    kw = CuRoboPlanner._pose_cost_kwargs(
+        PoseConstraint(hold_roll=True, hold_pitch=True, hold_x=True, hold_y=True),
+        ViaPoint(offset_m=0.10, linear_axis=2, tstep_fraction=0.8),
+    )
+    # orientation still held
+    assert kw["hold_vec_weight"][:3] == [1.0, 1.0, 0.0]
+    # x, y still held; z (3 + 2) freed for the approach to travel along
+    assert kw["hold_vec_weight"][3:] == [1.0, 1.0, 0.0]
+    assert kw["offset_position"] == 0.10
+    assert kw["offset_tstep_fraction"] == 0.8
