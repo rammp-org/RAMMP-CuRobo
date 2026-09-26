@@ -33,6 +33,7 @@ import numpy as np
 
 from rammp_curobo import geometry
 from rammp_curobo.config import load_planner_config, resolve_config
+from rammp_curobo.constraints import PoseConstraint, ViaPoint
 from rammp_curobo.robot_config import load_robot_config
 from rammp_curobo.scene import Scene, load_scene, scene_from_obstacles
 from rammp_curobo.types import PlanResult, Trajectory
@@ -151,6 +152,8 @@ class CuRoboPlanner:
         start,
         quat_order="xyzw",
         apply_tool_correction=None,
+        constraint=None,
+        via=None,
     ):
         """Plan a collision-free trajectory to an end-effector pose.
 
@@ -164,8 +167,17 @@ class CuRoboPlanner:
         apply_tool_correction: apply the configured tool spin/tip-offset
             calibration (authored-fingertip goals). None = apply whenever
             the config carries non-zero values.
+        constraint: PoseConstraint — tool axes to hold fixed for the whole
+            trajectory (keeping a carried object level). None = free.
+        via: ViaPoint — one blended intermediate target offset from the
+            goal along a tool axis. The path passes NEAR it without
+            stopping; it is a cost, not a waypoint to hit. None = none.
         """
         t0 = time.monotonic()
+        try:
+            self._pose_cost_kwargs(constraint, via)
+        except ValueError as exc:
+            return PlanResult.failure("BAD_CONSTRAINT", str(exc))
         if quat_order == "xyzw":
             wxyz = geometry.xyzw_to_wxyz(quaternion)
         elif quat_order == "wxyz":
@@ -195,7 +207,7 @@ class CuRoboPlanner:
         goal = Pose(position=self._tensor([xyz]), quaternion=self._tensor([wxyz]))
         try:
             result = self._motion_gen.plan_single(
-                start_state, goal, self._plan_config()
+                start_state, goal, self._plan_config(constraint, via)
             )
         except Exception as exc:
             return PlanResult.failure(
@@ -449,7 +461,35 @@ class CuRoboPlanner:
             )
         return self._curobo_state(q)
 
-    def _plan_config(self):
+    @staticmethod
+    def _pose_cost_kwargs(constraint, via):
+        """Plain-value kwargs for a PoseCostMetric, or None if unconstrained.
+
+        Deliberately tensor-free so the mapping is testable without a GPU;
+        _plan_config does the one-line tensor conversion.
+        """
+        constraint = constraint or PoseConstraint()
+        via = via or ViaPoint()
+        constraint.validate()
+        via.validate()
+        if not constraint.is_active() and not via.is_active():
+            return None
+
+        kw = {
+            "hold_partial_pose": True,
+            "hold_vec_weight": constraint.hold_vec_weight(),
+            "project_to_goal_frame": not constraint.in_base_frame,
+        }
+        if via.is_active():
+            # cuRobo frees the linear axis the approach travels along, so
+            # the trajectory can move ALONG it while the rest stays held.
+            kw["hold_vec_weight"][3 + via.linear_axis] = 0.0
+            kw["offset_position"] = float(via.offset_m)
+            kw["linear_axis"] = int(via.linear_axis)
+            kw["offset_tstep_fraction"] = float(via.tstep_fraction)
+        return kw
+
+    def _plan_config(self, constraint=None, via=None):
         from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
 
         kw = {}
@@ -458,6 +498,15 @@ class CuRoboPlanner:
             # attempts unless this is None — and the graph planner is the
             # exact thing the Jetson wheel cannot run. Never let it engage.
             kw["enable_graph_attempt"] = None
+
+        metric_kw = self._pose_cost_kwargs(constraint, via)
+        if metric_kw is not None:
+            from curobo.rollout.cost.pose_cost import PoseCostMetric
+
+            metric_kw = dict(metric_kw)
+            metric_kw["hold_vec_weight"] = self._tensor(metric_kw["hold_vec_weight"])
+            kw["pose_cost_metric"] = PoseCostMetric(**metric_kw)
+
         return MotionGenPlanConfig(
             max_attempts=self.max_attempts,
             enable_graph=self.enable_graph,

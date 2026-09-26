@@ -277,3 +277,23 @@ def test_inactive_via_point_validates_clean():
     nothing; it must never raise."""
     ViaPoint().validate()
     PoseConstraint().validate()
+
+
+def test_pose_cost_kwargs_none_when_nothing_requested():
+    from rammp_curobo.planner import CuRoboPlanner
+
+    assert CuRoboPlanner._pose_cost_kwargs(None, None) is None
+    assert CuRoboPlanner._pose_cost_kwargs(PoseConstraint(), ViaPoint()) is None
+
+
+def test_pose_cost_kwargs_for_a_held_constraint():
+    from rammp_curobo.planner import CuRoboPlanner
+
+    kw = CuRoboPlanner._pose_cost_kwargs(
+        PoseConstraint(hold_roll=True, hold_pitch=True), None
+    )
+    assert kw["hold_partial_pose"] is True
+    assert kw["hold_vec_weight"] == [1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+    # in_base_frame=True means DON'T project into the goal frame
+    assert kw["project_to_goal_frame"] is False
+    assert "offset_position" not in kw
