@@ -638,14 +638,31 @@ Add to `core/rammp_curobo/planner.py` as a public method:
         match the goal, so 'keep the tool level' is two-phase: level it
         with an unconstrained move, then transport under the constraint.
 
+        `quat_order` describes only the caller's own `quaternion` argument
+        (the goal) — the start pose is always read from `fk` in xyzw, so a
+        `quat_order="wxyz"` caller never mixes conventions between the two
+        operands fed to `rotvec_between`.
+
+        This check is scoped to `in_base_frame=True` (cuRobo's default):
+        with `in_base_frame=False` cuRobo gates the constraint in the GOAL
+        frame instead, which this check does not reproduce, so it declines
+        to judge rather than name the wrong axis.
+
         Returns (ok, reason). reason is None when clean, a 'marginal: ...'
-        string when inside tolerance but close to it, and an explanation
-        when not.
+        string when inside tolerance but close to it, an explanation when
+        not, or a 'not pre-checked: ...' string when the mode is out of
+        scope (goal-frame locking).
         """
         if constraint is None or not constraint.is_active():
             return True, None
+        if not constraint.in_base_frame:
+            return True, (
+                "not pre-checked: goal-frame locking is gated in cuRobo's "
+                "goal frame, which this check does not reproduce — expect "
+                "cuRobo to accept or refuse it"
+            )
 
-        cur_pos, cur_quat = self.fk(start, quat_order=quat_order)
+        cur_pos, cur_quat = self.fk(start, quat_order="xyzw")
         if quat_order == "wxyz":
             goal_quat = geometry.wxyz_to_xyzw(quaternion)
         else:
@@ -661,7 +678,7 @@ Add to `core/rammp_curobo/planner.py` as a public method:
             if held[i] == 0.0:
                 continue
             err = abs(rot[i]) if i < 3 else abs(lin[i - 3])
-            tol = self.HOLD_TOL_RAD if i < 3 else self.HOLD_TOL_M
+            tol = CuRoboPlanner.HOLD_TOL_RAD if i < 3 else CuRoboPlanner.HOLD_TOL_M
             ratio = err / tol
             if ratio > worst_ratio:
                 worst_ratio, worst = ratio, (names[i], err, tol)

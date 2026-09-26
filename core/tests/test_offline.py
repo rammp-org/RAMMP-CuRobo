@@ -406,3 +406,56 @@ def test_pre_check_explains_when_every_axis_is_held():
     ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, all_held)
     assert not ok
     assert "'x'" in why
+
+
+def test_pre_check_agrees_across_quat_order_for_the_goal():
+    """quat_order describes the caller's goal argument only — the start
+    pose is always read from fk in xyzw. Passing the goal as wxyz must
+    reach the same verdict as the xyzw-equivalent call, not silently mix
+    conventions inside rotvec_between."""
+    from rammp_curobo.planner import CuRoboPlanner
+
+    start_quat_xyzw = euler_deg_to_quat_xyzw([12.0, 0.0, 0.0])
+    stub = _StubFk([0.3, 0.0, 0.4], start_quat_xyzw)
+    goal_quat_xyzw = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
+    constraint = PoseConstraint(hold_roll=True)
+
+    ok_xyzw, why_xyzw = CuRoboPlanner.constraint_satisfied_at_start(
+        stub, [0.0] * 7, [0.6, 0.0, 0.4], goal_quat_xyzw, constraint, quat_order="xyzw"
+    )
+    ok_wxyz, why_wxyz = CuRoboPlanner.constraint_satisfied_at_start(
+        stub,
+        [0.0] * 7,
+        [0.6, 0.0, 0.4],
+        xyzw_to_wxyz(goal_quat_xyzw),
+        constraint,
+        quat_order="wxyz",
+    )
+    assert ok_xyzw == ok_wxyz
+    assert why_xyzw == why_wxyz
+    assert "roll" in why_xyzw  # same worst-axis on both paths
+
+
+def test_pre_check_declines_to_judge_goal_frame_constraints():
+    """in_base_frame=False means cuRobo gates the constraint in the GOAL
+    frame; rotvec_between decomposes in the BASE frame, so the pre-check
+    cannot name the right axis there and must say so instead of guessing."""
+    stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([12.0, 0.0, 0.0]))
+    goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
+    ok, why = _check(
+        stub,
+        [0.6, 0.0, 0.4],
+        goal_q,
+        PoseConstraint(hold_roll=True, in_base_frame=False),
+    )
+    assert ok
+    assert why is not None and "not pre-checked" in why
+
+
+def test_pre_check_stays_inert_for_an_inactive_goal_frame_constraint():
+    """An inactive constraint (nothing held) must stay a no-op regardless
+    of in_base_frame — inert must stay inert."""
+    stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([12.0, 0.0, 0.0]))
+    goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
+    ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, PoseConstraint(in_base_frame=False))
+    assert ok and why is None
