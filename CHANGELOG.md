@@ -12,6 +12,15 @@ that heading to the new version and bumps the five places the number lives.
 
 ## [Unreleased]
 
+### Added
+
+- Plan while holding tool-pose axes fixed (carry an object at a fixed
+  orientation, #16) and approach a goal through one blended via point the arm
+  does not stop at (#17). New core types `PoseConstraint` and `ViaPoint`; new
+  messages `PoseAxisLock` and `ApproachVia`, carried by `PlanToPose` as
+  `axis_lock` and `approach_via`. Both are appended at the end and default to
+  "off", so a client that sets neither plans exactly as before.
+
 ## [1.0.0] — 2026-09-08
 
 First tagged release, and the first published container. The planner has been in

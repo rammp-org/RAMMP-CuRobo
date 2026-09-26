@@ -6,6 +6,13 @@ geometry_msgs/Pose target
 # keeps this planner decoupled from the robot. An empty or wrong-length
 # vector is rejected — there is no "look at /joint_states" fallback.
 float64[] start_joints
+# --- appended 2026-09-26. An older client sends neither, and an absent
+# trailing field deserialises to a default-constructed message: no locks,
+# no via point, i.e. exactly today's behaviour. Appended-at-the-end is a
+# MINOR bump under rammp-interfaces-ros2's rules; inserting either of
+# these earlier would corrupt every field after it.
+PoseAxisLock axis_lock
+ApproachVia approach_via
 ---
 bool success
 string message                              # failure explanation when !success

@@ -30,7 +30,9 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
+from rammp_curobo import PoseConstraint, ViaPoint
 from rammp_curobo_interfaces.action import PlanToJoints, PlanToPose
+from rammp_curobo_interfaces.msg import PoseAxisLock
 from rammp_curobo_interfaces.srv import SetWorld
 from rammp_curobo_ros.conversions import trajectory_to_msg
 
@@ -62,6 +64,43 @@ def check_start_joints(start_joints, joint_names):
     if not all(math.isfinite(float(v)) for v in start_joints):
         return "start_joints contains a non-finite value"
     return None
+
+
+def constraint_from_goal(request):
+    """(PoseConstraint, ViaPoint, why_rejected) from a PlanToPose goal.
+
+    A goal that sets neither message maps to "unconstrained", which is also
+    what an older client's absent fields deserialise to.
+    """
+    lock = request.axis_lock
+    if lock.reference_frame not in (PoseAxisLock.FRAME_BASE, PoseAxisLock.FRAME_GOAL):
+        return (
+            PoseConstraint(),
+            ViaPoint(),
+            "unknown reference_frame %d (expected FRAME_BASE=%d or FRAME_GOAL=%d)"
+            % (lock.reference_frame, PoseAxisLock.FRAME_BASE, PoseAxisLock.FRAME_GOAL),
+        )
+    constraint = PoseConstraint(
+        hold_roll=bool(lock.lock_roll),
+        hold_pitch=bool(lock.lock_pitch),
+        hold_yaw=bool(lock.lock_yaw),
+        hold_x=bool(lock.lock_x),
+        hold_y=bool(lock.lock_y),
+        hold_z=bool(lock.lock_z),
+        in_base_frame=(lock.reference_frame == PoseAxisLock.FRAME_BASE),
+    )
+    approach = request.approach_via
+    via = ViaPoint(
+        offset_m=float(approach.offset),
+        linear_axis=int(approach.axis),
+        tstep_fraction=float(approach.at_fraction),
+    )
+    try:
+        constraint.validate()
+        via.validate()
+    except ValueError as exc:
+        return constraint, via, str(exc)
+    return constraint, via, None
 
 
 class RammpCuroboNode(Node):
@@ -151,8 +190,16 @@ class RammpCuroboNode(Node):
             req.orientation.z,
             req.orientation.w,
         ]
+        constraint, via, why = constraint_from_goal(goal_handle.request)
+        if why is not None:
+            result.success = False
+            result.message = "invalid constraint: %s" % why
+            goal_handle.abort()
+            return result
         res = self._plan(
-            lambda q: self.planner.plan_to_pose(pos, quat, start=q),
+            lambda q: self.planner.plan_to_pose(
+                pos, quat, start=q, constraint=constraint, via=via
+            ),
             goal_handle.request.start_joints,
         )
         return self._finish_plan(goal_handle, result, res)
