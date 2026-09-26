@@ -468,3 +468,37 @@ def test_pre_check_stays_inert_for_an_inactive_goal_frame_constraint():
     goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
     ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, PoseConstraint(in_base_frame=False))
     assert ok and why is None
+
+
+def test_pre_check_rejects_a_zero_quaternion_goal():
+    """geometry_msgs/Pose defaults orientation to (0,0,0,0). A zero
+    quaternion must be refused, not silently accepted as 'satisfied' —
+    plan_to_pose itself rejects this same shape as BAD_GOAL."""
+    stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([0.0, 0.0, 0.0]))
+    ok, why = _check(
+        stub, [0.6, 0.0, 0.4], [0.0, 0.0, 0.0, 0.0], PoseConstraint(hold_roll=True)
+    )
+    assert not ok
+    assert why is not None and "zero-length" in why
+
+
+def test_pre_check_rejects_a_nan_quaternion_goal():
+    stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([0.0, 0.0, 0.0]))
+    ok, why = _check(
+        stub,
+        [0.6, 0.0, 0.4],
+        [float("nan"), 0.0, 0.0, 1.0],
+        PoseConstraint(hold_roll=True),
+    )
+    assert not ok
+    assert why is not None and "non-finite" in why
+
+
+def test_pre_check_rejects_a_nan_goal_position():
+    stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([0.0, 0.0, 0.0]))
+    goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
+    ok, why = _check(
+        stub, [0.6, float("nan"), 0.4], goal_q, PoseConstraint(hold_roll=True)
+    )
+    assert not ok
+    assert why is not None and "non-finite" in why

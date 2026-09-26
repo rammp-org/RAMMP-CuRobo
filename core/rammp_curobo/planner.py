@@ -375,14 +375,27 @@ class CuRoboPlanner:
                 "cuRobo to accept or refuse it"
             )
 
-        cur_pos, cur_quat = self.fk(start, quat_order="xyzw")
+        pos = [float(v) for v in position]
+        if not all(math.isfinite(v) for v in pos):
+            return False, "goal position is non-finite"
+
         if quat_order == "wxyz":
             goal_quat = geometry.wxyz_to_xyzw(quaternion)
         else:
             goal_quat = [float(v) for v in quaternion]
+        if not all(math.isfinite(v) for v in goal_quat):
+            return False, "goal quaternion is non-finite"
+        quat_norm = math.sqrt(sum(v * v for v in goal_quat))
+        if quat_norm < 1e-6:
+            # mirrors plan_to_pose's own BAD_GOAL guard on a zero-length
+            # quaternion — this pre-check must refuse the same malformed
+            # goal, not report a confident "satisfied".
+            return False, "goal quaternion is zero-length"
+
+        cur_pos, cur_quat = self.fk(start, quat_order="xyzw")
 
         rot = geometry.rotvec_between(cur_quat, goal_quat)
-        lin = [float(position[i]) - float(cur_pos[i]) for i in range(3)]
+        lin = [pos[i] - float(cur_pos[i]) for i in range(3)]
         held = constraint.hold_vec_weight()
         names = ("roll", "pitch", "yaw", "x", "y", "z")
 
