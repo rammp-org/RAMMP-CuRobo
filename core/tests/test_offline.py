@@ -335,13 +335,22 @@ def test_rotvec_between_recovers_a_single_axis_rotation():
 
 
 class _StubFk:
-    """Minimal stand-in for CuRoboPlanner: only fk() is exercised."""
+    """Minimal stand-in for CuRoboPlanner: only fk() is exercised.
 
-    def __init__(self, pos, quat):
-        self._pos, self._quat = pos, quat
+    The constructor takes the orientation in xyzw; fk() converts to wxyz
+    on request, mirroring the real CuRoboPlanner.fk. This is deliberate,
+    not incidental: a stub that ignored quat_order and always handed back
+    the same fixed quaternion could not reproduce the bug where fk was
+    asked for wxyz and the caller silently got mismatched conventions.
+    """
+
+    def __init__(self, pos, quat_xyzw):
+        self._pos, self._quat_xyzw = pos, quat_xyzw
 
     def fk(self, q, quat_order="xyzw"):
-        return self._pos, self._quat
+        if quat_order == "wxyz":
+            return self._pos, xyzw_to_wxyz(self._quat_xyzw)
+        return self._pos, self._quat_xyzw
 
 
 def _check(stub, goal_pos, goal_quat, constraint):
