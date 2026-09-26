@@ -7,6 +7,7 @@ Actions (node name rammp_curobo):
     /rammp_curobo/plan_to_joints      rammp_curobo_interfaces/PlanToJoints
 Services:
     /rammp_curobo/set_world           rammp_curobo_interfaces/srv/SetWorld
+    /rammp_curobo/check_pose_lock     rammp_curobo_interfaces/srv/CheckPoseLock
 
 World in, plan out. This node NEVER interacts with the arm: it holds no
 driver, no controller client, no gripper client, and no /joint_states
@@ -21,6 +22,7 @@ from the planner to the driver's IDL. Do not reintroduce any of it.
 """
 
 import math
+import re
 import threading
 import time
 
@@ -33,7 +35,7 @@ from rclpy.node import Node
 from rammp_curobo import PoseConstraint, ViaPoint
 from rammp_curobo_interfaces.action import PlanToJoints, PlanToPose
 from rammp_curobo_interfaces.msg import PoseAxisLock
-from rammp_curobo_interfaces.srv import SetWorld
+from rammp_curobo_interfaces.srv import CheckPoseLock, SetWorld
 from rammp_curobo_ros.conversions import trajectory_to_msg
 
 
@@ -67,10 +69,14 @@ def check_start_joints(start_joints, joint_names):
 
 
 def constraint_from_goal(request):
-    """(PoseConstraint, ViaPoint, why_rejected) from a PlanToPose goal.
+    """(PoseConstraint, ViaPoint, why_rejected) from a PlanToPose goal, or
+    from a CheckPoseLock request.
 
     A goal that sets neither message maps to "unconstrained", which is also
-    what an older client's absent fields deserialise to.
+    what an older client's absent fields deserialise to. CheckPoseLock has
+    no `approach_via` field at all (it only asks about the axis lock), so
+    that field is read defensively and defaults to an inert ViaPoint — one
+    mapper serves both the action goal and the service request.
     """
     lock = request.axis_lock
     if lock.reference_frame not in (PoseAxisLock.FRAME_BASE, PoseAxisLock.FRAME_GOAL):
@@ -89,18 +95,48 @@ def constraint_from_goal(request):
         hold_z=bool(lock.lock_z),
         in_base_frame=(lock.reference_frame == PoseAxisLock.FRAME_BASE),
     )
-    approach = request.approach_via
-    via = ViaPoint(
-        offset_m=float(approach.offset),
-        linear_axis=int(approach.axis),
-        tstep_fraction=float(approach.at_fraction),
-    )
+    approach = getattr(request, "approach_via", None)
+    if approach is None:
+        via = ViaPoint()
+    else:
+        via = ViaPoint(
+            offset_m=float(approach.offset),
+            linear_axis=int(approach.axis),
+            tstep_fraction=float(approach.at_fraction),
+        )
     try:
         constraint.validate()
         via.validate()
     except ValueError as exc:
         return constraint, via, str(exc)
     return constraint, via, None
+
+
+_AXIS_RE = re.compile(r"'(roll|pitch|yaw|x|y|z)'")
+_NUM_RE = re.compile(r"([-+]?\d*\.?\d+)")
+
+
+def check_reply(ok, reason):
+    """(ok, reason) from the core -> the CheckPoseLock reply fields."""
+    out = {
+        "satisfied": bool(ok),
+        "message": reason or "",
+        "worst_axis": "",
+        "worst_error": 0.0,
+        "limit": 0.0,
+        "marginal": bool(ok) and bool(reason) and reason.startswith("marginal"),
+    }
+    if not reason:
+        return out
+    m = _AXIS_RE.search(reason)
+    if m:
+        out["worst_axis"] = m.group(1)
+    nums = _NUM_RE.findall(reason)
+    if nums:
+        out["worst_error"] = float(nums[0])
+    if len(nums) > 1:
+        out["limit"] = float(nums[1])
+    return out
 
 
 class RammpCuroboNode(Node):
@@ -157,6 +193,12 @@ class RammpCuroboNode(Node):
         )
         self.create_service(
             SetWorld, "~/set_world", self._set_world_cb, callback_group=self._cb
+        )
+        self.create_service(
+            CheckPoseLock,
+            "~/check_pose_lock",
+            self._check_pose_lock_cb,
+            callback_group=self._cb,
         )
 
         # Real-arm misconfiguration tripwire: without sim time this node is
@@ -282,6 +324,37 @@ class RammpCuroboNode(Node):
             except Exception as exc:
                 response.success = False
                 response.message = str(exc)
+        return response
+
+    def _check_pose_lock_cb(self, request, response):
+        """FK and arithmetic only — no plan lock, so this never blocks (or
+        is blocked by) a plan in flight, and a UI may poll it freely."""
+        why = check_start_joints(request.start_joints, self.planner.joint_names)
+        if why is not None:
+            response.satisfied = False
+            response.message = why
+            return response
+        pos = [
+            request.target.position.x,
+            request.target.position.y,
+            request.target.position.z,
+        ]
+        quat = [
+            request.target.orientation.x,
+            request.target.orientation.y,
+            request.target.orientation.z,
+            request.target.orientation.w,
+        ]
+        constraint, _, bad = constraint_from_goal(request)
+        if bad is not None:
+            response.satisfied = False
+            response.message = bad
+            return response
+        ok, reason = self.planner.constraint_satisfied_at_start(
+            [float(v) for v in request.start_joints], pos, quat, constraint
+        )
+        for k, v in check_reply(ok, reason).items():
+            setattr(response, k, v)
         return response
 
 

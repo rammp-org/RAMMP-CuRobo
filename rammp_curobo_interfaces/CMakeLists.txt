@@ -14,6 +14,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/PlanToPose.action"
   "action/PlanToJoints.action"
   "srv/SetWorld.srv"
+  "srv/CheckPoseLock.srv"
   "msg/PoseAxisLock.msg"
   "msg/ApproachVia.msg"
   DEPENDENCIES geometry_msgs trajectory_msgs

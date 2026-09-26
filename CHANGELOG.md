@@ -19,7 +19,9 @@ that heading to the new version and bumps the five places the number lives.
   does not stop at (#17). New core types `PoseConstraint` and `ViaPoint`; new
   messages `PoseAxisLock` and `ApproachVia`, carried by `PlanToPose` as
   `axis_lock` and `approach_via`. Both are appended at the end and default to
-  "off", so a client that sets neither plans exactly as before.
+  "off", so a client that sets neither plans exactly as before. And
+  `~/check_pose_lock`, which answers whether a locked-axis plan can be
+  attempted from a given start without planning or moving anything.
 
 ## [1.0.0] — 2026-09-08
 

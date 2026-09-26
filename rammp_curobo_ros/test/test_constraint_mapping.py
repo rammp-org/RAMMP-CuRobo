@@ -7,8 +7,9 @@ import pytest
 
 try:
     from rammp_curobo_interfaces.action import PlanToPose
+    from rammp_curobo_interfaces.srv import CheckPoseLock
 
-    from rammp_curobo_ros.planner_node import constraint_from_goal
+    from rammp_curobo_ros.planner_node import check_reply, constraint_from_goal
 except ImportError:  # pragma: no cover
     pytest.skip(
         "ROS message packages not on PYTHONPATH (source ROS 2 first)",
@@ -90,3 +91,57 @@ def test_non_finite_offset_is_refused():
     g.approach_via.offset = float("nan")
     _, _, why = constraint_from_goal(g)
     assert why is not None and "finite" in why
+
+
+def test_constraint_from_goal_accepts_a_service_request_without_approach_via():
+    """Ruling A: CheckPoseLock.Request has no `approach_via` field at all —
+    constraint_from_goal must not raise AttributeError on it, and must map
+    the locks correctly while returning an inert ViaPoint."""
+    req = CheckPoseLock.Request()
+    req.axis_lock.lock_roll = True
+    req.axis_lock.lock_x = True
+    c, v, why = constraint_from_goal(req)
+    assert why is None
+    assert c.hold_roll and c.hold_x and not c.hold_pitch
+    assert not v.is_active()
+
+
+def test_check_reply_reports_the_offending_axis():
+    rep = check_reply(False, "held axis 'roll' differs by 0.1234 (limit 0.050)")
+    assert rep["satisfied"] is False
+    assert rep["worst_axis"] == "roll"
+    assert rep["worst_error"] == pytest.approx(0.1234)
+    assert rep["limit"] == pytest.approx(0.05)
+    assert rep["marginal"] is False
+
+
+def test_check_reply_clean():
+    rep = check_reply(True, None)
+    assert rep["satisfied"] is True
+    assert rep["message"] == ""
+    assert rep["worst_axis"] == ""
+    assert rep["marginal"] is False
+
+
+def test_check_reply_marginal():
+    rep = check_reply(True, "marginal: held axis 'pitch' is 0.0450 from the goal")
+    assert rep["satisfied"] is True and rep["marginal"] is True
+    assert rep["worst_axis"] == "pitch"
+
+
+def test_check_reply_goal_frame_not_pre_checked_is_reported_clean():
+    """Ruling B: the goal-frame guard's reply carries no quoted axis and no
+    numbers. It must map to a clean, non-marginal, satisfied reply — not a
+    false axis report — and this must stay true even if the parser changes."""
+    reason = (
+        "not pre-checked: goal-frame locking is gated in cuRobo's goal "
+        "frame, which this check does not reproduce — expect cuRobo to "
+        "accept or refuse it"
+    )
+    rep = check_reply(True, reason)
+    assert rep["satisfied"] is True
+    assert rep["marginal"] is False
+    assert rep["worst_axis"] == ""
+    assert rep["worst_error"] == 0.0
+    assert rep["limit"] == 0.0
+    assert rep["message"] == reason
