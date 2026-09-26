@@ -299,22 +299,52 @@ def test_pose_cost_kwargs_for_a_held_constraint():
     assert "offset_position" not in kw
 
 
-def test_constraint_and_via_point_compose():
-    """cuRobo's own grasp-approach metric is exactly this combination: hold
-    the orientation, free the axis the approach travels along. If one
-    overwrote the other, a carried plate would tilt during the approach."""
+def test_via_point_forces_a_full_hold_except_the_approach_axis():
+    """cuRobo's grasp-approach metric (create_grasp_approach_metric, read
+    from real cuRobo v0.7.8 on the Jetson) holds ALL FIVE non-approach pose
+    components at the goal's value — not just the axes a PoseConstraint
+    happened to ask for. A caller who only locked roll/pitch still gets
+    yaw/x/y held too, because that is the only shape cuRobo's via point
+    supports; there is no way to combine "hold roll/pitch only" with an
+    approach the way an earlier, never-run version of this code assumed."""
     from rammp_curobo.planner import CuRoboPlanner
 
     kw = CuRoboPlanner._pose_cost_kwargs(
-        PoseConstraint(hold_roll=True, hold_pitch=True, hold_x=True, hold_y=True),
+        PoseConstraint(hold_roll=True, hold_pitch=True),
         ViaPoint(offset_m=0.10, linear_axis=2, tstep_fraction=0.8),
     )
-    # orientation still held
-    assert kw["hold_vec_weight"][:3] == [1.0, 1.0, 0.0]
-    # x, y still held; z (3 + 2) freed for the approach to travel along
-    assert kw["hold_vec_weight"][3:] == [1.0, 1.0, 0.0]
+    # everything held except z (3 + linear_axis=2), regardless of which
+    # axes the constraint explicitly asked to lock
+    assert kw["hold_vec_weight"] == [1.0, 1.0, 1.0, 1.0, 1.0, 0.0]
     assert kw["offset_position"] == 0.10
+    assert kw["linear_axis"] == 2
     assert kw["offset_tstep_fraction"] == 0.8
+
+
+def test_via_point_ignores_the_constraint_when_via_is_inactive():
+    """An inactive ViaPoint must not perturb a plain PoseConstraint plan —
+    the five-axis hold is a via-point-only behaviour."""
+    from rammp_curobo.planner import CuRoboPlanner
+
+    kw = CuRoboPlanner._pose_cost_kwargs(
+        PoseConstraint(hold_roll=True, hold_pitch=True), ViaPoint()
+    )
+    assert kw["hold_vec_weight"] == [1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+    assert "offset_position" not in kw
+
+
+def test_via_point_rejects_locking_its_own_approach_axis():
+    """Asking to hold z fixed while also approaching along z is a direct
+    contradiction — cuRobo's via point needs that axis free to travel
+    along. This must fail clearly and early (BAD_CONSTRAINT via
+    plan_to_pose), not silently pick a winner or reach cuRobo's own bare
+    INVALID_PARTIAL_POSE_COST_METRIC."""
+    from rammp_curobo.planner import CuRoboPlanner
+
+    with pytest.raises(ValueError, match="linear_axis=2"):
+        CuRoboPlanner._pose_cost_kwargs(
+            PoseConstraint(hold_z=True), ViaPoint(offset_m=0.10, linear_axis=2)
+        )
 
 
 def test_rotvec_between_is_zero_for_equal_quaternions():
@@ -467,6 +497,40 @@ def test_pre_check_stays_inert_for_an_inactive_goal_frame_constraint():
     stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([12.0, 0.0, 0.0]))
     goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
     ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, PoseConstraint(in_base_frame=False))
+    assert ok and why is None
+
+
+def test_pre_check_treats_an_active_via_point_as_a_full_hold():
+    """A via-point-only request (no PoseConstraint at all) still implies
+    cuRobo's five-axis hold (see ViaPoint's docstring) — the pre-check must
+    catch a start that disagrees with the goal on those axes with the same
+    clear sentence, not let it through to cuRobo's bare
+    INVALID_PARTIAL_POSE_COST_METRIC."""
+    from rammp_curobo.planner import CuRoboPlanner
+
+    tilted = euler_deg_to_quat_xyzw([12.0, 0.0, 0.0])
+    stub = _StubFk([0.3, 0.0, 0.4], tilted)
+    goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
+    # x/y match the start exactly, so the ONLY thing that can trip the
+    # implied hold is the 12-degree roll tilt.
+    ok, why = CuRoboPlanner.constraint_satisfied_at_start(
+        stub, [0.0] * 7, [0.3, 0.0, 0.4], goal_q, None, via=ViaPoint(offset_m=0.1)
+    )
+    assert not ok
+    assert "roll" in why
+
+
+def test_pre_check_passes_a_via_point_when_the_start_already_matches():
+    """Mirror case: the start already agrees with the goal on the five held
+    axes and only differs along the approach axis (z) — an
+    unconstrained-but-for-the-via request must be reported satisfied."""
+    from rammp_curobo.planner import CuRoboPlanner
+
+    q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
+    stub = _StubFk([0.3, 0.0, 0.4], q)
+    ok, why = CuRoboPlanner.constraint_satisfied_at_start(
+        stub, [0.0] * 7, [0.3, 0.0, 0.55], q, None, via=ViaPoint(offset_m=0.1)
+    )
     assert ok and why is None
 
 

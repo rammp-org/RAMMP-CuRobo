@@ -172,6 +172,12 @@ class CuRoboPlanner:
         via: ViaPoint — one blended intermediate target offset from the
             goal along a tool axis. The path passes NEAR it without
             stopping; it is a cost, not a waypoint to hit. None = none.
+            An ACTIVE via point forces cuRobo's own hold on the other five
+            pose components (see ViaPoint's docstring) regardless of what
+            `constraint` asks for individually — combining the two only
+            makes sense to add a redundant lock or to catch a direct
+            contradiction (locking the via's own approach axis), which
+            raises BAD_CONSTRAINT instead of reaching cuRobo.
         """
         t0 = time.monotonic()
         try:
@@ -343,13 +349,21 @@ class CuRoboPlanner:
     HOLD_TOL_M = 0.005
 
     def constraint_satisfied_at_start(
-        self, start, position, quaternion, constraint, quat_order="xyzw"
+        self, start, position, quaternion, constraint, via=None, quat_order="xyzw"
     ):
         """Can this constrained plan even be attempted from `start`?
 
         cuRobo requires the HELD components of the start pose to already
         match the goal, so 'keep the tool level' is two-phase: level it
         with an unconstrained move, then transport under the constraint.
+
+        `via`: an ACTIVE ViaPoint implies cuRobo's own hold on the five
+        pose components other than its approach axis (see ViaPoint's
+        docstring) — REGARDLESS of `constraint`'s individual hold_* flags.
+        Pass the same `constraint`/`via` pair here that will go to
+        `plan_to_pose` and this reproduces exactly what cuRobo will
+        require, so a via-point-only request gets the same clear sentence
+        instead of surfacing as the bare INVALID_PARTIAL_POSE_COST_METRIC.
 
         `quat_order` describes only the caller's own `quaternion` argument
         (the goal) — the start pose is always read from `fk` in xyzw, so a
@@ -364,9 +378,13 @@ class CuRoboPlanner:
         Returns (ok, reason). reason is None when clean, a 'marginal: ...'
         string when inside tolerance but close to it, an explanation when
         not, or a 'not pre-checked: ...' string when the mode is out of
-        scope (goal-frame locking).
+        scope (goal-frame locking). A constraint/via contradiction (locking
+        the via's own approach axis) reports as (False, <reason>) too,
+        matching every other 'this can't work' path here.
         """
-        if constraint is None or not constraint.is_active():
+        constraint = constraint or PoseConstraint()
+        via = via or ViaPoint()
+        if not constraint.is_active() and not via.is_active():
             return True, None
         if not constraint.in_base_frame:
             return True, (
@@ -374,6 +392,12 @@ class CuRoboPlanner:
                 "goal frame, which this check does not reproduce — expect "
                 "cuRobo to accept or refuse it"
             )
+        try:
+            constraint.validate()
+            via.validate()
+            held = CuRoboPlanner._effective_hold_vec_weight(constraint, via)
+        except ValueError as exc:
+            return False, str(exc)
 
         pos = [float(v) for v in position]
         if not all(math.isfinite(v) for v in pos):
@@ -396,7 +420,6 @@ class CuRoboPlanner:
 
         rot = geometry.rotvec_between(cur_quat, goal_quat)
         lin = [pos[i] - float(cur_pos[i]) for i in range(3)]
-        held = constraint.hold_vec_weight()
         names = ("roll", "pitch", "yaw", "x", "y", "z")
 
         worst_ratio, worst = 0.0, None
@@ -552,20 +575,52 @@ class CuRoboPlanner:
         return self._curobo_state(q)
 
     @staticmethod
+    def _effective_hold_vec_weight(constraint, via):
+        """The 6-vector [rx, ry, rz, x, y, z] cuRobo will actually apply
+        once `via` is folded in.
+
+        An INACTIVE via point changes nothing: the effective hold is just
+        `constraint.hold_vec_weight()`. An ACTIVE via point overrides it —
+        cuRobo's grasp-approach metric holds every component except its own
+        `linear_axis` (see ViaPoint's docstring); `constraint`'s individual
+        hold_* flags cannot loosen that. The one thing `constraint` can do
+        is contradict it, by asking to hold the very axis `via` needs free
+        to approach along — that raises ValueError rather than silently
+        picking a winner.
+        """
+        constraint = constraint or PoseConstraint()
+        via = via or ViaPoint()
+        if not via.is_active():
+            return constraint.hold_vec_weight()
+        if constraint.hold_vec_weight()[3 + via.linear_axis] != 0.0:
+            raise ValueError(
+                "via point travels along linear_axis=%d, but the "
+                "constraint asks to hold that same axis fixed — pick a "
+                "different approach axis or drop the lock" % via.linear_axis
+            )
+        hold = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        hold[3 + via.linear_axis] = 0.0
+        return hold
+
+    @staticmethod
     def _pose_cost_kwargs(constraint, via):
-        """Plain-value kwargs for a PoseCostMetric, or None if unconstrained.
+        """Plain-value kwargs describing the PoseCostMetric to build, or
+        None if unconstrained.
 
         Deliberately tensor-free so the mapping is testable without a GPU;
-        _plan_config does the one-line tensor conversion.
+        _plan_config does the tensor / PoseCostMetric(-subclass) work.
 
-        The via-point construction (passing `offset_position` /
-        `linear_axis` / `offset_tstep_fraction` as plain values straight to
-        `PoseCostMetric(...)`) was read from cuRobo v0.7.8 source, not
-        executed — this repo has no GPU to run it against, and it HAS
-        NEVER RUN. If `PoseCostMetric`'s constructor rejects these kwargs
-        on a real GPU, the named fallback is its classmethod
-        `PoseCostMetric.create_grasp_approach_metric(...)`, which builds
-        the same offset-approach shape through a different entry point.
+        Verified against real cuRobo v0.7.8 by introspection on the Jetson:
+        `PoseCostMetric.__init__` takes NO `linear_axis` kwarg, and
+        `offset_position` is a 3-vector, not a scalar — passing them as
+        plain values straight to `PoseCostMetric(...)` (an earlier version
+        of this function did) raises `PoseCostMetric.__init__() got an
+        unexpected keyword argument 'linear_axis'`. So this function hands
+        back only PLAIN values; `_plan_config` builds the via-point case
+        through cuRobo's own supported entry point for it,
+        `PoseCostMetric.create_grasp_approach_metric(...)`, using
+        `offset_position` / `linear_axis` / `offset_tstep_fraction` from
+        here as that classmethod's own (scalar) arguments.
         """
         constraint = constraint or PoseConstraint()
         via = via or ViaPoint()
@@ -576,13 +631,12 @@ class CuRoboPlanner:
 
         kw = {
             "hold_partial_pose": True,
-            "hold_vec_weight": constraint.hold_vec_weight(),
+            "hold_vec_weight": CuRoboPlanner._effective_hold_vec_weight(
+                constraint, via
+            ),
             "project_to_goal_frame": not constraint.in_base_frame,
         }
         if via.is_active():
-            # cuRobo frees the linear axis the approach travels along, so
-            # the trajectory can move ALONG it while the rest stays held.
-            kw["hold_vec_weight"][3 + via.linear_axis] = 0.0
             kw["offset_position"] = float(via.offset_m)
             kw["linear_axis"] = int(via.linear_axis)
             kw["offset_tstep_fraction"] = float(via.tstep_fraction)
@@ -602,9 +656,23 @@ class CuRoboPlanner:
         if metric_kw is not None:
             from curobo.rollout.cost.pose_cost import PoseCostMetric
 
-            metric_kw = dict(metric_kw)
-            metric_kw["hold_vec_weight"] = self._tensor(metric_kw["hold_vec_weight"])
-            kw["pose_cost_metric"] = PoseCostMetric(**metric_kw)
+            if (via or ViaPoint()).is_active():
+                # The supported path for an approach — it is what cuRobo's
+                # own tests use, and it builds the 3-vector offset_position
+                # PoseCostMetric.__init__ actually requires internally.
+                kw["pose_cost_metric"] = PoseCostMetric.create_grasp_approach_metric(
+                    offset_position=metric_kw["offset_position"],
+                    linear_axis=metric_kw["linear_axis"],
+                    tstep_fraction=metric_kw["offset_tstep_fraction"],
+                    project_to_goal_frame=metric_kw["project_to_goal_frame"],
+                    tensor_args=self._tensor_args,
+                )
+            else:
+                metric_kw = dict(metric_kw)
+                metric_kw["hold_vec_weight"] = self._tensor(
+                    metric_kw["hold_vec_weight"]
+                )
+                kw["pose_cost_metric"] = PoseCostMetric(**metric_kw)
 
         return MotionGenPlanConfig(
             max_attempts=self.max_attempts,

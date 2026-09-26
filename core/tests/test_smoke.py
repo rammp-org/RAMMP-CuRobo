@@ -221,13 +221,20 @@ def test_via_point_does_not_stop_the_arm(planner, start):
     check alone is true of nearly every cuRobo plan — if PoseCostMetric
     accepted the via fields but silently ignored the offset, that check
     would still pass while the feature did nothing, so this also requires
-    the joint paths to diverge measurably."""
+    the joint paths to diverge measurably.
+
+    cuRobo's via point (create_grasp_approach_metric) forces a hold on
+    every pose component except its own approach axis — see ViaPoint's
+    docstring — so the start must already match the goal on the other
+    five. Build the goal as the START's own FK, offset only along z (the
+    default linear_axis), rather than perturbing joints the way the other
+    smoke tests do: any joint perturbation here would also move x/y/
+    orientation and trip the implied hold before the via-blend behaviour
+    this test exists to check is even reached."""
     from rammp_curobo import ViaPoint
 
-    q_target = list(planner.retract_pose)
-    q_target[0] += 0.4
-    q_target[5] -= 0.3
-    pos, quat = planner.fk(q_target)
+    pos, quat = planner.fk(start)
+    pos = [pos[0], pos[1], pos[2] + 0.15]
 
     res = planner.plan_to_pose(pos, quat, start, via=ViaPoint(offset_m=0.10))
     assert res.success, res.error

@@ -7,10 +7,9 @@ getting it backwards produces a plan that is constrained in the wrong
 three axes and still succeeds.
 
 Which of rx/ry/rz is roll vs pitch vs yaw follows cuRobo's base-frame
-axis order (x, y, z). This is TO BE verified on hardware — it has never
-run there — and the smoke suite's
-`test_constrained_plan_holds_orientation` exists for that purpose, not
-here.
+axis order (x, y, z). VERIFIED on the Jetson against real cuRobo
+(2026-09-26): the smoke suite's `test_constrained_plan_holds_orientation`
+passed — locking roll/pitch genuinely holds them across a real plan.
 """
 
 import math
@@ -54,9 +53,24 @@ class PoseConstraint:
 class ViaPoint:
     """One blended intermediate target, offset from the GOAL along a tool axis.
 
-    This is cuRobo's only genuine via-point mechanism and it is a cost, not
-    a constraint: the trajectory passes NEAR the offset without stopping,
-    it does not hit it exactly. offset_m == 0.0 means no via point.
+    This is cuRobo's grasp-approach metric
+    (`PoseCostMetric.create_grasp_approach_metric`, read by introspection
+    against real cuRobo v0.7.8 on the Jetson) and it is a cost, not a hard
+    waypoint: the trajectory passes NEAR the offset without stopping, it
+    does not hit it exactly. offset_m == 0.0 means no via point.
+
+    IMPORTANT — a via point is NOT independent of PoseConstraint. cuRobo's
+    approach metric holds the other FIVE pose components (all three
+    rotations plus the two linear axes other than `linear_axis`) fixed at
+    the GOAL's values for the whole trajectory while it travels along the
+    freed axis — that hold is what makes it an "approach" rather than a
+    generic waypoint. So asking only for "approach along z" also holds
+    roll/pitch/yaw/x/y at the goal, whether or not a PoseConstraint asked
+    for it. When a PoseConstraint and an active ViaPoint are both passed to
+    the planner, the via point's forced five-axis hold wins: the
+    constraint's individual hold_* flags are used only to catch a direct
+    contradiction — asking to hold the very axis `linear_axis` needs free to
+    approach along (see CuRoboPlanner._effective_hold_vec_weight).
     """
 
     offset_m: float = 0.0
