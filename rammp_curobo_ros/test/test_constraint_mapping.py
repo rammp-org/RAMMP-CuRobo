@@ -18,9 +18,21 @@ try:
         check_reply,
         constraint_from_goal,
     )
-except ImportError:  # pragma: no cover
+except ImportError as exc:  # pragma: no cover
+    # The skip NAMES what was missing. This file silently skipped through an
+    # entire interface rewrite -- every test in it was stale and four were
+    # broken, and "1 skipped" looked indistinguishable from "fine". To run it:
+    #
+    #   source install/setup.bash
+    #   PYTHONPATH=<ws>/src/RAMMP-CuRobo/core:<ws>/src/RAMMP-CuRobo/rammp_curobo_ros \
+    #     python3 -m pytest .../test_constraint_mapping.py
+    #
+    # rammp_curobo_ros is NOT in the node workspace's --packages-up-to build,
+    # which is why sourcing install/setup.bash alone is not enough.
     pytest.skip(
-        "ROS message packages not on PYTHONPATH (source ROS 2 first)",
+        "cannot import the planner node or its messages, so NOTHING in this "
+        "file ran: %s. Source install/setup.bash and put RAMMP-CuRobo/core "
+        "and RAMMP-CuRobo/rammp_curobo_ros on PYTHONPATH." % exc,
         allow_module_level=True,
     )
 
@@ -158,35 +170,18 @@ def test_check_reply_clean():
 
 
 def test_check_reply_marginal():
-    """Full producer shape, error-then-limit — a hand-truncated string here
-    would leave the number ORDER untested (see the item-4 end-to-end test
-    below, which pins it against the real producer)."""
+    """A marginal reply is satisfied AND flagged, and carries the measured
+    numbers -- which are passed in, not recovered from the sentence."""
     rep = check_reply(
         True,
-        "marginal: held axis 'pitch' is 0.0450 from the goal (limit 0.050, 90% of it)",
+        "marginal: the goal's tilt (roll/pitch) is 1.80 deg from the start "
+        "(limit 2.00, 90% of it)",
+        math.radians(1.8),
+        math.radians(2.0),
     )
     assert rep["satisfied"] is True and rep["marginal"] is True
-    assert rep["worst_axis"] == "pitch"
-    assert rep["worst_error"] == pytest.approx(0.045)
-    assert rep["limit"] == pytest.approx(0.05)
-
-
-def test_check_reply_goal_frame_not_pre_checked_is_reported_clean():
-    """Ruling B: the goal-frame guard's reply carries no quoted axis and no
-    numbers. It must map to a clean, non-marginal, satisfied reply — not a
-    false axis report — and this must stay true even if the parser changes."""
-    reason = (
-        "not pre-checked: goal-frame locking is gated in cuRobo's goal "
-        "frame, which this check does not reproduce — expect cuRobo to "
-        "accept or refuse it"
-    )
-    rep = check_reply(True, reason)
-    assert rep["satisfied"] is True
-    assert rep["marginal"] is False
-    assert rep["worst_axis"] == ""
-    assert rep["worst_error"] == 0.0
-    assert rep["limit"] == 0.0
-    assert rep["message"] == reason
+    assert rep["deviation_deg"] == pytest.approx(1.8)
+    assert rep["limit_deg"] == pytest.approx(2.0)
 
 
 class _StubFk:
@@ -195,8 +190,11 @@ class _StubFk:
     pytest roots (see the hold check's docker test invocation, which only
     puts core/ itself on PYTHONPATH)."""
 
-    def __init__(self, pos, quat_xyzw):
+    def __init__(self, pos, quat_xyzw, tolerance_deg=2.0):
         self._pos, self._quat_xyzw = pos, quat_xyzw
+        # The core's pre-check is called unbound with this stub as `self`, so
+        # every attribute it reads has to exist here -- including the tolerance.
+        self.constraint_tolerance_rad = math.radians(tolerance_deg)
 
     def fk(self, q, quat_order="xyzw"):
         return self._pos, self._quat_xyzw
@@ -265,7 +263,6 @@ def test_check_orientation_hold_replies_busy_when_a_plan_is_in_flight():
     assert response.satisfied is False
     assert response.message == "planner busy — a plan is in flight; retry"
     # every other field is left at its message default
-    assert response.worst_axis == ""
-    assert response.worst_error == 0.0
-    assert response.limit == 0.0
+    assert response.deviation_deg == 0.0
+    assert response.limit_deg == 0.0
     assert response.marginal is False
