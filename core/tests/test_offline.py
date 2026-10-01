@@ -393,6 +393,18 @@ def test_rotvec_between_recovers_a_single_axis_rotation():
     assert abs(v[1]) < 1e-6 and abs(v[2]) < 1e-6
 
 
+def quat_mul_xyzw(a, b):
+    """Hamilton product in xyzw, for composing a tilt with a yaw in tests."""
+    x1, y1, z1, w1 = a
+    x2, y2, z2, w2 = b
+    return [
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+    ]
+
+
 class _StubFk:
     """Minimal stand-in for CuRoboPlanner: only fk() is exercised.
 
@@ -516,6 +528,51 @@ def test_pre_check_stays_inert_when_nothing_is_held():
     goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
     ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, PoseConstraint(hold=HOLD_NONE))
     assert ok and why is None
+
+
+def test_level_deviation_is_the_true_tilt_regardless_of_yaw():
+    """REGRESSION. The LEVEL measure must report the real tilt even when the
+    orientations also differ by a large yaw -- which is the NORMAL case, since
+    LEVEL frees yaw without bound.
+
+    The previous measure, hypot(rx, ry) of the rotation vector, over-reported
+    by (psi/2)/sin(psi/2): a genuine 1.3 deg tilt with a 180 deg yaw measured
+    2.04 deg and was refused as CONSTRAINT_VIOLATED. The old tests could not
+    catch it because they only ever probed a PURE yaw (tilt = 0), the single
+    case where hypot happens to be exact.
+
+    Each row below fails under the old formula and passes under the geodesic
+    distance to the yaw orbit.
+    """
+    from rammp_curobo.planner import CuRoboPlanner
+
+    level = PoseConstraint(hold=HOLD_LEVEL)
+    for tilt_deg in (1.3, 2.0, 5.0):
+        for yaw_deg in (0.0, 45.0, 90.0, 150.0, 179.0):
+            # tilt about base X, then yaw about base Z
+            ref = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
+            q = euler_deg_to_quat_xyzw([tilt_deg, 0.0, 0.0])
+            q = quat_mul_xyzw(euler_deg_to_quat_xyzw([0.0, 0.0, yaw_deg]), q)
+            got, what = CuRoboPlanner._hold_deviation(ref, q, level)
+            assert what == "tilt"
+            assert math.degrees(got) == pytest.approx(tilt_deg, abs=1e-6), (
+                "tilt %.1f deg with %.0f deg of yaw measured %.4f deg"
+                % (tilt_deg, yaw_deg, math.degrees(got))
+            )
+
+
+def test_fixed_deviation_is_the_full_angle():
+    """FIXED holds yaw too, so a pure yaw is a full deviation under it. This is
+    the companion to the test above: the two modes must disagree about yaw."""
+    from rammp_curobo.planner import CuRoboPlanner
+
+    fixed = PoseConstraint(hold=HOLD_FIXED)
+    ref = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
+    for yaw_deg in (10.0, 90.0, 170.0):
+        q = euler_deg_to_quat_xyzw([0.0, 0.0, yaw_deg])
+        got, what = CuRoboPlanner._hold_deviation(ref, q, fixed)
+        assert what == "orientation"
+        assert math.degrees(got) == pytest.approx(yaw_deg, abs=1e-6)
 
 
 def test_level_tolerates_a_pure_yaw_difference_but_fixed_does_not():

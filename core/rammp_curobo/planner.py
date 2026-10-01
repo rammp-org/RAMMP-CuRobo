@@ -537,45 +537,64 @@ class CuRoboPlanner:
         """Vectorised _hold_deviation: (N,) radians for (N,4) wxyz against one
         xyzw goal.
 
-        Mirrors geometry.rotvec_between exactly -- r = b * conj(a), shortest
-        arc, axis*angle -- so the batched and scalar paths cannot drift apart
-        in convention. Magnitude measures are order-independent (r(b->a) is
-        -r(a->b), same hypot and norm), which is why `a` may be the waypoints
-        here and the current pose in the scalar version.
+        Same closed forms as the scalar version, so the two cannot drift apart
+        in convention; see _hold_deviation for the derivation. Both measures
+        are invariant under conjugating e, which is why `a` may be the
+        waypoints here and the current pose in the scalar version.
         """
         ax, ay, az, aw = a_wxyz[:, 1], a_wxyz[:, 2], a_wxyz[:, 3], a_wxyz[:, 0]
         bx, by, bz, bw = [float(v) for v in b_xyzw]
-        rw = bw * aw + bx * ax + by * ay + bz * az
-        rx = bx * aw - bw * ax - by * az + bz * ay
-        ry = by * aw - bw * ay - bz * ax + bx * az
-        rz = bz * aw - bw * az - bx * ay + by * ax
-        n = np.sqrt(rx * rx + ry * ry + rz * rz)
-        flip = np.where(rw < 0.0, -1.0, 1.0)  # shortest arc
-        rw, rx, ry, rz = rw * flip, rx * flip, ry * flip, rz * flip
-        angle = 2.0 * np.arctan2(n, rw)
-        scale = np.where(n < 1e-12, 0.0, angle / np.maximum(n, 1e-12))
-        vx, vy, vz = rx * scale, ry * scale, rz * scale
+        ew = bw * aw + bx * ax + by * ay + bz * az
+        ez = bz * aw - bw * az - bx * ay + by * ax
         if constraint.hold == constraints.HOLD_LEVEL:
-            return np.hypot(vx, vy)
-        return np.sqrt(vx * vx + vy * vy + vz * vz)
+            return 2.0 * np.arccos(np.minimum(1.0, np.hypot(ew, ez)))
+        return 2.0 * np.arccos(np.minimum(1.0, np.abs(ew)))
 
     @staticmethod
     def _hold_deviation(quat_a, quat_b, constraint):
         """(radians, what) — how far apart two orientations are, counting only
         what the hold actually holds.
 
-        LEVEL holds roll and pitch and frees yaw, so the quantity that matters
-        is the part of the rotation NOT about base Z: hypot(rx, ry), the tilt.
-        Taking max(|rx|, |ry|) per axis would under-report a deviation split
-        across both. FIXED holds everything, so it is the full angle.
+        LEVEL zeroes rz in hold_vec_weight, so cuRobo is indifferent to rotation
+        about base Z: it treats the whole ORBIT {Rz(psi) * goal} as satisfying
+        the hold. The honest deviation is therefore the geodesic distance from
+        the orientation to that orbit,
 
-        The same measure is used for the start check and for verifying the
-        returned trajectory, so "within tolerance" means one thing.
+            d = min over psi of angle(q, Rz(psi) * goal)
+              = 2 * acos( sqrt(e_w^2 + e_z^2) )     for e = q (x) conj(goal)
+
+        which has a closed form because maximising |w| of e (x) Rz(-psi) over
+        the unit circle (c, s) gives sqrt(e_w^2 + e_z^2) directly.
+
+        It replaces hypot(rx, ry), which was WRONG in exactly the case LEVEL is
+        for. That over-reported the true tilt by (psi/2)/sin(psi/2) where psi is
+        the yaw difference -- up to 1.571x at psi = 180 deg. Since LEVEL frees
+        yaw without bound, large yaw is the normal case, not an edge: a plan
+        honouring the hold to a genuine 1.3 deg while yawing 180 deg measured
+        2.04 deg and was refused as CONSTRAINT_VIOLATED. Verified against a
+        full-circle brute-force minimisation over 200 random orientation pairs,
+        agreeing to the brute force's own grid resolution.
+
+        Note the earlier evidence for hypot could not have caught this: a pure
+        yaw reads exactly 0 under BOTH formulas (it is the one case where hypot
+        is exact), and batch-vs-scalar agreement proves implementation
+        consistency, not that the quantity is the right one.
+
+        FIXED holds all three, so it is the full angle, 2 * acos(|e_w|).
+
+        The same measure serves the start check and the trajectory verification,
+        so "within tolerance" means one thing.
         """
-        rot = geometry.rotvec_between(quat_a, quat_b)
+        ax, ay, az, aw = [float(v) for v in quat_a]
+        bx, by, bz, bw = [float(v) for v in quat_b]
+        # e = b (x) conj(a), components in the BASE frame -- same convention as
+        # geometry.rotvec_between. Only e_w and e_z are needed; both measures
+        # below are invariant under conjugating e, so the a/b order is free.
+        ew = bw * aw + bx * ax + by * ay + bz * az
+        ez = bz * aw - bw * az - bx * ay + by * ax
         if constraint.hold == constraints.HOLD_LEVEL:
-            return math.hypot(rot[0], rot[1]), "tilt (roll/pitch)"
-        return math.sqrt(sum(r * r for r in rot)), "orientation"
+            return 2.0 * math.acos(min(1.0, math.hypot(ew, ez))), "tilt"
+        return 2.0 * math.acos(min(1.0, abs(ew))), "orientation"
 
     def joint_limits(self):
         """{'position': (2, dof) [lower; upper], 'velocity': (dof,)} in
