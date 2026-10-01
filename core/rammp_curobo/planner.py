@@ -273,7 +273,16 @@ class CuRoboPlanner:
         # controller order -> cuRobo cspace order, as an index permutation
         # rather than _to_curobo_order's per-row dict rebuild.
         idx = [self.joint_names.index(n) for n in self._curobo_joint_names]
-        rows = np.asarray(traj.positions, dtype=float)[:, idx]
+        # ascontiguousarray is REQUIRED, not defensive. cuRobo's fused
+        # kinematics kernel asserts joint_vec.is_contiguous(), and the tensor
+        # built from this column selection arrives non-contiguous, so the
+        # batched call dies with an INTERNAL ASSERT FAILED from
+        # kinematics_fused_kernel.cu. The single-row fk() path never hit it.
+        # Measured in the container: as-is contiguous=False -> assert;
+        # ascontiguousarray -> (N, 4) quaternions back.
+        rows = np.ascontiguousarray(
+            np.asarray(traj.positions, dtype=float)[:, idx]
+        )
         state = self._motion_gen.kinematics.get_state(self._tensor(rows))
         wxyz = state.ee_quaternion.detach().cpu().numpy().astype(float)
         dev = self._hold_deviation_batch(
