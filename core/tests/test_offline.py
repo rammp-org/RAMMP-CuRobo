@@ -543,7 +543,7 @@ def test_pre_check_ignores_an_active_via_point():
     THE START, and refused accordingly. Measured against real cuRobo: a via's
     hold engages at tstep_fraction, not at the start, so the same goal plans
     perfectly well. The pre-check was refusing plans that work — through the
-    CheckPoseLock service, to callers who had no way to tell it was wrong.
+    hold-check service, to callers who had no way to tell it was wrong.
 
     With no constraint and only a via, there is nothing for this check to
     judge, so it must pass regardless of how tilted the start is."""

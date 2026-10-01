@@ -10,7 +10,8 @@ import pytest
 
 try:
     from rammp_curobo_interfaces.action import PlanToPose
-    from rammp_curobo_interfaces.srv import CheckPoseLock
+    from rammp_curobo_interfaces.msg import OrientationHold
+    from rammp_curobo_interfaces.srv import CheckOrientationHold
 
     from rammp_curobo_ros.planner_node import (
         RammpCuroboNode,
@@ -33,28 +34,34 @@ def test_default_goal_is_unconstrained():
     assert not v.is_active()
 
 
-def test_named_locks_map_to_the_right_axes():
+def test_level_maps_to_holding_roll_and_pitch_only():
     g = PlanToPose.Goal()
-    g.axis_lock.lock_roll = True
-    g.axis_lock.lock_pitch = True
+    g.hold.hold = OrientationHold.HOLD_LEVEL
     c, _, why = constraint_from_goal(g)
     assert why is None
-    assert c.hold_roll and c.hold_pitch and not c.hold_yaw
     assert c.hold_vec_weight() == [1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
 
 
-def test_reference_frame_constant_maps_to_base_frame():
-    from rammp_curobo_interfaces.msg import PoseAxisLock
-
+def test_fixed_maps_to_holding_all_three_rotations():
     g = PlanToPose.Goal()
-    g.axis_lock.lock_roll = True
-    g.axis_lock.reference_frame = PoseAxisLock.FRAME_BASE
-    c, _, _ = constraint_from_goal(g)
-    assert c.in_base_frame is True
+    g.hold.hold = OrientationHold.HOLD_FIXED
+    c, _, why = constraint_from_goal(g)
+    assert why is None
+    assert c.hold_vec_weight() == [1.0, 1.0, 1.0, 0.0, 0.0, 0.0]
 
-    g.axis_lock.reference_frame = PoseAxisLock.FRAME_GOAL
-    c, _, _ = constraint_from_goal(g)
-    assert c.in_base_frame is False
+
+def test_no_mode_maps_to_holding_position():
+    """Position is never held, whatever the mode. The message has no field
+    that could ask for it, and this pins that the mapper cannot invent one."""
+    for mode in (
+        OrientationHold.HOLD_NONE,
+        OrientationHold.HOLD_LEVEL,
+        OrientationHold.HOLD_FIXED,
+    ):
+        g = PlanToPose.Goal()
+        g.hold.hold = mode
+        c, _, _ = constraint_from_goal(g)
+        assert c.hold_vec_weight()[3:] == [0.0, 0.0, 0.0]
 
 
 def test_approach_via_maps():
@@ -74,12 +81,15 @@ def test_bad_fraction_is_reported_not_raised():
     assert why is not None and "tstep_fraction" in why
 
 
-def test_unknown_reference_frame_is_refused():
+def test_unknown_hold_mode_is_refused_not_coerced():
+    """An out-of-range mode must be REFUSED. Coercing it to HOLD_NONE would
+    hand an unconstrained trajectory to a caller who asked for a held one --
+    the worst available failure, because it looks like success."""
     g = PlanToPose.Goal()
-    g.axis_lock.lock_roll = True
-    g.axis_lock.reference_frame = 7
-    _, _, why = constraint_from_goal(g)
-    assert why is not None and "reference_frame" in why
+    g.hold.hold = 7
+    c, _, why = constraint_from_goal(g)
+    assert why is not None and "unknown hold" in why
+    assert not c.is_active()
 
 
 def test_out_of_range_fraction_is_refused_before_planning():
@@ -101,32 +111,49 @@ def test_non_finite_offset_is_refused():
 
 
 def test_constraint_from_goal_accepts_a_service_request_without_approach_via():
-    """Ruling A: CheckPoseLock.Request has no `approach_via` field at all —
-    constraint_from_goal must not raise AttributeError on it, and must map
-    the locks correctly while returning an inert ViaPoint."""
-    req = CheckPoseLock.Request()
-    req.axis_lock.lock_roll = True
-    req.axis_lock.lock_x = True
+    """CheckOrientationHold.Request has no `approach_via` field at all --
+    constraint_from_goal must not raise AttributeError on it, and must map the
+    hold correctly while returning an inert ViaPoint."""
+    req = CheckOrientationHold.Request()
+    req.hold.hold = OrientationHold.HOLD_FIXED
     c, v, why = constraint_from_goal(req)
     assert why is None
-    assert c.hold_roll and c.hold_x and not c.hold_pitch
+    assert c.hold_vec_weight() == [1.0, 1.0, 1.0, 0.0, 0.0, 0.0]
     assert not v.is_active()
 
 
-def test_check_reply_reports_the_offending_axis():
-    rep = check_reply(False, "held axis 'roll' differs by 0.1234 (limit 0.050)")
+def test_check_reply_reports_the_measured_numbers_in_degrees():
+    """The numbers are passed in, not scraped from the message. The old
+    version regexed its own error string for an axis name and the first two
+    numerals -- fragile by construction, and silently wrong once the wording
+    and the units changed."""
+    rep = check_reply(
+        False, "the goal's tilt differs by 7.07 deg", math.radians(7.07),
+        math.radians(2.0),
+    )
     assert rep["satisfied"] is False
-    assert rep["worst_axis"] == "roll"
-    assert rep["worst_error"] == pytest.approx(0.1234)
-    assert rep["limit"] == pytest.approx(0.05)
+    assert rep["deviation_deg"] == pytest.approx(7.07)
+    assert rep["limit_deg"] == pytest.approx(2.0)
     assert rep["marginal"] is False
 
 
+def test_check_reply_does_not_parse_numbers_out_of_the_message():
+    """A message full of misleading numerals must not change the reported
+    measurement -- which it would have under the regex version."""
+    rep = check_reply(
+        True, "marginal: 99.9 deg of nonsense 12345", math.radians(1.8),
+        math.radians(2.0),
+    )
+    assert rep["deviation_deg"] == pytest.approx(1.8)
+    assert rep["limit_deg"] == pytest.approx(2.0)
+    assert rep["marginal"] is True
+
+
 def test_check_reply_clean():
-    rep = check_reply(True, None)
+    rep = check_reply(True, None, 0.0, math.radians(2.0))
     assert rep["satisfied"] is True
     assert rep["message"] == ""
-    assert rep["worst_axis"] == ""
+    assert rep["deviation_deg"] == pytest.approx(0.0)
     assert rep["marginal"] is False
 
 
@@ -165,7 +192,7 @@ def test_check_reply_goal_frame_not_pre_checked_is_reported_clean():
 class _StubFk:
     """Equivalent to core/tests/test_offline.py's _StubFk — duplicated here
     rather than imported, since this file and core/tests live in separate
-    pytest roots (see CheckPoseLock's docker test invocation, which only
+    pytest roots (see the hold check's docker test invocation, which only
     puts core/ itself on PYTHONPATH)."""
 
     def __init__(self, pos, quat_xyzw):
@@ -176,42 +203,45 @@ class _StubFk:
 
 
 def test_check_reply_carries_the_real_producer_numbers_end_to_end():
-    """The real point of item 4: feed check_reply the ACTUAL string
-    `constraint_satisfied_at_start` produces (not a hand-written stand-in),
-    for both a marginal start and a rejected one, and assert worst_axis /
-    worst_error / limit against the values the core actually computed."""
-    from rammp_curobo.constraints import PoseConstraint
+    """Feed check_reply the numbers the CORE actually computed -- not a
+    hand-written stand-in -- for both a marginal start and a rejected one,
+    through hold_deviation_at_start rather than by parsing the message."""
+    from rammp_curobo.constraints import HOLD_LEVEL, PoseConstraint
     from rammp_curobo.geometry import euler_deg_to_quat_xyzw
     from rammp_curobo.planner import CuRoboPlanner
 
     goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
-    constraint = PoseConstraint(hold_roll=True)
+    constraint = PoseConstraint(hold=HOLD_LEVEL)
 
-    # Marginal: 2.6 deg ~= 0.0454 rad against a 0.05 rad tolerance (91%).
-    stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([2.6, 0.0, 0.0]))
+    # Marginal: 1.8 deg against the 2.0 deg default (90%).
+    stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([1.8, 0.0, 0.0]))
     ok, reason = CuRoboPlanner.constraint_satisfied_at_start(
         stub, [0.0] * 7, [0.6, 0.0, 0.4], goal_q, constraint
     )
-    rep = check_reply(ok, reason)
+    dev, lim = CuRoboPlanner.hold_deviation_at_start(
+        stub, [0.0] * 7, [0.6, 0.0, 0.4], goal_q, constraint
+    )
+    rep = check_reply(ok, reason, dev, lim)
     assert rep["satisfied"] is True and rep["marginal"] is True
-    assert rep["worst_axis"] == "roll"
-    assert rep["worst_error"] == pytest.approx(math.radians(2.6), abs=1e-4)
-    assert rep["limit"] == pytest.approx(0.05)
+    assert rep["deviation_deg"] == pytest.approx(1.8, abs=1e-3)
+    assert rep["limit_deg"] == pytest.approx(2.0)
 
     # Rejected: 12 deg is well past the tolerance.
     stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([12.0, 0.0, 0.0]))
     ok, reason = CuRoboPlanner.constraint_satisfied_at_start(
         stub, [0.0] * 7, [0.6, 0.0, 0.4], goal_q, constraint
     )
-    rep = check_reply(ok, reason)
+    dev, lim = CuRoboPlanner.hold_deviation_at_start(
+        stub, [0.0] * 7, [0.6, 0.0, 0.4], goal_q, constraint
+    )
+    rep = check_reply(ok, reason, dev, lim)
     assert rep["satisfied"] is False
-    assert rep["worst_axis"] == "roll"
-    assert rep["worst_error"] == pytest.approx(math.radians(12.0), abs=1e-4)
-    assert rep["limit"] == pytest.approx(0.05)
+    assert rep["deviation_deg"] == pytest.approx(12.0, abs=1e-3)
+    assert rep["limit_deg"] == pytest.approx(2.0)
 
 
 class _FakeNodeForLockTest:
-    """Just enough of RammpCuroboNode for _check_pose_lock_cb's busy path:
+    """Just enough of RammpCuroboNode for the hold check's busy path:
     it must bail out on `self._plan_lock` before touching anything else
     (self.planner, etc.), so no real node/GPU init is needed here."""
 
@@ -219,7 +249,7 @@ class _FakeNodeForLockTest:
         self._plan_lock = threading.Lock()
 
 
-def test_check_pose_lock_replies_busy_when_a_plan_is_in_flight():
+def test_check_orientation_hold_replies_busy_when_a_plan_is_in_flight():
     """Item 2: the check shares cuRobo's preallocated CUDA buffers with
     planning, so it must serialise against a plan in flight rather than
     race it. Hold the lock (as an in-flight plan would) and confirm the
@@ -227,8 +257,8 @@ def test_check_pose_lock_replies_busy_when_a_plan_is_in_flight():
     node = _FakeNodeForLockTest()
     node._plan_lock.acquire()
     try:
-        response = RammpCuroboNode._check_pose_lock_cb(
-            node, CheckPoseLock.Request(), CheckPoseLock.Response()
+        response = RammpCuroboNode._check_orientation_hold_cb(
+            node, CheckOrientationHold.Request(), CheckOrientationHold.Response()
         )
     finally:
         node._plan_lock.release()

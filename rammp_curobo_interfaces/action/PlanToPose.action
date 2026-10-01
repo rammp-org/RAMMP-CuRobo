@@ -7,12 +7,15 @@ geometry_msgs/Pose target
 # vector is rejected — there is no "look at /joint_states" fallback.
 float64[] start_joints
 # --- appended 2026-09-26. An older client sends neither, and an absent
-# trailing field deserialises to a default-constructed message: no locks,
-# no via point, i.e. exactly today's behaviour. Appended-at-the-end is a
-# MINOR bump under this repo's CONTRIBUTING.md carve-out (Humble + Cyclone
-# DDS only); inserting either of these earlier would corrupt every field
-# after it.
-PoseAxisLock axis_lock
+# trailing field deserialises to a default-constructed message: no hold, no
+# via point, i.e. exactly today's behaviour. Appended-at-the-end is a MINOR
+# bump under this repo's CONTRIBUTING.md carve-out (Humble + Cyclone DDS
+# only); inserting either of these earlier would corrupt every field after it.
+OrientationHold hold
+# SHELVED and not exposed on the arm interface — see kinova-gen3-ros2#40. The
+# capability stays here; nothing currently drives it, and what it does to a
+# trajectory is not understood. Its hold engages at at_fraction, NOT at the
+# start, so unlike `hold` it does not constrain the start pose.
 ApproachVia approach_via
 ---
 bool success

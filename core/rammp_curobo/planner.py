@@ -218,7 +218,7 @@ class CuRoboPlanner:
             return PlanResult.failure("START_OUTSIDE_LIMITS", err)
 
         # Refuse a self-contradictory request BEFORE planning. This check used
-        # to exist only behind the CheckPoseLock service, so the plan path --
+        # to exist only behind the hold-check SERVICE, so the plan path --
         # the one the arm actually uses -- surfaced the same problem as
         # cuRobo's bare INVALID_PARTIAL_POSE_COST_METRIC, or not at all.
         if constraint is not None and constraint.is_active():
@@ -463,7 +463,7 @@ class CuRoboPlanner:
         # "cannot pre-check this mode" case left to decline. And no via branch:
         # a via's hold engages at tstep_fraction, NOT at the start, so folding
         # it in here refused plans that cuRobo accepts happily — a false
-        # refusal this check used to emit through the CheckPoseLock service.
+        # refusal this check used to emit through the hold-check service.
         try:
             constraint.validate()
         except ValueError as exc:
@@ -510,6 +510,27 @@ class CuRoboPlanner:
                 % (what, math.degrees(err), math.degrees(tol), 100.0 * ratio)
             )
         return True, None
+
+    def hold_deviation_at_start(
+        self, start, position, quaternion, constraint, quat_order="xyzw"
+    ):
+        """(deviation_rad, limit_rad) behind constraint_satisfied_at_start.
+
+        Exists so a caller reporting the numbers does not have to scrape them
+        back out of the prose message. The ROS service used to regex its own
+        error string for them, which quietly broke the moment the wording
+        changed.
+        """
+        if constraint is None or not constraint.is_active():
+            return 0.0, self.constraint_tolerance_rad
+        goal_quat = (
+            geometry.wxyz_to_xyzw(quaternion)
+            if quat_order == "wxyz"
+            else [float(v) for v in quaternion]
+        )
+        _pos, cur_quat = self.fk(start, quat_order="xyzw")
+        err, _what = CuRoboPlanner._hold_deviation(cur_quat, goal_quat, constraint)
+        return err, self.constraint_tolerance_rad
 
     @staticmethod
     def _hold_deviation_batch(a_wxyz, b_xyzw, constraint):
