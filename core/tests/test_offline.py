@@ -10,7 +10,13 @@ import pytest
 import yaml
 
 from rammp_curobo.config import PACKAGED_CONFIG_DIR, load_planner_config, resolve_config
-from rammp_curobo.constraints import PoseConstraint, ViaPoint
+from rammp_curobo.constraints import (
+    HOLD_FIXED,
+    HOLD_LEVEL,
+    HOLD_NONE,
+    PoseConstraint,
+    ViaPoint,
+)
 from rammp_curobo.geometry import (
     euler_deg_to_quat_xyzw,
     spin_about_tool,
@@ -236,16 +242,38 @@ def test_hold_vec_weight_is_orientation_first():
     """cuRobo's vec_weight is [rx, ry, rz, x, y, z] — orientation FIRST.
     Getting this backwards silently constrains position instead of
     orientation, which still plans, so no test but this one would catch it."""
-    c = PoseConstraint(hold_roll=True, hold_pitch=True)
-    assert c.hold_vec_weight() == [1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+    assert PoseConstraint(hold=HOLD_LEVEL).hold_vec_weight() == [
+        1.0, 1.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    assert PoseConstraint(hold=HOLD_FIXED).hold_vec_weight() == [
+        1.0, 1.0, 1.0, 0.0, 0.0, 0.0
+    ]
 
-    c = PoseConstraint(hold_z=True)
-    assert c.hold_vec_weight() == [0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+def test_level_frees_exactly_yaw_and_fixed_frees_nothing():
+    """The single difference between the two modes, stated as a test: LEVEL
+    leaves rz free so the tool may spin about the vertical, FIXED does not."""
+    assert PoseConstraint(hold=HOLD_LEVEL).hold_vec_weight()[2] == 0.0
+    assert PoseConstraint(hold=HOLD_FIXED).hold_vec_weight()[2] == 1.0
 
 
-def test_pose_constraint_is_active_when_any_axis_held():
-    assert PoseConstraint(hold_yaw=True).is_active()
-    assert PoseConstraint(hold_x=True).is_active()
+def test_no_mode_ever_holds_position():
+    """Position holds are gone by design — they could only express "travel
+    along one base axis", and a straight line in an arbitrary direction is
+    not expressible through a DIAGONAL hold_vec_weight at all."""
+    for mode in (HOLD_NONE, HOLD_LEVEL, HOLD_FIXED):
+        assert PoseConstraint(hold=mode).hold_vec_weight()[3:] == [0.0, 0.0, 0.0]
+
+
+def test_pose_constraint_is_active_for_both_hold_modes():
+    assert PoseConstraint(hold=HOLD_LEVEL).is_active()
+    assert PoseConstraint(hold=HOLD_FIXED).is_active()
+    assert not PoseConstraint(hold=HOLD_NONE).is_active()
+
+
+def test_pose_constraint_rejects_an_unknown_mode():
+    with pytest.raises(ValueError, match="HOLD_NONE"):
+        PoseConstraint(hold=7).validate()
 
 
 def test_via_point_inactive_at_zero_offset():
@@ -289,12 +317,11 @@ def test_pose_cost_kwargs_none_when_nothing_requested():
 def test_pose_cost_kwargs_for_a_held_constraint():
     from rammp_curobo.planner import CuRoboPlanner
 
-    kw = CuRoboPlanner._pose_cost_kwargs(
-        PoseConstraint(hold_roll=True, hold_pitch=True), None
-    )
+    kw = CuRoboPlanner._pose_cost_kwargs(PoseConstraint(hold=HOLD_LEVEL), None)
     assert kw["hold_partial_pose"] is True
     assert kw["hold_vec_weight"] == [1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
-    # in_base_frame=True means DON'T project into the goal frame
+    # Always the base frame now: "level" means level with the WORLD, and
+    # only the base frame can express that.
     assert kw["project_to_goal_frame"] is False
     assert "offset_position" not in kw
 
@@ -310,7 +337,7 @@ def test_via_point_forces_a_full_hold_except_the_approach_axis():
     from rammp_curobo.planner import CuRoboPlanner
 
     kw = CuRoboPlanner._pose_cost_kwargs(
-        PoseConstraint(hold_roll=True, hold_pitch=True),
+        PoseConstraint(hold=HOLD_LEVEL),
         ViaPoint(offset_m=0.10, linear_axis=2, tstep_fraction=0.8),
     )
     # everything held except z (3 + linear_axis=2), regardless of which
@@ -327,24 +354,26 @@ def test_via_point_ignores_the_constraint_when_via_is_inactive():
     from rammp_curobo.planner import CuRoboPlanner
 
     kw = CuRoboPlanner._pose_cost_kwargs(
-        PoseConstraint(hold_roll=True, hold_pitch=True), ViaPoint()
+        PoseConstraint(hold=HOLD_LEVEL), ViaPoint()
     )
     assert kw["hold_vec_weight"] == [1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
     assert "offset_position" not in kw
 
 
-def test_via_point_rejects_locking_its_own_approach_axis():
-    """Asking to hold z fixed while also approaching along z is a direct
-    contradiction — cuRobo's via point needs that axis free to travel
-    along. This must fail clearly and early (BAD_CONSTRAINT via
-    plan_to_pose), not silently pick a winner or reach cuRobo's own bare
-    INVALID_PARTIAL_POSE_COST_METRIC."""
+def test_a_constraint_can_no_longer_contradict_a_via():
+    """There used to be a contradiction to catch — holding z while asking to
+    approach along z. With position holds removed a constraint only ever
+    holds rotations and a via only ever frees a LINEAR axis, so the two
+    cannot collide. Kept as a test so the removal of that guard is
+    deliberate and visible rather than looking like an oversight."""
     from rammp_curobo.planner import CuRoboPlanner
 
-    with pytest.raises(ValueError, match="linear_axis=2"):
-        CuRoboPlanner._pose_cost_kwargs(
-            PoseConstraint(hold_z=True), ViaPoint(offset_m=0.10, linear_axis=2)
-        )
+    for mode in (HOLD_LEVEL, HOLD_FIXED):
+        for axis in (0, 1, 2):
+            kw = CuRoboPlanner._pose_cost_kwargs(
+                PoseConstraint(hold=mode), ViaPoint(offset_m=0.10, linear_axis=axis)
+            )
+            assert kw["hold_vec_weight"][3 + axis] == 0.0
 
 
 def test_rotvec_between_is_zero_for_equal_quaternions():
@@ -374,8 +403,12 @@ class _StubFk:
     asked for wxyz and the caller silently got mismatched conventions.
     """
 
-    def __init__(self, pos, quat_xyzw):
+    def __init__(self, pos, quat_xyzw, tolerance_deg=2.0):
         self._pos, self._quat_xyzw = pos, quat_xyzw
+        # constraint_satisfied_at_start is called unbound with this stub as
+        # `self`, so every attribute it reads has to exist here. Forgetting
+        # this one turns the whole pre-check suite into AttributeError.
+        self.constraint_tolerance_rad = math.radians(tolerance_deg)
 
     def fk(self, q, quat_order="xyzw"):
         if quat_order == "wxyz":
@@ -394,17 +427,18 @@ def _check(stub, goal_pos, goal_quat, constraint):
 def test_pre_check_passes_when_held_axes_already_match():
     q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
     stub = _StubFk([0.3, 0.0, 0.4], q)
-    ok, why = _check(stub, [0.6, 0.2, 0.4], q, PoseConstraint(hold_roll=True))
+    ok, why = _check(stub, [0.6, 0.2, 0.4], q, PoseConstraint(hold=HOLD_LEVEL))
     assert ok and why is None
 
 
 def test_pre_check_rejects_a_tilted_start():
     stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([12.0, 0.0, 0.0]))
     goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
-    ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, PoseConstraint(hold_roll=True))
+    ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, PoseConstraint(hold=HOLD_LEVEL))
     assert not ok
-    assert "roll" in why
-    assert "0.05" in why  # the tolerance is named, so the caller can act
+    assert "tilt" in why
+    assert "2.00" in why  # the tolerance is named, in degrees, so the caller can act
+    assert "12" in why  # and so is the measured deviation
 
 
 def test_pre_check_passes_a_tilted_start_when_the_goal_is_equally_tilted():
@@ -414,37 +448,37 @@ def test_pre_check_passes_a_tilted_start_when_the_goal_is_equally_tilted():
     tilted = euler_deg_to_quat_xyzw([45.0, 0.0, 0.0])
     stub = _StubFk([0.3, 0.0, 0.4], tilted)
     ok, why = _check(
-        stub, [0.6, 0.2, 0.4], tilted, PoseConstraint(hold_roll=True, hold_pitch=True)
+        stub, [0.6, 0.2, 0.4], tilted, PoseConstraint(hold=HOLD_LEVEL)
     )
     assert ok and why is None
 
 
 def test_pre_check_flags_a_marginal_start():
-    """0.045 rad passes cuRobo's 0.05 rad gate but only just. Silence here
-    turns into an unreproducible planning failure later."""
-    stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([2.6, 0.0, 0.0]))
+    """1.8 deg passes the 2.0 deg tolerance but only just. Silence here turns
+    into an unreproducible planning failure later.
+
+    The fixture is 1.8 and not the old 2.6 because the gate moved: it used to
+    be a hard-coded 0.05 rad (2.86 deg), and is now the configurable
+    constraint_tolerance_deg, defaulting to 2.0. A test fixture pinned to the
+    old number would have silently started asserting the refusal branch."""
+    stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([1.8, 0.0, 0.0]))
     goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
-    ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, PoseConstraint(hold_roll=True))
+    ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, PoseConstraint(hold=HOLD_LEVEL))
     assert ok
     assert why is not None and "marginal" in why
 
 
-def test_pre_check_explains_when_every_axis_is_held():
-    """Holding all six axes asks for a goal identical to the start. The
-    caller must be told that, not handed a status enum."""
+def test_pre_check_passes_fixed_when_orientations_are_identical():
+    """FIXED holds all three rotations, so an identical goal orientation is
+    exactly what it wants. Position is never held, so the goal being 0.3 m
+    away is irrelevant — which is the whole point of dropping position
+    holds."""
     stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([0.0, 0.0, 0.0]))
     goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
-    all_held = PoseConstraint(
-        hold_roll=True,
-        hold_pitch=True,
-        hold_yaw=True,
-        hold_x=True,
-        hold_y=True,
-        hold_z=True,
+    ok, why = _check(
+        stub, [0.6, 0.0, 0.4], goal_q, PoseConstraint(hold=HOLD_FIXED)
     )
-    ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, all_held)
-    assert not ok
-    assert "'x'" in why
+    assert ok and why is None  # identical orientations: nothing to disagree about
 
 
 def test_pre_check_agrees_across_quat_order_for_the_goal():
@@ -457,7 +491,7 @@ def test_pre_check_agrees_across_quat_order_for_the_goal():
     start_quat_xyzw = euler_deg_to_quat_xyzw([12.0, 0.0, 0.0])
     stub = _StubFk([0.3, 0.0, 0.4], start_quat_xyzw)
     goal_quat_xyzw = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
-    constraint = PoseConstraint(hold_roll=True)
+    constraint = PoseConstraint(hold=HOLD_LEVEL)
 
     ok_xyzw, why_xyzw = CuRoboPlanner.constraint_satisfied_at_start(
         stub, [0.0] * 7, [0.6, 0.0, 0.4], goal_quat_xyzw, constraint, quat_order="xyzw"
@@ -472,64 +506,54 @@ def test_pre_check_agrees_across_quat_order_for_the_goal():
     )
     assert ok_xyzw == ok_wxyz
     assert why_xyzw == why_wxyz
-    assert "roll" in why_xyzw  # same worst-axis on both paths
+    assert "tilt" in why_xyzw  # same measure reported on both paths
 
 
-def test_pre_check_declines_to_judge_goal_frame_constraints():
-    """in_base_frame=False means cuRobo gates the constraint in the GOAL
-    frame; rotvec_between decomposes in the BASE frame, so the pre-check
-    cannot name the right axis there and must say so instead of guessing."""
+def test_pre_check_stays_inert_when_nothing_is_held():
+    """HOLD_NONE must be a no-op even from a tilted start: an inactive
+    constraint has nothing to disagree about."""
     stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([12.0, 0.0, 0.0]))
     goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
-    ok, why = _check(
-        stub,
-        [0.6, 0.0, 0.4],
-        goal_q,
-        PoseConstraint(hold_roll=True, in_base_frame=False),
-    )
-    assert ok
-    assert why is not None and "not pre-checked" in why
-
-
-def test_pre_check_stays_inert_for_an_inactive_goal_frame_constraint():
-    """An inactive constraint (nothing held) must stay a no-op regardless
-    of in_base_frame — inert must stay inert."""
-    stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([12.0, 0.0, 0.0]))
-    goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
-    ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, PoseConstraint(in_base_frame=False))
+    ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, PoseConstraint(hold=HOLD_NONE))
     assert ok and why is None
 
 
-def test_pre_check_treats_an_active_via_point_as_a_full_hold():
-    """A via-point-only request (no PoseConstraint at all) still implies
-    cuRobo's five-axis hold (see ViaPoint's docstring) — the pre-check must
-    catch a start that disagrees with the goal on those axes with the same
-    clear sentence, not let it through to cuRobo's bare
-    INVALID_PARTIAL_POSE_COST_METRIC."""
+def test_level_tolerates_a_pure_yaw_difference_but_fixed_does_not():
+    """The one behavioural difference between the modes, from the caller's
+    side. A start and goal differing ONLY in yaw is fine under LEVEL — the
+    spin about vertical is exactly the freedom it leaves — and must be
+    refused under FIXED, which holds yaw too."""
+    start_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
+    goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 40.0])
+    stub = _StubFk([0.3, 0.0, 0.4], start_q)
+
+    ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, PoseConstraint(hold=HOLD_LEVEL))
+    assert ok and why is None, "LEVEL must not care about yaw: %s" % why
+
+    ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, PoseConstraint(hold=HOLD_FIXED))
+    assert not ok
+    assert "orientation" in why and "40" in why
+
+
+def test_pre_check_ignores_an_active_via_point():
+    """A via must NOT be folded into the start check, and this is a
+    regression test for a real false refusal.
+
+    The old behaviour treated an active via as implying a five-axis hold AT
+    THE START, and refused accordingly. Measured against real cuRobo: a via's
+    hold engages at tstep_fraction, not at the start, so the same goal plans
+    perfectly well. The pre-check was refusing plans that work — through the
+    CheckPoseLock service, to callers who had no way to tell it was wrong.
+
+    With no constraint and only a via, there is nothing for this check to
+    judge, so it must pass regardless of how tilted the start is."""
     from rammp_curobo.planner import CuRoboPlanner
 
     tilted = euler_deg_to_quat_xyzw([12.0, 0.0, 0.0])
     stub = _StubFk([0.3, 0.0, 0.4], tilted)
     goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
-    # x/y match the start exactly, so the ONLY thing that can trip the
-    # implied hold is the 12-degree roll tilt.
     ok, why = CuRoboPlanner.constraint_satisfied_at_start(
-        stub, [0.0] * 7, [0.3, 0.0, 0.4], goal_q, None, via=ViaPoint(offset_m=0.1)
-    )
-    assert not ok
-    assert "roll" in why
-
-
-def test_pre_check_passes_a_via_point_when_the_start_already_matches():
-    """Mirror case: the start already agrees with the goal on the five held
-    axes and only differs along the approach axis (z) — an
-    unconstrained-but-for-the-via request must be reported satisfied."""
-    from rammp_curobo.planner import CuRoboPlanner
-
-    q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
-    stub = _StubFk([0.3, 0.0, 0.4], q)
-    ok, why = CuRoboPlanner.constraint_satisfied_at_start(
-        stub, [0.0] * 7, [0.3, 0.0, 0.55], q, None, via=ViaPoint(offset_m=0.1)
+        stub, [0.0] * 7, [0.3, 0.0, 0.4], goal_q, PoseConstraint(hold=HOLD_NONE)
     )
     assert ok and why is None
 
@@ -540,7 +564,7 @@ def test_pre_check_rejects_a_zero_quaternion_goal():
     plan_to_pose itself rejects this same shape as BAD_GOAL."""
     stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([0.0, 0.0, 0.0]))
     ok, why = _check(
-        stub, [0.6, 0.0, 0.4], [0.0, 0.0, 0.0, 0.0], PoseConstraint(hold_roll=True)
+        stub, [0.6, 0.0, 0.4], [0.0, 0.0, 0.0, 0.0], PoseConstraint(hold=HOLD_LEVEL)
     )
     assert not ok
     assert why is not None and "zero-length" in why
@@ -552,7 +576,7 @@ def test_pre_check_rejects_a_nan_quaternion_goal():
         stub,
         [0.6, 0.0, 0.4],
         [float("nan"), 0.0, 0.0, 1.0],
-        PoseConstraint(hold_roll=True),
+        PoseConstraint(hold=HOLD_LEVEL),
     )
     assert not ok
     assert why is not None and "non-finite" in why
@@ -562,7 +586,7 @@ def test_pre_check_rejects_a_nan_goal_position():
     stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([0.0, 0.0, 0.0]))
     goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
     ok, why = _check(
-        stub, [0.6, float("nan"), 0.4], goal_q, PoseConstraint(hold_roll=True)
+        stub, [0.6, float("nan"), 0.4], goal_q, PoseConstraint(hold=HOLD_LEVEL)
     )
     assert not ok
     assert why is not None and "non-finite" in why

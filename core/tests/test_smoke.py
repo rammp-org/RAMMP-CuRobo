@@ -6,6 +6,9 @@ warmup takes a minute or two on the Orin the first time) and a handful of
 plans in the sim-kitchen world.
 """
 
+import math
+import time
+
 import numpy as np
 import pytest
 
@@ -183,7 +186,7 @@ def test_joint_goal_normalized_to_start_branch(planner):
 def test_constrained_plan_holds_orientation(planner, start):
     """A held-axis plan keeps roll and pitch fixed for the WHOLE path, not
     just at the endpoints — checked by FK over every point."""
-    from rammp_curobo import PoseConstraint
+    from rammp_curobo.constraints import HOLD_LEVEL, PoseConstraint
     from rammp_curobo.geometry import rotvec_between
 
     q_target = list(planner.retract_pose)
@@ -195,23 +198,81 @@ def test_constrained_plan_holds_orientation(planner, start):
     # pre-check, so require that rather than skip past it. A skip here
     # would let the constrained smoke test quietly stop testing itself on
     # exactly the machine it exists to validate.
-    ok, why = planner.constraint_satisfied_at_start(
-        start, pos, quat, PoseConstraint(hold_roll=True, hold_pitch=True)
-    )
+    level = PoseConstraint(hold=HOLD_LEVEL)
+    ok, why = planner.constraint_satisfied_at_start(start, pos, quat, level)
     assert ok, "pre-check failed for a goal constructed to satisfy it: %s" % why
 
-    res = planner.plan_to_pose(
-        pos, quat, start, constraint=PoseConstraint(hold_roll=True, hold_pitch=True)
-    )
+    res = planner.plan_to_pose(pos, quat, start, constraint=level)
     assert res.success, res.error
 
+    # Deliberately an INDEPENDENT check: plan_to_pose now verifies the hold
+    # itself and refuses on breach, so asserting here with the production
+    # helper would only confirm that code agrees with itself. This walks FK
+    # in the test and uses hypot(rx, ry) -- the same tilt measure, derived
+    # separately -- so a bug in _verify_hold cannot hide behind it.
     _, quat0 = planner.fk(res.joint_traj.positions[0])
     worst = 0.0
     for q in res.joint_traj.positions:
         _, qk = planner.fk(q)
         rot = rotvec_between(quat0, qk)
-        worst = max(worst, abs(rot[0]), abs(rot[1]))
-    assert worst < 0.05, "roll/pitch drifted %.4f rad along the path" % worst
+        worst = max(worst, math.hypot(rot[0], rot[1]))
+    assert worst < 0.05, "tilt drifted %.4f rad along the path" % worst
+
+
+def test_hold_verification_cost_is_a_rounding_error_on_planning(planner, start):
+    """The hold check runs on EVERY constrained plan, so it has to be cheap.
+
+    What it does: one batched kinematics call over the whole trajectory, then
+    numpy. Expected cost is dominated by the single GPU launch plus the
+    device->host sync of an (N, 4) quaternion array -- order of a millisecond,
+    against planning that measures ~200 ms on the Jetson. So ~1% or less.
+
+    What this guards against is the shape of the computation regressing. An
+    earlier version walked the waypoints in a Python loop calling fk() per
+    point: ~100 GPU round trips instead of one, on the planning path. That
+    would still be CORRECT and would still pass every other test here, which
+    is exactly why it needs its own timing gate rather than review.
+    """
+    from rammp_curobo.constraints import HOLD_LEVEL, PoseConstraint
+
+    level = PoseConstraint(hold=HOLD_LEVEL)
+    q_target = list(planner.retract_pose)
+    q_target[0] += 0.4
+    pos, quat = planner.fk(q_target)
+    _pos_w, quat_wxyz = planner.fk(q_target, quat_order="wxyz")
+
+    res = planner.plan_to_pose(pos, quat, start, constraint=level)
+    assert res.success, res.error
+    traj = res.joint_traj
+    n = traj.n_points
+
+    def timed(fn, reps):
+        # No cuda.is_available() guard: this module skips at import without
+        # CUDA, so the device is a given here.
+        fn()  # warm: the first call compiles kernels / allocates
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        for _ in range(reps):
+            fn()
+        torch.cuda.synchronize()
+        return (time.perf_counter() - t0) / reps
+
+    t_verify = timed(lambda: planner._verify_hold(traj, quat_wxyz, level), 20)
+    t_plan = timed(lambda: planner.plan_to_pose(pos, quat, start, constraint=level), 3)
+
+    share = t_verify / t_plan if t_plan > 0 else 1.0
+    print(
+        "\n  hold verification: %.3f ms over %d waypoints"
+        "\n  constrained plan:  %.1f ms"
+        "\n  verification is %.2f%% of planning" % (
+            t_verify * 1e3, n, t_plan * 1e3, 100.0 * share)
+    )
+    assert share < 0.05, (
+        "hold verification is %.1f%% of planning time (%.2f ms of %.1f ms over "
+        "%d waypoints) -- budget is 5%%. The usual cause is the batched "
+        "kinematics call having become a per-waypoint loop."
+        % (100.0 * share, t_verify * 1e3, t_plan * 1e3, n)
+    )
 
 
 def test_via_point_does_not_stop_the_arm(planner, start):
