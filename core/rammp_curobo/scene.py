@@ -147,6 +147,18 @@ class Scene:
         return None
 
 
+class _MergeKey:
+    """Stands for `<<` among the keys of a mapping, and reads as '<<' in a
+    refusal. No key PyYAML builds equals it: a quoted "<<" is a plain key,
+    which a merge key does not repeat."""
+
+    def __repr__(self):
+        return "'<<'"
+
+
+_MERGE_KEY = _MergeKey()
+
+
 class _StrictLoader(yaml.SafeLoader):
     """SafeLoader that refuses a mapping key written twice. Plain PyYAML
     keeps the last one, so a second `obstacles:` in a layer file would
@@ -180,8 +192,8 @@ class _StrictLoader(yaml.SafeLoader):
         self._checked.add(node)
         seen = []
         for key_node, value_node in node.value:
-            # `<<` is not a key of this mapping, and a key that overrides
-            # one it merges in is not written twice
+            # a key that overrides one it merges in is not written twice. A
+            # second `<<` is: PyYAML merges both, and the keys of the last win
             if key_node.tag == "tag:yaml.org,2002:merge":
                 merged = (
                     value_node.value
@@ -190,8 +202,9 @@ class _StrictLoader(yaml.SafeLoader):
                 )
                 for source in merged:
                     self._refuse_duplicate_keys(source, deep)
-                continue
-            key = self.construct_object(key_node, deep=deep)
+                key = _MERGE_KEY
+            else:
+                key = self.construct_object(key_node, deep=deep)
             if key in seen:
                 mark = key_node.start_mark
                 raise ValueError(

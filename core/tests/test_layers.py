@@ -170,6 +170,20 @@ MALFORMED = [
         _edited("dims: [0.1, 0.2, 0.3]", "dims: [0.1, 0.2, 0.3], dims: [9, 9, 9]"),
         "duplicate key 'dims' on line 5",
     ),
+    # whichever earlier key it repeats, next to it or not
+    (
+        "duplicate_key_not_next_to_the_first",
+        LAYER + "layer: other\n",
+        "duplicate key 'layer' on line 11",
+    ),
+    (
+        "duplicate_key_further_down_an_entry",
+        _edited(
+            "    rpy_deg: [0, 0, 45]\n",
+            "    rpy_deg: [0, 0, 45]\n    position: [9, 9, 9]\n",
+        ),
+        "duplicate key 'position' on line 9",
+    ),
     # a mapping written under `<<` is never built itself: PyYAML copies its
     # keys into the mapping that merges it, and there too the last one wins
     (
@@ -189,6 +203,14 @@ MALFORMED = [
         "duplicate key 'dims' on line 5",
     ),
     (
+        "duplicate_key_in_the_first_of_a_list_of_merged_mappings",
+        _edited(
+            "position: [0.5, 0, 0.2], dims: [0.1, 0.2, 0.3]",
+            "<<: [{dims: [0.1, 0.2, 0.3], dims: [9, 9, 9]}, {position: [0.5, 0, 0.2]}]",
+        ),
+        "duplicate key 'dims' on line 5",
+    ),
+    (
         "duplicate_obstacles_in_a_merged_mapping",
         "layer: block\n"
         "<<:\n"
@@ -197,6 +219,40 @@ MALFORMED = [
         "  obstacles:\n"
         "    - {name: late, position: [0, 0, 1], dims: [1, 1, 1]}\n",
         "duplicate key 'obstacles' on line 5",
+    ),
+    # a merge key neither ends nor restarts the check of the mapping's own keys
+    (
+        "duplicate_key_after_a_merge_key",
+        _edited(
+            "position: [0.5, 0, 0.2], dims: [0.1, 0.2, 0.3]",
+            "<<: {position: [0.5, 0, 0.2]}, dims: [0.1, 0.2, 0.3], dims: [9, 9, 9]",
+        ),
+        "duplicate key 'dims' on line 5",
+    ),
+    (
+        "duplicate_key_on_both_sides_of_a_merge_key",
+        _edited(
+            "position: [0.5, 0, 0.2], dims: [0.1, 0.2, 0.3]",
+            "dims: [0.1, 0.2, 0.3], <<: {position: [0.5, 0, 0.2]}, dims: [9, 9, 9]",
+        ),
+        "duplicate key 'dims' on line 5",
+    ),
+    # and `<<` written twice is a key written twice: PyYAML merges both
+    # mappings, and the keys of the second win
+    (
+        "duplicate_merge_key",
+        "layer: block\n"
+        "<<: {obstacles: [{name: early, position: [0, 0, 1], dims: [1, 1, 1]}]}\n"
+        "<<: {obstacles: [{name: late, position: [0, 0, 1], dims: [1, 1, 1]}]}\n",
+        "duplicate key '<<' on line 3",
+    ),
+    (
+        "duplicate_merge_key_in_an_entry",
+        _edited(
+            "dims: [0.1, 0.2, 0.3]",
+            "<<: {dims: [0.1, 0.2, 0.3]}, <<: {dims: [9, 9, 9]}",
+        ),
+        "duplicate key '<<' on line 5",
     ),
     # a scene or a config may list several layers: the one that cannot be
     # read has to be named (the text here is bytes: a Latin-1 degree sign)
@@ -422,16 +478,19 @@ def test_malformed_layer_is_refused(tmp_path, text, refusal):
 
 def test_strict_loader_changes_nothing_else_about_yaml(tmp_path):
     path = tmp_path / "layer.yaml"
-    # a merge key is not a second copy of the keys it brings in, and a key
-    # that overrides one of them is not written twice
+    # a merge key is not a second copy of the keys it brings in, a key that
+    # two of its mappings share is given once, by the first, and a key that
+    # overrides one of them is not written twice
     path.write_text(
         "layer: block\n"
         "obstacles:\n"
         "  - &box {name: box, position: [0.5, 0, 0.2], dims: [0.1, 0.2, 0.3]}\n"
         "  - {<<: *box, name: twin, position: [0.5, 0.4, 0.2]}\n"
+        "  - {<<: [{dims: [1, 1, 1]}, *box], name: cube}\n"
     )
-    box, twin = load_layer(path).obstacles
+    box, twin, cube = load_layer(path).obstacles
     assert (twin.name, twin.position, twin.dims) == ("twin", [0.5, 0.4, 0.2], box.dims)
+    assert (cube.name, cube.position, cube.dims) == ("cube", box.position, [1.0] * 3)
 
     # nor is it once PyYAML has copied the merged keys into the mapping's
     # node: here it does so to `wide` when the box merges it, which is before
@@ -457,6 +516,10 @@ def test_strict_loader_changes_nothing_else_about_yaml(tmp_path):
     )
     (box,) = load_layer(path).obstacles
     assert (box.name, box.dims) == ("box", [1.0, 2.0, 3.0])
+
+    # a quoted "<<" is a plain key, which a merge key beside it does not repeat
+    path.write_text(_edited("meta: {", 'meta: {"<<": quoted, <<: {merged: 1}, '))
+    assert load_layer(path).name == "block"
 
     # what PyYAML refuses, it still refuses in its own words: a key no mapping
     # can hold, and a mapping tag on something else
@@ -601,8 +664,11 @@ def test_one_layer_name_from_two_files_is_refused_and_one_file_twice_composes_on
         ("platform", platform),
         ("person", person),
     ]
-    scene = load_scene(_scene(tmp_path / "scene.yaml", "person.yaml", "person.yaml"))
-    assert [layer.path for layer in scene.layers] == [person]
+    # a file that comes again is passed over, not taken for the end of the list
+    scene = load_scene(
+        _scene(tmp_path / "scene.yaml", "person.yaml", "person.yaml", "platform.yaml")
+    )
+    assert [layer.path for layer in scene.layers] == [person, platform]
 
     # two files that both claim a layer are two sources of truth, wherever in
     # the list the first of them is
