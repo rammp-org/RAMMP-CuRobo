@@ -11,6 +11,9 @@
 
 robot: robot_gen3_2f85.yaml          # baked cuRobo robot config (generated)
 world: world_sim_kitchen.yaml        # collision world; swap for your scene
+layers: []                           # obstacle layer files composed into EVERY
+                                     # world, set_world pushes included: a push
+                                     # replaces the scene, never these
 
 # Controller joint order — matches ros2_kortex and the MuJoCo sim alike.
 joint_names: [joint_1, joint_2, joint_3, joint_4, joint_5, joint_6, joint_7]

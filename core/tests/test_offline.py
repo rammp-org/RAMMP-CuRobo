@@ -56,6 +56,7 @@ def test_gen3_yaml_matches_planner_defaults():
     for section in ("planner", "tool", "execution"):
         assert cfg[section] == PLANNER_DEFAULTS[section], section
     assert cfg["joint_names"] == PLANNER_DEFAULTS["joint_names"]
+    assert cfg["layers"] == PLANNER_DEFAULTS["layers"]
 
 
 def test_baked_robot_config_carries_the_patches():
