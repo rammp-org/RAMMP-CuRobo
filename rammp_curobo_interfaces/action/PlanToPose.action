@@ -57,7 +57,9 @@ float64[] start_joints
 # (CONSTRAINT_VIOLATED) if any waypoint breaks the hold or the last waypoint
 # misses the goal's full orientation, rather than handing over something that
 # quietly tipped. All checks use constraint_tolerance_deg (default 2 deg).
-# cuRobo's own success test alone would let ~5.7 deg of final yaw through.
+# cuRobo's own success test alone would let ~5.7 deg of final yaw through,
+# so a held plan meets a stricter end tolerance than the same goal unheld:
+# adding a hold can turn a plan that would succeed into a refusal.
 #
 # An unknown `hold` value fails the goal ("invalid constraint: unknown hold
 # ...") and is never treated as HOLD_NONE.
@@ -65,7 +67,9 @@ uint8 HOLD_NONE=0     # orientation free
 uint8 HOLD_LEVEL=1    # keep the tool's tilt; spin about base Z free in transit
 uint8 HOLD_FIXED=2    # keep the orientation entirely
 uint8 hold 0
-# SHELVED and not exposed on the arm interface — see kinova-gen3-ros2#40. The
+# SHELVED and not exposed on the arm interface — see kinova-gen3-ros2#40.
+# Cannot be combined with `hold` (refused as BAD_CONSTRAINT): before
+# at_fraction cuRobo applies no per-step pose cost, so the hold would lapse. The
 # capability stays here; nothing currently drives it, and what it does to a
 # trajectory is not understood. Its hold engages at at_fraction, NOT at the
 # start, so unlike `hold` it does not constrain the start pose.

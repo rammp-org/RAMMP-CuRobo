@@ -65,10 +65,21 @@ subscription and no view of any robot, so a goal without it is aborted with
 what makes the plan safe to run: its first point *is* where the arm is, so
 there is no stale-plan catch-up sweep to guard against.
 
-`/rammp_curobo/plan_to_pose` takes a `geometry_msgs/Pose`;
-`/rammp_curobo/set_world` swaps the collision world; `/rammp_curobo/check_pose_lock`
-answers whether a locked-axis plan is attemptable from a given start, without
-planning. There is nothing here that can move an arm.
+`/rammp_curobo/plan_to_pose` takes a `geometry_msgs/Pose`, plus two optional
+trailing fields that default to off: `hold` (keep the tool's orientation:
+`HOLD_NONE`, `HOLD_LEVEL` or `HOLD_FIXED`) and `approach_via` (one blended via
+point). They cannot be combined. A held plan is checked, not trusted; when a
+check fails the result has `success = false` and `message` starts with the
+status:
+
+| status | when |
+| --- | --- |
+| `CONSTRAINT_UNSATISFIABLE` | before planning: the start disagrees with the goal on the held components |
+| `CONSTRAINT_VIOLATED` | after planning: a waypoint breaks the hold, or the plan does not end at the goal's full orientation |
+| `BAD_CONSTRAINT` | a malformed via point, or a hold sent together with a via |
+
+`PlanToPose.action` has the full contract. `/rammp_curobo/set_world` swaps the
+collision world. There is nothing here that can move an arm.
 
 ## Adopting into a RAMMP module
 

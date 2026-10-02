@@ -8,10 +8,10 @@ three axes and still succeeds.
 
 Which of rx/ry/rz is roll vs pitch vs yaw follows cuRobo's base-frame
 axis order (x, y, z). VERIFIED on the Jetson against real cuRobo
-(2026-09-26): the smoke suite's `test_constrained_plan_holds_orientation`
-passed — holding roll/pitch genuinely holds them across a real plan. That
-is a pass/fail, not a bound, which is why the planner now measures the
-worst deviation and refuses a plan that exceeds the tolerance.
+(2026-10-01): the smoke suite's `test_constrained_plan_holds_orientation`
+uses a goal the unconstrained plan reaches with ~20 deg of tilt; held LEVEL,
+the same goal stays under 2 deg and ends on its 1.2 rad of yaw. The planner
+also measures every held plan and refuses one that exceeds the tolerance.
 """
 
 import math
@@ -112,10 +112,12 @@ class ViaPoint:
     the two linear axes other than `linear_axis`) at the GOAL's values — but
     only from `tstep_fraction` ONWARD, not for the whole trajectory. An earlier
     version of this docstring claimed the whole trajectory, and that error
-    propagated into the arm interface and two demo scripts. Measured on the arm
-    with one fixed start and goal: a PoseConstraint on a travelled axis is
-    refused with INVALID_PARTIAL_POSE_COST_METRIC, while the same goal carrying
-    a via plans normally — because the via's hold is not active at the start.
+    propagated into the arm interface and two demo scripts. Because the via's
+    hold is not active at the start, the start need not match the goal.
+
+    A via cannot be combined with an orientation hold: before tstep_fraction
+    cuRobo's approach metric applies no per-step pose cost at all, so the hold
+    would silently lapse. plan_to_pose refuses the pair as BAD_CONSTRAINT.
 
     `linear_axis` is also resolved in the GOAL frame, always:
     create_grasp_approach_metric accepts project_to_goal_frame and never uses

@@ -128,7 +128,7 @@ def test_goal_hold_constants_match_the_core():
 class _StubFk:
     """Equivalent to core/tests/test_offline.py's _StubFk — duplicated here
     rather than imported, since this file and core/tests live in separate
-    pytest roots (see the hold check's docker test invocation, which only
+    pytest roots (see core/tests' docker test invocation, which only
     puts core/ itself on PYTHONPATH)."""
 
     def __init__(self, pos, quat_xyzw, tolerance_deg=2.0):
