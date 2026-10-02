@@ -325,8 +325,8 @@ def test_hold_verification_cost_is_a_rounding_error_on_planning(planner, start):
     print(
         "\n  hold verification: %.3f ms over %d waypoints"
         "\n  constrained plan:  %.1f ms"
-        "\n  verification is %.2f%% of planning" % (
-            t_verify * 1e3, n, t_plan * 1e3, 100.0 * share)
+        "\n  verification is %.2f%% of planning"
+        % (t_verify * 1e3, n, t_plan * 1e3, 100.0 * share)
     )
     assert share < 0.05, (
         "hold verification is %.1f%% of planning time (%.2f ms of %.1f ms over "

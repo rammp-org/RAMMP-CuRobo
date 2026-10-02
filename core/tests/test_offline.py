@@ -243,10 +243,20 @@ def test_hold_vec_weight_is_orientation_first():
     Getting this backwards silently constrains position instead of
     orientation, which still plans, so no test but this one would catch it."""
     assert PoseConstraint(hold=HOLD_LEVEL).hold_vec_weight() == [
-        1.0, 1.0, 0.0, 0.0, 0.0, 0.0
+        1.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
     ]
     assert PoseConstraint(hold=HOLD_FIXED).hold_vec_weight() == [
-        1.0, 1.0, 1.0, 0.0, 0.0, 0.0
+        1.0,
+        1.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
     ]
 
 
@@ -357,9 +367,7 @@ def test_via_point_ignores_the_constraint_when_via_is_inactive():
     the five-axis hold is a via-point-only behaviour."""
     from rammp_curobo.planner import CuRoboPlanner
 
-    kw = CuRoboPlanner._pose_cost_kwargs(
-        PoseConstraint(hold=HOLD_LEVEL), ViaPoint()
-    )
+    kw = CuRoboPlanner._pose_cost_kwargs(PoseConstraint(hold=HOLD_LEVEL), ViaPoint())
     assert kw["hold_vec_weight"] == [1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
     assert "offset_position" not in kw
 
@@ -447,9 +455,7 @@ def test_pre_check_passes_a_tilted_start_when_the_goal_is_equally_tilted():
     the whole way — 'held' means unchanged, not level."""
     tilted = euler_deg_to_quat_xyzw([45.0, 0.0, 0.0])
     stub = _StubFk([0.3, 0.0, 0.4], tilted)
-    ok, why = _check(
-        stub, [0.6, 0.2, 0.4], tilted, PoseConstraint(hold=HOLD_LEVEL)
-    )
+    ok, why = _check(stub, [0.6, 0.2, 0.4], tilted, PoseConstraint(hold=HOLD_LEVEL))
     assert ok and why is None
 
 
@@ -475,9 +481,7 @@ def test_pre_check_passes_fixed_when_orientations_are_identical():
     holds."""
     stub = _StubFk([0.3, 0.0, 0.4], euler_deg_to_quat_xyzw([0.0, 0.0, 0.0]))
     goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
-    ok, why = _check(
-        stub, [0.6, 0.0, 0.4], goal_q, PoseConstraint(hold=HOLD_FIXED)
-    )
+    ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, PoseConstraint(hold=HOLD_FIXED))
     assert ok and why is None  # identical orientations: nothing to disagree about
 
 

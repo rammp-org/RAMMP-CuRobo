@@ -72,11 +72,11 @@ point). They cannot be combined. A held plan is checked, not trusted; when a
 check fails the result has `success = false` and `message` starts with the
 status:
 
-| status | when |
-| --- | --- |
-| `CONSTRAINT_UNSATISFIABLE` | before planning: the start disagrees with the goal on the held components |
-| `CONSTRAINT_VIOLATED` | after planning: a waypoint breaks the hold, or the plan does not end at the goal's full orientation |
-| `BAD_CONSTRAINT` | a malformed via point, or a hold sent together with a via |
+| status                     | when                                                                                                |
+| -------------------------- | --------------------------------------------------------------------------------------------------- |
+| `CONSTRAINT_UNSATISFIABLE` | before planning: the start disagrees with the goal on the held components                           |
+| `CONSTRAINT_VIOLATED`      | after planning: a waypoint breaks the hold, or the plan does not end at the goal's full orientation |
+| `BAD_CONSTRAINT`           | a malformed via point, or a hold sent together with a via                                           |
 
 `PlanToPose.action` has the full contract. `/rammp_curobo/set_world` swaps the
 collision world. There is nothing here that can move an arm.
