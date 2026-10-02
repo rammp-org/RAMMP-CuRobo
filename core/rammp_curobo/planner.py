@@ -262,6 +262,12 @@ class CuRoboPlanner:
         Measures the held deviation from the goal orientation with the SAME
         metric the start check uses, so one tolerance means one thing.
 
+        Then checks that the plan ENDS at the goal's full orientation, yaw
+        included. LEVEL frees yaw along the way, never at the goal: cuRobo's
+        terminal cost keeps full weights, but its own success test allows
+        sin(err/2) < 0.05 (about 5.7 deg), so a plan it calls successful can
+        still miss the requested yaw by more than this tolerance.
+
         ONE kinematics call for the whole trajectory, then numpy: the joint
         reorder is a precomputed index permutation and the quaternion maths is
         vectorised. A per-waypoint Python loop would put ~100 GPU round trips
@@ -292,7 +298,21 @@ class CuRoboPlanner:
         worst = float(dev[worst_k])
         tol = self.constraint_tolerance_rad
         if worst <= tol:
-            return None
+            end = float(
+                self._hold_deviation_batch(
+                    wxyz[-1:],
+                    geometry.wxyz_to_xyzw(goal_wxyz),
+                    PoseConstraint(hold=constraints.HOLD_FIXED),
+                )[0]
+            )
+            if end <= tol:
+                return None
+            return (
+                "the plan ends %.2f deg from the goal orientation (limit "
+                "%.2f). The '%s' hold frees nothing at the goal: every "
+                "component of the goal orientation, yaw included, must be "
+                "reached." % (math.degrees(end), math.degrees(tol), constraint.name())
+            )
         what = (
             "tilt (roll/pitch)"
             if constraint.hold == constraints.HOLD_LEVEL

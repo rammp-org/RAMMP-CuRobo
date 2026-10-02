@@ -218,6 +218,14 @@ def test_constrained_plan_holds_orientation(planner, start):
         worst = max(worst, math.hypot(rot[0], rot[1]))
     assert worst < 0.05, "tilt drifted %.4f rad along the path" % worst
 
+    # LEVEL frees yaw along the way, never at the goal: this goal is 0.4 rad
+    # of yaw from the start, and the plan must END on it.
+    _, quat_end = planner.fk(res.joint_traj.positions[-1])
+    end_err = float(np.linalg.norm(rotvec_between(quat, quat_end)))
+    assert end_err < planner.constraint_tolerance_rad, (
+        "plan ended %.2f deg from the goal orientation" % math.degrees(end_err)
+    )
+
 
 def test_hold_verification_cost_is_a_rounding_error_on_planning(planner, start):
     """The hold check runs on EVERY constrained plan, so it has to be cheap.

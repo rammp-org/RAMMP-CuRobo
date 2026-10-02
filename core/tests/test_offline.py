@@ -647,3 +647,81 @@ def test_pre_check_rejects_a_nan_goal_position():
     )
     assert not ok
     assert why is not None and "non-finite" in why
+
+
+class _StubTrajFk:
+    """Just enough of CuRoboPlanner for _verify_hold, called unbound: each
+    trajectory row's single joint value IS the index of the waypoint
+    orientation the stub kinematics hands back."""
+
+    joint_names = _curobo_joint_names = ["j"]
+
+    def __init__(self, quats_xyzw, tolerance_deg=2.0):
+        from rammp_curobo.planner import CuRoboPlanner
+
+        self._hold_deviation_batch = CuRoboPlanner._hold_deviation_batch
+        self.constraint_tolerance_rad = math.radians(tolerance_deg)
+        wxyz = np.array([[q[3], q[0], q[1], q[2]] for q in quats_xyzw])
+
+        class _Arr:
+            def __init__(self, a):
+                self.a = a
+
+            def detach(self):
+                return self
+
+            def cpu(self):
+                return self
+
+            def numpy(self):
+                return self.a
+
+        class _Kin:
+            def get_state(self, rows):
+                state = type("S", (), {})()
+                state.ee_quaternion = _Arr(wxyz[rows[:, 0].astype(int)])
+                return state
+
+        self._motion_gen = type("M", (), {"kinematics": _Kin()})()
+        self.traj = Trajectory(
+            joint_names=["j"],
+            positions=np.arange(len(quats_xyzw), dtype=float)[:, None],
+            velocities=None,
+            accelerations=None,
+            dt=0.01,
+        )
+
+    @staticmethod
+    def _tensor(x):
+        return x
+
+
+def _verify(stub, goal_xyzw, constraint):
+    from rammp_curobo.planner import CuRoboPlanner
+
+    goal_wxyz = [goal_xyzw[3], goal_xyzw[0], goal_xyzw[1], goal_xyzw[2]]
+    return CuRoboPlanner._verify_hold(stub, stub.traj, goal_wxyz, constraint)
+
+
+def test_level_must_still_reach_the_goal_yaw():
+    """LEVEL frees yaw ALONG THE WAY, never at the goal. A level path that
+    ends 10 deg short of the requested yaw is refused, not accepted because
+    the hold itself was respected -- cuRobo's own success test would let up
+    to ~5.7 deg through, so this cannot be left to it."""
+    level = PoseConstraint(hold=HOLD_LEVEL)
+    goal = euler_deg_to_quat_xyzw([0.0, 0.0, 30.0])
+    path = [euler_deg_to_quat_xyzw([0.0, 0.0, y]) for y in (0.0, 10.0, 20.0)]
+    why = _verify(_StubTrajFk(path), goal, level)
+    assert why is not None
+    assert "ends 10.00 deg from the goal orientation" in why
+
+    path.append(goal)
+    assert _verify(_StubTrajFk(path), goal, level) is None
+
+
+def test_a_path_violation_is_reported_before_the_endpoint():
+    level = PoseConstraint(hold=HOLD_LEVEL)
+    goal = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
+    path = [goal, euler_deg_to_quat_xyzw([8.0, 0.0, 0.0]), goal]
+    why = _verify(_StubTrajFk(path), goal, level)
+    assert why is not None and "tilt (roll/pitch)" in why
