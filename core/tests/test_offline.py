@@ -3,7 +3,11 @@
 These run anywhere (CI, a laptop) — no torch, no cuRobo, no ROS.
 """
 
+import importlib.util
 import math
+import sys
+import types
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -23,6 +27,32 @@ from rammp_curobo.scene import load_scene, scene_from_obstacles
 from rammp_curobo.types import Trajectory
 from rammp_curobo.validate import start_state_matches, validate_trajectory
 from rammp_curobo.world import world_cuboids
+
+
+def test_conftest_refuses_only_another_checkouts_core(tmp_path, monkeypatch):
+    # loaded by path: `import conftest` names whichever conftest.py pytest
+    # imported last
+    spec = importlib.util.spec_from_file_location(
+        "wrong_tree_guard", Path(__file__).with_name("conftest.py")
+    )
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+
+    def imported_from(parent):
+        stub = types.ModuleType("rammp_curobo")
+        stub.__file__ = str(parent / "rammp_curobo" / "__init__.py")
+        monkeypatch.setitem(sys.modules, "rammp_curobo", stub)
+        guard.pytest_configure(None)
+
+    here = Path(__file__).resolve().parents[1]
+    with pytest.raises(pytest.UsageError) as exc:
+        imported_from(tmp_path / "core")
+    assert str(exc.value) == (
+        "rammp_curobo is imported from %s, not this checkout (%s); "
+        "run with PYTHONPATH=%s" % (tmp_path / "core", here, here)
+    )
+    # a non-editable install (the image) is not another checkout
+    imported_from(tmp_path / "site-packages")
 
 
 def test_packaged_configs_exist():

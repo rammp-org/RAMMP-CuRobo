@@ -114,13 +114,12 @@ def load_planner_config(name_or_path):
     # _merge keeps any key, so these two near misses of `layers` would load
     # and be ignored: the planner would start without the layers the file
     # asks for. No other unknown key is refused.
-    not_a_key = (
-        "%s: %r is not a planner-config key; did you mean the top-level 'layers:'?"
-    )
-    if "layer" in cfg:
-        raise ValueError(not_a_key % (path, "layer"))
-    if "layers" in (cfg["planner"] or {}):
-        raise ValueError(not_a_key % (path, "planner.layers"))
+    planner = cfg["planner"]
+    if "layer" in cfg or (isinstance(planner, dict) and "layers" in planner):
+        raise ValueError(
+            "%s: 'layer' is not a planner-config key; "
+            "did you mean the top-level 'layers:'?" % path
+        )
     layers = cfg["layers"]
     if not isinstance(layers, list) or not all(isinstance(r, str) for r in layers):
         raise ValueError(

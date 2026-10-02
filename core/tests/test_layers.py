@@ -18,22 +18,38 @@ def test_misplaced_layers_key_is_refused(tmp_path):
     assert load("")["layers"] == []
     assert load("layers: [a.yaml, b.yaml]\n")["layers"] == ["a.yaml", "b.yaml"]
 
-    with pytest.raises(ValueError) as exc:
-        load("layer: [a.yaml]\n")
-    assert str(exc.value) == (
-        "%s: 'layer' is not a planner-config key; "
-        "did you mean the top-level 'layers:'?" % path
-    )
-    with pytest.raises(ValueError) as exc:
-        load("planner:\n  layers: [a.yaml]\n")
-    assert str(exc.value) == (
-        "%s: 'planner.layers' is not a planner-config key; "
-        "did you mean the top-level 'layers:'?" % path
-    )
-    for extra in ('layers: "a.yaml"\n', "layers: [1]\n", "layers:\n"):
-        with pytest.raises(ValueError, match="'layers' must be a list") as exc:
+    # one message for both misplacements. Each is refused beside a valid
+    # `layers:` too: a config that lists the platform and misplaces the person
+    # must not load without the person
+    for extra in (
+        "layer: [a.yaml]\n",
+        "planner:\n  layers: [a.yaml]\n",
+        "layers: [a.yaml]\nlayer: [b.yaml]\n",
+        "layers: [a.yaml]\nplanner:\n  layers: [b.yaml]\n",
+    ):
+        with pytest.raises(ValueError) as exc:
             load(extra)
-        assert str(path) in str(exc.value), extra
+        assert str(exc.value) == (
+            "%s: 'layer' is not a planner-config key; "
+            "did you mean the top-level 'layers:'?" % path
+        ), extra
+    # only a mapping can hold the misplaced key: any other `planner:` value
+    # loads as it did in v1.0.0
+    for extra in ("planner:\n", "planner: 5\n", "planner: [layers]\n"):
+        assert load(extra)["layers"] == [], extra
+
+    for extra, got in (
+        ('layers: "a.yaml"\n', "'a.yaml'"),
+        ("layers: [1]\n", "[1]"),
+        ("layers: [a.yaml, 1]\n", "['a.yaml', 1]"),
+        ("layers: [1, a.yaml]\n", "[1, 'a.yaml']"),
+        ("layers:\n", "None"),
+    ):
+        with pytest.raises(ValueError) as exc:
+            load(extra)
+        assert str(exc.value) == (
+            "%s: 'layers' must be a list of layer file names, got %s" % (path, got)
+        ), extra
 
 
 def test_resolve_config_searches_cwd_unless_told_not_to(tmp_path, monkeypatch):
