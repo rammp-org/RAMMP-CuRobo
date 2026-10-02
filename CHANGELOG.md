@@ -12,6 +12,8 @@ that heading to the new version and bumps the five places the number lives.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-10-02
+
 ### Added
 
 - Plan while holding the tool's orientation (carry an object without tipping
@@ -99,4 +101,5 @@ claim about all of it:
   kernel JIT never runs. The functional gate is the Jetson, via `.hil.yml`.
 
 [1.0.0]: https://github.com/rammp-org/RAMMP-CuRobo/releases/tag/v1.0.0
-[unreleased]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v1.0.0...HEAD
+[1.1.0]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v1.0.0...v1.1.0
+[unreleased]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v1.1.0...HEAD
