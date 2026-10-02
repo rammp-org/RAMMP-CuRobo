@@ -1,0 +1,125 @@
+# Inputs of scripts/generate_layers.py: the MEBot obstacle layers.
+#
+# Every number in core/rammp_curobo/configs/layer_mebot_{platform,person,floor}.yaml
+# comes from this file, or from the URDF and the robot config it names. Edit
+# here and run `make layers`; the layer files themselves are never hand-edited.
+#
+# Metres unless a key says otherwise. The "mebot frame" is the root link of
+# the pinned URDF (x forward, y left, z up); base_link is the Gen3's.
+
+# The MEBot drive base. The URDF is fetched by commit and checked by sha256
+# (cache, a local Demo-Software clone, then GitHub raw); no copy lives here.
+source:
+  repo: rammp-org/Demo-Software
+  # The commit that added the file on origin/dev (= origin/HEAD).
+  commit: 80908b9f73f02e094106c0b82640a23c3cd6f41c
+  path: core/rammp_prototype_description/urdf/rammp_prototype_base.urdf
+  # Of the raw bytes (the file is CRLF): `git show <commit>:<path> | sha256sum`.
+  sha256: 201ec24aeeff868557b13211eaa4571b8f11cd6709795537098bafaef032c0ec
+  # Provenance only: the same blob at the commits a reviewer might look for.
+  git_blob: 8f571f54
+  same_blob_at:
+    - 59d5aef (authoring commit; only on origin/feature/106-drive-base-publisher)
+    - 0a94cce (origin/main, Release 1.0)
+
+# Where the arm sits on the chair (owner decision, 2026-09-30): the RAMMS model
+# pose, UNVERIFIED on the real chair. A measurement is one edit here. A
+# non-zero rpy_deg is refused: the boxes are axis-aligned in base_link.
+mount:
+  arm_base_in_mebot: {position: [0.505, -0.265, 0.376], rpy_deg: [0, 0, 0]}
+  # Provenance only. The RAMMS BP_Mebot_Ramms blueprint chain; the mount uses
+  # its sum with z rounded to 0.376.
+  chain:
+    seat_base: [0.345, 0, 0.256381]
+    rail_r: [0.020, -0.265, 0.085]
+    mount_arm: [0.140, 0, 0.020]
+    ArmSkMesh: [0, 0, 0.015]
+    sum: [0.505, -0.265, 0.376381]
+  # The RAMMS BP_Mebot_Mujoco blueprint puts the arm at the mount_arm origin,
+  # without ArmSkMesh's +0.015.
+  alt_chain:
+    arm: [0.505, -0.265, 0.361381]
+  # Demo-Software's own TF. It matches the chain in x/y (to 1e-6) only in the
+  # UE VehicleMesh component frame, whose root bone is at
+  # (-0.538656, 0.002557, 0.028235); applied to this URDF as it stands it would
+  # put the arm 0.539 m further back. Its +1.15 cm in z is unexplained.
+  not_used:
+    demo_software_tf: [-0.033657, -0.262443, 0.416116]
+    in_urdf_frame: [0.505, -0.265, 0.388]
+
+# Everything after one outward snap is integer ticks of this grid.
+grid_m: 0.0001
+# The layers are sized for this much planner padding per side; it must equal
+# the chair config's world_padding.
+padding_assumed_m: 0.02
+# How far a padded box stays from the arm's fixed spheres when the generator
+# has the choice: merges that come closer are skipped, and the person is
+# carved back by this much.
+keep_out_margin_m: 0.005
+
+# The arm's joint-independent collision spheres: base_link's, and
+# shoulder_link's, which sit on the joint_1 axis. A padded box touching them
+# makes every state a collision.
+keep_out:
+  # Packaged; the spheres and collision_sphere_buffer are read from it.
+  robot_config: robot_gen3_2f85.yaml
+  # joint_1's origin, which places shoulder_link in base_link (cuRobo v0.7.8,
+  # kinova_gen3_7dof.urdf:55).
+  shoulder_link_origin: {xyz: [0, 0, 0.15643], rpy: [3.1416, 0, 0]}
+  # The gate: a layer whose padded boxes come closer than this is not written.
+  min_clearance_m: 0.004
+
+platform:
+  max_boxes: 16       # of the planner's 60-box cache
+  max_over_pct: 15.0  # volume merging adds, against the primitives' bounding boxes
+
+# The occupant: a 95th-percentile seated adult plus a margin on every face,
+# as three segments (torso and head, lap, lower legs and feet).
+person:
+  # ANSUR II 2012 (Gordon et al. 2014), via The Ergonomics Center (NCSU),
+  # "Anthropometric Data for U.S. Adults", 11/2024. Each value is the 95th
+  # percentile of the larger sex, in inches as tabulated (0.0254 m/in), with
+  # its table row.
+  ansur_p95_in:
+    # torso_head: its top, and its front (the deeper of chest and abdomen)
+    sitting_height: {row: 8, sex: men, inches: 38.46}
+    chest_depth: {row: 20, sex: men, inches: 11.73}
+    abdominal_depth: {row: 21, sex: men, inches: 12.60}
+    # torso_head and lap: their width
+    shoulder_breadth_bideltoid: {row: 17, sex: men, inches: 22.32}
+    # lap: its front (the knees), and its top (the higher of the thighs and of
+    # forearms resting on them or on the armrests, a hand breadth thick)
+    buttock_knee_length: {row: 13, sex: men, inches: 26.34}
+    thigh_clearance: {row: 12, sex: men, inches: 8.15}
+    sitting_elbow_height: {row: 11, sex: men, inches: 11.46}
+    hand_breadth: {row: 29, sex: men, inches: 3.78}
+    # legs: the back of the knees, the soles, the width (men 15.24), and the
+    # feet in front of the knees
+    buttock_popliteal_length: {row: 14, sex: men, inches: 21.57}
+    popliteal_height: {row: 16, sex: men, inches: 18.54}
+    hip_breadth: {row: 19, sex: women, inches: 15.75}
+    foot_length: {row: 30, sex: men, inches: 11.54}
+  # A deliberate over-size (owner decision). The planner pads another 0.02,
+  # so about 7 cm is effective.
+  margin_m: 0.05
+  # Where the occupant sits, in the mebot frame: the RAMMS rammp_seat
+  # simple-collision hulls (ramms-assets). Transcribed, because the asset's
+  # mesh is Oodle-compressed and only its bounds, sockets and hulls decode.
+  seat:
+    pan_top_z: 0.4705         # hull1 max z
+    # hull1 min x .. hull0 max x. The true face is unknown, so the layer
+    # spans the range.
+    backrest_face_x: [0.1587, 0.2733]
+    backrest_rear_x: -0.1502  # hull3 min x
+    centreline_y: 0           # seat_base socket y
+
+# The chair's cell stand-in: a slab whose top is the URDF's lowest point.
+floor:
+  half_extent_m: 1.5
+  thickness_m: 0.1
+
+# Written relative to the repository root.
+outputs:
+  platform: core/rammp_curobo/configs/layer_mebot_platform.yaml
+  person: core/rammp_curobo/configs/layer_mebot_person.yaml
+  floor: core/rammp_curobo/configs/layer_mebot_floor.yaml
