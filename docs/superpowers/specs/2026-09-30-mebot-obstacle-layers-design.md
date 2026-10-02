@@ -1,7 +1,9 @@
 # MEBot obstacle layers: the wheelchair and the person
 
-- **Status:** Design approved by the owner 2026-09-30; this written spec awaits
-  the owner's review before the implementation plan is written.
+- **Status:** Design approved by the owner 2026-09-30. Revised 2026-10-02 after
+  a sim spike: the sim is a ROS 2 stack (decision 1), and the spike's findings
+  are folded in (§8, §13). The owner reviews this spec before the implementation
+  plan is written.
 - **Issue:** <https://github.com/rammp-org/RAMMP-CuRobo/issues/19>
 - **Branch:** `feature/19-platform-layers`, off `origin/dev` (b734928, the
   v1.0.0 content), in the worktree `~/RAMMP-CuRobo-19`. Local commits only,
@@ -19,7 +21,7 @@
 **Conventions.** Measured numbers come from a design-phase CPU prototype of the
 generator and from CPU prototypes of the arm-sphere and MuJoCo checks; the
 implementation's generator, tests and sim recompute them, and §5.5, §8 (G0 to
-G7) and §9 say which are gated. A file:line without a repo name is this repo at
+G6) and §9 say which are gated. A file:line without a repo name is this repo at
 `origin/dev` (b734928): `planner.py`, `world.py`, `scene.py` and `config.py` are
 in `core/rammp_curobo/`, the tests in `core/tests/`, `planner_node.py` in
 `rammp_curobo_ros/rammp_curobo_ros/`, and `build.yml` in `.github/workflows/`.
@@ -41,8 +43,8 @@ the MEBot drive base) and the person in it (the **person**). The geometry is:
 
 The person stays a separate layer, so a later mouth approach can exclude it.
 Every claim has a test that fails if cuRobo ignores the geometry. The layers are
-also checked against the exact MEBot and an independent seated body in a Python
-MuJoCo harness.
+also checked against the exact MEBot and an independent seated body in a MuJoCo
+sim driven over ROS.
 
 ### 1.1 The ask, the planner today, and the review bar
 
@@ -77,7 +79,7 @@ The issue's review bar, and how this design meets it:
 | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | One bounding box for the wheelchair                                | 16 boxes. One box is 158.2 % over-covered and its padded box intrudes 7.9 mm into the arm's base sphere (§5.5); a test refuses a single box (§9)                                                       |
 | Hand-measured numbers when CAD exists; geometry literals in code   | The platform comes from the pinned Demo-Software URDF; every other number is data with provenance in `scripts/mebot_layers.yaml` (§5.1, §6.1)                                                          |
-| A loader with no test that would fail if cuRobo ignored its output | Paired GPU tests (§9, Task 1), a cache read-back test, and the sim's consistency gate G5 (§8)                                                                                                          |
+| A loader with no test that would fail if cuRobo ignored its output | Paired GPU tests (§9, Task 1), a cache read-back test, a sphere-consistency test, and the sim's positive controls (§8)                                                                                 |
 | Silent truncation or clamping when a scene exceeds the cache       | Overflow is refused, naming every source; nothing is truncated; the cache stays 60 (§4.6)                                                                                                              |
 | Merging the person into the platform layer                         | The person is its own file and layer, `excludable: true`; excluding it leaves the platform byte-identical (§6.3)                                                                                       |
 | New fields on `PlanToPose`, `PlanToJoints` or `SetWorld`           | None; `rammp_curobo_interfaces/` is untouched (§7.5, §11)                                                                                                                                              |
@@ -85,16 +87,20 @@ The issue's review bar, and how this design meets it:
 
 ## 2. Decisions (owner, 2026-09-30)
 
-1. **"Test it in sim" means a Python MuJoCo harness, not ROS.** `sim/mebot/`
-   (§8):
-   - Real cuRobo plans on the Jetson GPU.
-   - Every trajectory is checked kinematically and replayed dynamically against:
+1. **"Test it in sim" means a ROS 2 sim stack** (§8), run with `ros2 launch`
+   and `ros2 run`. Revised 2026-10-02: the first answer was a Python harness
+   without ROS; after trying a spike of each, the owner chose ROS commands and a
+   live view over rendered clips.
+   - A MuJoCo arm stands in for the arm driver, with the driver's ROS names,
+     beside the real planner node, on an isolated ROS domain.
+   - The scene holds:
      - the menagerie Gen3 + 2F-85;
      - the MEBot, through MuJoCo's own URDF importer, with all joints deleted;
      - the floor;
      - a seated stand-in.
-   - It checks contacts and per-layer clearance, and renders MP4s.
-   - Nothing touches the live stack.
+   - Plans are flown with physics; any contact with the true shapes is reported.
+   - A live view streams the sim to a browser.
+   - Nothing touches the live stack or the real arm.
 1. **Mount = the RAMMS model pose.** Gen3 `base_link` is at mebot (0.505,
    -0.265, **0.376**) with identity rotation. The RAMMS chain sum 0.376381 and
    the unused Demo-Software TF (-0.033657, -0.262443, 0.416116; a UE component
@@ -747,7 +753,7 @@ independent of the layer parameters. Only its overall scale comes from ANSUR.
 - Scaled uniformly to the 95th-percentile sitting height: ×1.229, or ×1.254 when
   leaning.
 - Placed with the buttock on the pan top, against the backrest face, centred.
-- Postures (joint angles as data in `sim/mebot/scenarios.yaml`):
+- Postures (joint angles as data in `sim/mebot_sim/config/scenarios.yaml`):
   - `upright_lap`: hands on the thighs;
   - `lean_lap`: 15° forward lean;
   - `forearms_forward`: upper arm vertical, forearm forward.
@@ -973,37 +979,67 @@ so no IDL change is needed.
     planning without the chair.
 - Three generated layer files (§5.6).
 
-## 8. The sim harness: `sim/mebot/` (decision 1)
+## 8. The sim: a ROS 2 stack on its own domain (`sim/mebot_sim/`, decision 1)
 
-**Where.**
+The sim is tested the way a consumer uses the planner: over ROS. A MuJoCo arm
+stands in for the arm driver, the real planner node plans, and test commands are
+ordinary `ros2 launch` and `ros2 run`.
 
-| File                       | Contents                                                                   |
-| -------------------------- | -------------------------------------------------------------------------- |
-| `sim/mebot/scene.py`       | MjSpec model builder                                                       |
-| `sim/mebot/check.py`       | kinematic, consistency and dynamic checks, registration, stand-in coverage |
-| `sim/mebot/run.py`         | CLI: scenarios, gates, report, video                                       |
-| `sim/mebot/scenarios.yaml` | seeds, caps, thresholds, stand-in postures, cameras                        |
-| `sim/mebot/README.md`      | how to run it and read the report                                          |
+**What runs.**
 
-It is outside `pytest.ini` testpaths, so neither CI nor `make test` runs it. It
-imports no rclpy and launches nothing.
+| Node                    | What it is                                                                                                                                                                                                                                                                                                     |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/mebot_sim`            | The MuJoCo arm with physics, the exact MEBot, the seated stand-in and the floor. It serves the driver's names: `/joint_states` (best effort, 50 Hz) and `/execute_joint_trajectory` (`rammp_arm_interfaces/ExecuteJointTrajectory`; cancel returns PREEMPTED and the arm holds). It also serves the live view. |
+| `/rammp_curobo`         | The planner node of this repo with `config:=gen3_mebot.yaml`: what a consumer gets on the chair.                                                                                                                                                                                                               |
+| `/rammp_curobo_control` | A second planner node with `config:=gen3.yaml` (`layers: []`). The tests push it scenes that list only some layers (`[floor, platform]`, `[floor]`), which is the positive control: the same request planned without a layer.                                                                                  |
 
-**Dependencies.**
+`/mebot_sim` also offers `/mebot_sim/contacts` (`std_msgs/String`, JSON: contacts
+now and the worst per group since the last move), `/mebot_sim/teleport`
+(`std_msgs/Float64MultiArray`, seven joints), `/mebot_sim/posture`
+(`std_msgs/String`) and `/mebot_sim/reset` (`std_srvs/Trigger`).
 
-- Python `mujoco` (3.10.0 installed; MjSpec attach needs ≥ 3.2).
-- `/usr/bin/ffmpeg`.
-- `~/mujoco_menagerie` (`kinova_gen3/gen3.xml`, `robotiq_2f85/2f85.xml`), via
-  `--menagerie`.
-- The humanoid, via `--humanoid`.
-- The pinned URDF through the generator's `fetch_pinned`, so the sim uses the
-  same bytes as the generator.
-- Jetson CUDA with cuRobo v0.7.8.
-- `MUJOCO_GL=egl`.
+**Isolation.** `/mebot_sim` serves the real driver's names, so the stack must
+never share the bench's ROS domain. The launch files and every node switch to
+`ROS_DOMAIN_ID=88` when the domain is unset or 0, and say so. No node here
+imports the Kortex API or opens a connection to an arm. Agents never drive the
+arm (CONTRIBUTING.md:173-177); this stack cannot.
 
-None of this is added to `core/pyproject.toml`, because the sim is not part of
+**Where.** `sim/` carries a `COLCON_IGNORE`, like `core/`, so CI's colcon job
+(build.yml:80-101) does not need `rammp_arm_interfaces`. `make sim` builds the
+package by naming it as a base path.
+
+| File                                      | Contents                                                                                                                           |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `sim/mebot_sim/mebot_sim/scene.py`        | MjSpec model builder                                                                                                               |
+| `sim/mebot_sim/mebot_sim/sim_arm.py`      | the `/mebot_sim` node: physics loop, driver interface, contacts, clearance, live view                                              |
+| `sim/mebot_sim/mebot_sim/client.py`       | test client of the planner and driver interfaces                                                                                   |
+| `sim/mebot_sim/mebot_sim/try_goal.py`     | `ros2 run mebot_sim try_goal`: one goal, planned and flown, contacts reported                                                      |
+| `sim/mebot_sim/mebot_sim/run_suite.py`    | `ros2 run mebot_sim run_suite`: the scenarios and gates below                                                                      |
+| `sim/mebot_sim/mebot_sim/check_layers.py` | `ros2 run mebot_sim check_layers`: registration and stand-in coverage (CPU, no ROS graph)                                          |
+| `sim/mebot_sim/mebot_sim/find_pairs.py`   | `ros2 run mebot_sim find_pairs`: seeded GPU search that writes the start/goal pairs (in-process planner)                           |
+| `sim/mebot_sim/launch/sim.launch.py`      | the stack                                                                                                                          |
+| `sim/mebot_sim/launch/suite.launch.py`    | the stack plus `run_suite`; shuts down with its exit status                                                                        |
+| `sim/mebot_sim/config/scenarios.yaml`     | start/goal pairs (generated by `find_pairs`), stand-in postures, thresholds                                                        |
+| `sim/mebot_sim/config/control_*.yaml`     | the control planner's scenes: `layers: [layer_mebot_floor.yaml, layer_mebot_platform.yaml]` and `layers: [layer_mebot_floor.yaml]` |
+| `sim/mebot_sim/README.md`                 | how to run it and read the result                                                                                                  |
+
+**Dependencies.** None is added to `core/pyproject.toml`; the sim is not part of
 the package.
 
-**Import guard.** `run.py` exits with a PYTHONPATH hint if `rammp_curobo` was
+- ROS 2 Humble with `rmw_cyclonedds_cpp`.
+- An overlay that provides `rammp_arm_interfaces` (rammp-interfaces-ros2 v1.0.0),
+  consumed as built, never copied. On this Jetson that is `~/rammp_deps_ws`.
+- Python `mujoco` (3.10.0 installed; MjSpec attach needs ≥ 3.2), Pillow, and
+  `MUJOCO_GL=egl`.
+- `~/mujoco_menagerie` (`kinova_gen3/gen3.xml`, `robotiq_2f85/2f85.xml`) and the
+  humanoid XML, both by path (launch arguments).
+- The pinned URDF through the generator's `fetch_pinned`, so the sim uses the
+  same bytes as the generator.
+- Jetson CUDA with cuRobo v0.7.8 for the two planner nodes. CUDA and EGL stay in
+  separate processes: the planners hold CUDA, `/mebot_sim` holds EGL.
+
+**Import guard.** The launch puts this checkout's `core/` first on the planner
+nodes' `PYTHONPATH`, and the planner refuses to start if `rammp_curobo` was
 imported from another checkout's `core/`. On this Jetson the editable install
 maps `rammp_curobo` to `~/RAMMP-CuRobo/core`, which is on the older branch
 feature/19-obstacle-avoidance.
@@ -1025,126 +1061,128 @@ reference, without copying it:
    - body `mebot` attached at -mount;
    - 46 exact primitives, with true cylinders.
 1. A floor plane at the floor layer top.
-1. The stand-in (§6.4) frozen as static geoms. It is present in the chair
-   scenarios and absent in the empty-chair platform pair.
-1. The scenario's own scene boxes, exact and unpadded.
-1. The planner's `world_boxes` as visual-only overlays: `contype=conaffinity=0`,
-   group 2, alpha 0.25; blue for platform, orange for person, grey for floor and
-   scene.
+1. The stand-in (§6.4) frozen as static geoms. `/mebot_sim/posture` switches it
+   between the three postures and an empty chair.
+1. The committed layer files, padded by 0.02 m, as visual-only overlays:
+   `contype=conaffinity=0`, group 2, alpha 0.2; blue for platform, orange for
+   person, grey for floor.
 
 The design-phase prototype of this scene has nbody 69, ngeom 108 (without
 overlays), njnt 15, nu 8.
 
-**Per-trajectory checks.**
+**The simulated arm.**
 
-1. **Densify** joint-linearly to ≤ 0.005 rad per step.
-1. **Kinematic ground truth.** At each step, `mj_forward` gives arm contacts
-   deeper than 1 mm against each group: `mebot`, `standin` (the whole body,
-   lower legs and feet included), `floor`, `scene`. `mj_geomDistance` (distmax
-   0.5) gives the per-group minimum clearance.
-1. **Planner-model consistency.** cuRobo's FK spheres at every returned waypoint
-   are tested against every padded composed box on the CPU with
-   `world.sphere_box_penetration`. A penetration above 0.5 mm means "cuRobo did
-   not honour box X of layer Y". This detects silently dropped geometry, which
-   `_recheck_constraints` cannot, because it asks the same cuRobo world.
-1. **Dynamic replay.** Menagerie position actuators track the trajectory retimed
-   by `Trajectory.scaled(execution.speed_scale)` (0.25), with dt 0.002 and a 0.5
-   s settle. It records contacts and maximum tracking error. A design-phase
-   probe ran about 19× real time with ≤ 0.018 rad tracking error.
-1. **Straightness.** `dev = max_t |q(t) - proj_[q0,q1](q(t))|_2` in radians.
+- Physics steps at 2 ms in real time. Menagerie position actuators track the
+  reference: the trajectory being executed, or the last commanded state.
+- Like the real driver, `/execute_joint_trajectory` flies what it is sent on the
+  trajectory's own time base. The client dilates time (`try_goal --speed`), as
+  consumers do.
+- **A contact is any MuJoCo contact between an arm or gripper geom and a group
+  (`mebot`, `standin`, `floor`) with a normal force above 1 N**, sampled every 10
+  ms of sim time. Penetration depth is not used: in the design-phase spike the
+  arm pressed into the stand-in for 4.8 s at 744 N while the deepest penetration
+  stayed under 1 mm.
+- **Closest approach** per group is reported, not gated. It uses
+  `mj_geomDistance`, which in MuJoCo 3.10 returns false zeros and sign-flipped
+  values for some pairs of an arm mesh and a MEBot primitive (237 to 584 false
+  zeros per trajectory in the spike, and -346 mm for a pair that was 346 mm
+  apart). A value at or below zero counts only when the pair is also in contact
+  or a hull vertex is inside the primitive.
 
-**Scenarios** (seeded; all states come from batched `check_constraints`
-searches, never joint literals; search caps are in `scenarios.yaml`, and a
-search that finds nothing fails loudly):
+**Live view.** `/mebot_sim` serves a page (default `http://127.0.0.1:8765`;
+`host:=` adds addresses) that streams the EGL render as MJPEG at 20 fps. The
+viewer can orbit, pan and zoom, send a tool goal to either planner, push the
+joints by hand, switch the stand-in's posture, and see contacts and forces. It
+is how a person watches the sim on a headless Jetson; no test depends on it.
 
-- **S0 registration and sanity** (no planning)
+**Commands.**
+
+```sh
+make sim            # build .sim_ws/, launch suite.launch.py, exit with run_suite's status
+
+# or by hand, in two shells, each after:  source .sim_ws/install/setup.bash
+ros2 launch mebot_sim sim.launch.py [posture:=none] [host:=127.0.0.1,<address>]
+ros2 run mebot_sim try_goal --pos 0.45 0.20 0.25 --control      # the same goal on both planners
+ros2 run mebot_sim run_suite [--only S2]
+ros2 run mebot_sim check_layers
+```
+
+`make sim` sources ROS and the interfaces overlay (`SIM_OVERLAY`, default
+`~/rammp_deps_ws/install/setup.bash`), builds `rammp_curobo_interfaces`,
+`rammp_curobo_ros` and `sim/mebot_sim` into the git-ignored `.sim_ws/`, and runs
+with `PYTHONPATH=$(CURDIR)/core` prepended.
+
+**Scenarios** (`run_suite`). Start/goal pairs are data in `scenarios.yaml`,
+written by `find_pairs` with fixed seeds and regenerated whenever the layers
+change. A pair whose premise no longer holds fails loudly; nothing is skipped.
+
+- **S0 layers against the true shapes** (`check_layers`, no planning)
   - MuJoCo's parse of the URDF has **0** surface samples outside the platform
     boxes, and the same layer shrunk by 1 mm leaves >0 outside. Design-phase
     prototype: 0 of 23,216, and 4,321 after the shrink.
-  - `world_boxes` equals the committed files plus 0.02 padding.
   - Stand-in gap against the padded person layer is 0 for the three postures at
     both backrest positions.
-- **S1 platform pair.** `gen3.yaml` planner. Scene-level layers: *present* =
-  `[floor, platform]`, *absent* = `[floor]`.
-  - **Premise:** the start and goal are valid in *present*. The straight path is
-    invalid in *present*, valid in *absent*, **and penetrates the true MEBot in
-    MuJoCo.**
-  - *Present*: fails, or detours with `dev > 0.10`, with zero MEBot contact.
-  - *Absent*: succeeds straight (`dev < 0.05`), and its path contacts the MEBot.
-    This is the positive control: the sim sees the chair, and dropping the layer
-    is dangerous.
-- **S2 person pair.** `gen3_mebot.yaml` planner.
-  - **Premise:** start and goal are valid with all layers, and the straight path
-    crosses only `person/*` and penetrates the stand-in in MuJoCo.
-  - With all layers: fails or detours, with zero stand-in contact.
-  - With `ignore={'person'}`: straight. The stand-in contact is **expected** and
-    reported (positive control). The platform boxes are unchanged.
-- **S3 outboard tasks.** 10 seeded valid goals from a valid start, all layers.
-  The success rate is reported. Every success is contact-free (kinematic and
-  dynamic) and consistent.
-- **S4 set_world push.** Push a synthetic 8-box consumer-like scene with no
-  `layers:`. `world_boxes` must still list platform 16 and person 6, and
-  cuRobo's cache read-back must match. Plan once and run all checks.
-- **S5 diagnostics.** From the retract: INVALID_START, with `person/` and a
-  depth in the error.
-- **S6 report only.**
-  - Joint-space freedom: GPU batch validity of 10k seeded configurations for
-    floor, +platform, +person.
-  - Plan times (first plan against the median, as evidence that warm-up took
-    effect).
-  - Per-layer clearances and tracking error.
+- **S1 platform pairs** (empty chair). The straight path between start and goal
+  crosses the true MEBot.
+  - *Layer on*: `/rammp_curobo_control` with `[floor, platform]`. Refused, or
+    flown with no MEBot contact.
+  - *Layer off*: `/rammp_curobo_control` with `[floor]`. Planned and flown, and
+    it contacts the MEBot. This is the positive control: the sim sees the chair,
+    and dropping the layer is dangerous.
+- **S2 person pairs.** The straight path crosses the stand-in.
+  - *Layer on*: `/rammp_curobo`. Refused, or flown with no stand-in contact.
+  - *Layer off*: `/rammp_curobo_control` with `[floor, platform]`. Planned and
+    flown, and it contacts the stand-in.
+- **S3 ordinary reaches.** Eight joint goals from one valid start on
+  `/rammp_curobo`. The success rate is reported. Every flown plan is
+  contact-free.
+- **S4 a consumer's push.** `set_world` on `/rammp_curobo` with an 8-box scene
+  that lists no layers. The reply must list platform 16 and person 6 (§7.5), and
+  the S2 requests are then run again and must still be refused or avoid the
+  stand-in.
+- **S5 diagnostics.** A plan from the bench retract on `/rammp_curobo` fails
+  with `person/` and a depth in the message.
 
-**Gates (exit 1 on any failure).**
+**Gates** (`run_suite` exits 1 on any failure).
 
 - **G0**: S0 registration and non-vacuity.
-- **G1**: `world_boxes` equals the files plus padding.
-- **G2**: stand-in gap = 0.
-- **G3**: every pair premise and expectation.
-- **G4**: no contact deeper than 1 mm against `mebot`, `floor`, `scene` or
-  `standin` (the whole stand-in) in any successful plan made *with* the relevant
-  layers, kinematic or dynamic.
-- **G5**: consistency ≤ 0.5 mm.
-- **G6**: persistence and read-back after the push.
-- **G7**: diagnostics name `person/`.
+- **G1**: stand-in gap = 0.
+- **G2**: no contact with `mebot`, `standin` or `floor` in any flown plan made
+  with the relevant layers.
+- **G3**: every positive control is planned, flown and makes contact with the
+  shape its missing layer covers.
+- **G4**: the layers survive a push (S4).
+- **G5**: diagnostics name `person/` (S5).
+- **G6**: every contact-free flight ends within 0.05 rad of its last waypoint,
+  so the sim really flew the plan.
 
-Clearances are reported, not gated: MuJoCo mesh hulls and cuRobo spheres differ
-by design, and a design-phase probe found the arm's hulls up to 4.7 mm outside
-cuRobo's spheres + buffer.
+Reported, not gated: closest approach per group, plan times, the S3 success
+rate, and tracking error. MuJoCo mesh hulls and cuRobo spheres differ by design:
+a design-phase probe found the arm's hulls up to 4.7 mm outside cuRobo's spheres
 
-**Video.** After all planning, `run.py` renders MP4s in a **child process** from
-saved trajectories (`<out>/traj/*.npz`). The render never competes with plan
-timing, and no process holds both a CUDA and an EGL context. Offscreen EGL at
-640×480, 30 fps, with overlays on and a camera at the chair's front-right. Raw
-RGB is piped to
-`ffmpeg -f rawvideo -pix_fmt rgb24 ... -c:v libx264 -pix_fmt yuv420p`. There is
-one MP4 per scenario case (pairs render both arms), plus a start-state PNG.
+- buffer.
 
-**Report.** Written to `<out>/report.json` and `<out>/report.md`. The default
-output directory is
-`${XDG_CACHE_HOME:-~/.cache}/rammp_curobo/sim/<UTC>-<git-sha>/`, outside the
-repo and so outside the Docker build context.
+What the earlier Python-only design checked inside the sim process moves to the
+GPU tests (§9), where the planner is in-process: the installed world against the
+layer files, cuRobo's cache read-back, and cuRobo's own spheres against every
+padded box along a plan.
 
-- **report.json**: git sha and dirty flag, sha256 of the layer files, URDF
-  sha256, menagerie commit, humanoid path and sha256, planner configs, and
-  per-scenario statuses, attribution strings, metrics and gates.
-- **report.md**: a table (scenario, case, status, plan s, dev, clearance per
-  group, contacts, tracking, video).
+**Result.** `run_suite` prints one line per case (case, planner and world,
+outcome, PASS or FAIL) and a summary, and writes the same as JSON to
+`${XDG_CACHE_HOME:-~/.cache}/rammp_curobo/sim/<UTC>-<git-sha>.json`, outside the
+repo. No video is rendered; the live view replaces it.
 
-**Commands:**
-
-```sh
-cd ~/RAMMP-CuRobo-19
-MUJOCO_GL=egl PYTHONPATH=$PWD/core python3 sim/mebot/run.py \
-    [--only S2] [--no-video] [--out DIR] [--menagerie ~/mujoco_menagerie] \
-    [--humanoid /opt/ros/humble/opt/mujoco_vendor/model/humanoid/humanoid.xml]
-make sim   # same, with PYTHONPATH=$(CURDIR)/core prepended
-```
+**Design-phase evidence.** A throwaway prototype of this stack ran on the Jetson
+on 2026-10-02 with the v1.0.0 planner node and the layer boxes loaded as plain
+world files: 6 platform cases, 6 person cases and 8 reaches, 20 of 20 as
+expected (7 of 8 reaches planned), with `/joint_states` at 50 Hz and plans in
+0.2 to 0.3 s. Nodes on domain 88 were not visible from domain 0.
 
 ## 9. Tests (mapped to the issue's tasks)
 
 Offline tests run in CI on amd64 and arm64 (numpy, PyYAML, pytest). GPU tests
 run on the Jetson (`test_smoke.py`, which skips without CUDA). The sim runs
-through `make sim`.
+through `make sim` (§8).
 
 `core/tests/conftest.py` (new, 10 lines) guards against testing the wrong tree.
 It raises `pytest.UsageError` only when `rammp_curobo` is imported from a
@@ -1242,7 +1280,7 @@ are absent (checked with pytest 9.1.1).
 - Offline:
   `test_layergen.py::test_person_boxes_are_the_envelope_minus_the_arm_column`.
 - GPU: `test_person_is_excluded_without_touching_the_platform` (below).
-- Sim: S0 G2 (independent stand-in coverage) and S2.
+- Sim: G1 (independent stand-in coverage) and S2.
 
 ### GPU tests on the generated layers (`test_smoke.py`)
 
@@ -1258,48 +1296,51 @@ the tests that need it.
 | `test_person_is_excluded_without_touching_the_platform`       | retract invalid naming `person/`; after `update_world('world_mebot.yaml', ignore={'person'})` the retract is valid and the platform entries of `world_boxes` are identical; a platform-colliding state still fails; `ignore={'platform'}` raises and keeps the previous world                                                                                                                                                                                                                   |
 | `test_invalid_start_names_the_blocking_layer`                 | `plan_to_joints` from the retract on the chair returns INVALID_START with `person/` and "mm" in the error                                                                                                                                                                                                                                                                                                                                                                                       |
 | `test_a_layer_box_over_the_arm_base_is_refused`               | a scene layer with a box at (0, 0, 0.2) is refused naming the box and the fixed spheres; the previous world is kept                                                                                                                                                                                                                                                                                                                                                                             |
+| `test_plans_keep_curobo_spheres_outside_every_padded_box`     | on the chair planner, seeded valid goals are planned and cuRobo's FK spheres at every waypoint are tested on the CPU with `world.sphere_box_penetration` against every padded composed box: ≤ 0.5 mm. A larger value means cuRobo did not honour a box, which `_recheck_constraints` cannot detect because it asks the same cuRobo world                                                                                                                                                        |
 
 ### Task 5: sim (decision 1)
 
-`make sim` gates G0 to G7 (§8). The hardware pair on the real chair stays open
+`make sim` launches the ROS sim stack and runs `run_suite`, gating G0 to G6
+(§8). The hardware pair on the real chair stays open
 (deviation 8, §15).
 
 ## 10. File changes
 
-| Path                                                                      | Action          | Purpose                                                                                                                                                                             |
-| ------------------------------------------------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `core/rammp_curobo/scene.py`                                              | modify          | strict layer loader, `Layer`, `load_layer(s)`, `Scene(layers=)`, scene `layers:`, UTF-8, entry errors naming file and entry                                                         |
-| `core/rammp_curobo/world.py`                                              | modify          | `compose_cuboids`, `to_world_config`, `make_world_config(layers=)` (cache default 60), `sphere_box_penetration`, `point_box_distance`, `summarize`; guards before the cuRobo import |
-| `core/rammp_curobo/config.py`                                             | modify          | `layers: []`, `resolve_config(search_cwd=)`, misplaced-key and type checks                                                                                                          |
-| `core/rammp_curobo/planner.py`                                            | modify          | config layers loaded, composed everywhere; warm-up first; fixed-sphere check; `world_boxes`, `world_summary()`; CPU attribution in `check_state_valid` and `_finish`; seed warning  |
-| `core/rammp_curobo/configs/gen3.yaml`                                     | modify          | `layers: []`                                                                                                                                                                        |
-| `core/rammp_curobo/configs/gen3_mebot.yaml`                               | add             | chair planner config                                                                                                                                                                |
-| `core/rammp_curobo/configs/world_mebot.yaml`                              | add             | chair start-up scene (floor as a scene layer; no inline obstacles)                                                                                                                  |
-| `core/rammp_curobo/configs/layer_mebot_platform.yaml`                     | add (generated) | 16 boxes, coverage meta                                                                                                                                                             |
-| `core/rammp_curobo/configs/layer_mebot_person.yaml`                       | add (generated) | 6 boxes in three segments, excludable, parameters and volumes in meta                                                                                                               |
-| `core/rammp_curobo/configs/layer_mebot_floor.yaml`                        | add (generated) | floor slab at the URDF ground                                                                                                                                                       |
-| `scripts/generate_layers.py`                                              | add             | the CPU generator and CLI (`--check`, `--offline`, `--clone`, `--cache`)                                                                                                            |
-| `scripts/mebot_layers.yaml`                                               | add             | generator inputs with provenance                                                                                                                                                    |
-| `core/tests/conftest.py`                                                  | add             | wrong-tree import guard                                                                                                                                                             |
-| `core/tests/test_layers.py`                                               | add             | composition and loading tests (Task 2 and 4)                                                                                                                                        |
-| `core/tests/test_layergen.py`                                             | add             | generator tests including regen diff-assert and independent sampler (Task 3 and 4)                                                                                                  |
-| `core/tests/test_offline.py`                                              | modify          | new packaged files; drift test covers `layers`                                                                                                                                      |
-| `core/tests/test_smoke.py`                                                | modify          | Task-1 pairs; platform pair; read-back; chair fixture tests                                                                                                                         |
-| `rammp_curobo_ros/rammp_curobo_ros/planner_node.py`                       | modify          | summary in the start-up log, the ready log and the SetWorld success message                                                                                                         |
-| `sim/mebot/scene.py`, `check.py`, `run.py`, `scenarios.yaml`, `README.md` | add             | MuJoCo harness                                                                                                                                                                      |
-| `pytest.ini`                                                              | modify          | `-p no:launch_testing -p no:launch_ros`                                                                                                                                             |
-| `Makefile`                                                                | modify          | `layers` and `sim` targets (+ `.PHONY`)                                                                                                                                             |
-| `.github/workflows/build.yml`                                             | modify          | guard step: one unpiped pytest invocation per offline test file (`test_offline.py`, `test_layers.py`, `test_layergen.py`)                                                           |
-| `README.md`                                                               | modify          | "Obstacle layers: the wheelchair and the person" section (includes the Task-1 mesh answer); tree listing adds `scripts/generate_layers.py` and `sim/`                               |
-| `INTEGRATION.md`                                                          | modify          | "Planning on the MEBot (≥ 1.1.0)"                                                                                                                                                   |
-| `CLAUDE.md`                                                               | modify          | invariants (§11)                                                                                                                                                                    |
-| `CONTRIBUTING.md`                                                         | modify          | building and testing: `make layers` (clone or network, must be a no-op), `make sim` (Jetson); `sim/` added to the "Not covered" line (:127)                                         |
-| `CHANGELOG.md`                                                            | modify          | `[Unreleased]`: Added / Changed / Fixed                                                                                                                                             |
-| `docker/README.md`                                                        | modify          | `config:=gen3_mebot.yaml` example                                                                                                                                                   |
+| Path                                                                          | Action          | Purpose                                                                                                                                                                             |
+| ----------------------------------------------------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `core/rammp_curobo/scene.py`                                                  | modify          | strict layer loader, `Layer`, `load_layer(s)`, `Scene(layers=)`, scene `layers:`, UTF-8, entry errors naming file and entry                                                         |
+| `core/rammp_curobo/world.py`                                                  | modify          | `compose_cuboids`, `to_world_config`, `make_world_config(layers=)` (cache default 60), `sphere_box_penetration`, `point_box_distance`, `summarize`; guards before the cuRobo import |
+| `core/rammp_curobo/config.py`                                                 | modify          | `layers: []`, `resolve_config(search_cwd=)`, misplaced-key and type checks                                                                                                          |
+| `core/rammp_curobo/planner.py`                                                | modify          | config layers loaded, composed everywhere; warm-up first; fixed-sphere check; `world_boxes`, `world_summary()`; CPU attribution in `check_state_valid` and `_finish`; seed warning  |
+| `core/rammp_curobo/configs/gen3.yaml`                                         | modify          | `layers: []`                                                                                                                                                                        |
+| `core/rammp_curobo/configs/gen3_mebot.yaml`                                   | add             | chair planner config                                                                                                                                                                |
+| `core/rammp_curobo/configs/world_mebot.yaml`                                  | add             | chair start-up scene (floor as a scene layer; no inline obstacles)                                                                                                                  |
+| `core/rammp_curobo/configs/layer_mebot_platform.yaml`                         | add (generated) | 16 boxes, coverage meta                                                                                                                                                             |
+| `core/rammp_curobo/configs/layer_mebot_person.yaml`                           | add (generated) | 6 boxes in three segments, excludable, parameters and volumes in meta                                                                                                               |
+| `core/rammp_curobo/configs/layer_mebot_floor.yaml`                            | add (generated) | floor slab at the URDF ground                                                                                                                                                       |
+| `scripts/generate_layers.py`                                                  | add             | the CPU generator and CLI (`--check`, `--offline`, `--clone`, `--cache`)                                                                                                            |
+| `scripts/mebot_layers.yaml`                                                   | add             | generator inputs with provenance                                                                                                                                                    |
+| `core/tests/conftest.py`                                                      | add             | wrong-tree import guard                                                                                                                                                             |
+| `core/tests/test_layers.py`                                                   | add             | composition and loading tests (Task 2 and 4)                                                                                                                                        |
+| `core/tests/test_layergen.py`                                                 | add             | generator tests including regen diff-assert and independent sampler (Task 3 and 4)                                                                                                  |
+| `core/tests/test_offline.py`                                                  | modify          | new packaged files; drift test covers `layers`                                                                                                                                      |
+| `core/tests/test_smoke.py`                                                    | modify          | Task-1 pairs; platform pair; read-back; chair fixture tests                                                                                                                         |
+| `rammp_curobo_ros/rammp_curobo_ros/planner_node.py`                           | modify          | summary in the start-up log, the ready log and the SetWorld success message                                                                                                         |
+| `sim/mebot_sim/` (package, launch files, config, README), `sim/COLCON_IGNORE` | add             | the ROS sim stack (§8)                                                                                                                                                              |
+| `pytest.ini`                                                                  | modify          | `-p no:launch_testing -p no:launch_ros`                                                                                                                                             |
+| `Makefile`                                                                    | modify          | `layers` and `sim` targets (+ `.PHONY`)                                                                                                                                             |
+| `.github/workflows/build.yml`                                                 | modify          | guard step: one unpiped pytest invocation per offline test file (`test_offline.py`, `test_layers.py`, `test_layergen.py`)                                                           |
+| `README.md`                                                                   | modify          | "Obstacle layers: the wheelchair and the person" section (includes the Task-1 mesh answer); tree listing adds `scripts/generate_layers.py` and `sim/`                               |
+| `INTEGRATION.md`                                                              | modify          | "Planning on the MEBot (≥ 1.1.0)"                                                                                                                                                   |
+| `CLAUDE.md`                                                                   | modify          | invariants (§11)                                                                                                                                                                    |
+| `CONTRIBUTING.md`                                                             | modify          | building and testing: `make layers` (clone or network, must be a no-op), `make sim` (Jetson); `sim/` added to the "Not covered" line (:127)                                         |
+| `CHANGELOG.md`                                                                | modify          | `[Unreleased]`: Added / Changed / Fixed                                                                                                                                             |
+| `docker/README.md`                                                            | modify          | `config:=gen3_mebot.yaml` example                                                                                                                                                   |
 
-`rammp_curobo_interfaces/`, `core/pyproject.toml`, `.gitignore` and
-`.dockerignore` are **unchanged**. The sim output lives outside the repo, and
-the new configs are flat, so the existing package-data glob ships them.
+`rammp_curobo_interfaces/` and `core/pyproject.toml` are **unchanged**.
+`.gitignore` and `.dockerignore` gain `.sim_ws/`. The sim's results live outside
+the repo, and the new configs are flat, so the existing package-data glob ships
+them.
 
 ## 11. Docs and versioning
 
@@ -1367,7 +1408,7 @@ boxes only, and the paired cuboid tests are the Task-1 acceptance.
   floor layers; `gen3_mebot.yaml` and `world_mebot.yaml`;
   `scripts/generate_layers.py` and `make layers`; `world_boxes` and
   `world_summary()`; which-layer attribution in failures and
-  `check_state_valid`; `sim/mebot` and `make sim`.
+  `check_state_valid`; the ROS sim stack `sim/mebot_sim` and `make sim`.
 - **Changed**: warm-up runs before config layers load; SetWorld success messages
   and plan-failure errors carry the world summary.
 - **Fixed**: duplicate box names refused instead of collapsed; non-finite or
@@ -1418,8 +1459,7 @@ install follows. Local commits only, never pushed. Run tests with
    ground height comes from the same CAD. Keeping the start-up scene free of
    inline obstacles makes a 1.0.0 image refuse the chair config. This is a
    sliver of #21.
-1. **Task 5 is the Python MuJoCo sim, not the attended hardware run** (decision
-   1). The hardware pair stays open (§15). Agents never drive the arm
+1. **Task 5 is the ROS sim stack, not the attended hardware run** (decision 1). The hardware pair stays open (§15). Agents never drive the arm
    (CONTRIBUTING.md:173-177).
 1. **The release is MINOR (1.1.0), not "no version bump".** New optional config
    and new API are MINOR (CONTRIBUTING.md:113-115). The branch itself bumps
@@ -1451,7 +1491,10 @@ install follows. Local commits only, never pushed. Run tests with
    The bench retract is **154.4 mm inside** the padded person layer
    (`person/lap` vs `spherical_wrist_1_link`; retract +0.1 rad on joint_1:
    -134.4 mm). It clears the platform by 53.4 mm. Consumer tasks near the
-   occupant will IK_FAIL with this envelope. The sizes are data, so tuning them
+   occupant will IK_FAIL with this envelope. In the spike, none of 22,869 valid
+   states (of 1,000,000 sampled; 2.3 %) put the tool more than 0.1 m onto the
+   person's side or in front of the knees: anything handed to the person needs
+   the person layer excluded. The sizes are data, so tuning them
    later is one edit to `scripts/mebot_layers.yaml` plus `make layers`.
 
 1. **The mount is unverified** (§15).
@@ -1515,6 +1558,23 @@ install follows. Local commits only, never pushed. Run tests with
    and used in tests only. They must be revisited if cuRobo is ever changed (it
    is pinned).
 
+1. **Joint-space goals suffer most under the person layer.** In the spike,
+   native joint-space planning reached 1 of 8 valid joint goals with the person
+   layer and 7 of 8 without it. The `fk_pose` fallback rescued 6, each ending in
+   a different joint configuration, 3 to 6 rad from the requested one. Consumers
+   that plan to fixed joint poses will see more failures and different postures
+   on the chair config.
+
+1. **MuJoCo's distance query is unreliable for mesh-against-primitive pairs.**
+   `mj_geomDistance` in 3.10 returns false zeros and sign-flipped values (§8).
+   Clearance is therefore reported with a guard and never gated; the gates use
+   contact forces.
+
+1. **The sim serves the real driver's names and runs two planners.** Domain
+   isolation (§8) is what keeps it away from the bench; the launch files and
+   nodes enforce it. Two cuRobo instances share the Orin's GPU with whatever
+   else is running.
+
 ## 14. Explicitly out of scope
 
 - perception and dynamic obstacles;
@@ -1555,19 +1615,23 @@ Everything else is decided (§2). These are not:
 
 ## 16. Evidence index
 
-The measured numbers come from design-phase CPU prototypes. No repository was
-changed, no ROS was launched, and the cuRobo planner was not run while measuring
-them. The implementation recomputes them; §5.5, §8 (G0 to G7) and §9 say which
+The generator, sphere-model and coverage numbers come from design-phase CPU
+prototypes. The sim rows come from a throwaway spike that ran the v1.0.0 planner
+on the Jetson GPU with the layer boxes loaded as plain scene obstacles, first
+in-process and then as a ROS stack on an isolated domain. No repository was
+changed while measuring them. The implementation recomputes them; §5.5, §8 (G0 to G6) and §9 say which
 are gated.
 
-| Evidence                                    | Result                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Design-phase CPU prototype of the generator | platform, person and floor text; 16 platform boxes (a second, independent prototype produced the same 16, box for box); over 10.9 %; overlap 0.026491 m³; keep-out 53.4 mm; person 6 boxes at 5.1 mm, and the torso_head intrusions at `world_padding` 0.030 (§7.4); floor top -0.4593; determinism under ±1e-12. Budget sweep in §5.5; the whole-layer objective at 16 boxes (§5.4); legs-platform overlap and the composed stack (§13, risk 10)                                                                                                                                                                                                                                                                                                                                        |
-| Design-phase CPU sphere model of the arm    | retract clearance per layer and per box (§7.4); joint-space fractions (yourdfpy FK on cuRobo's Gen3 URDF with the packaged robot config's spheres + the 0.005 buffer; prototype only)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Design-phase MuJoCo prototype               | registration 0 of 23,216 samples, and 4,321 after a 1 mm shrink; stand-in coverage (§6.4); MuJoCo retract distances; scene counts; the `upright_lap` and `forearms_forward` posture searches                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| Consumer world scan                         | 566 consumer worlds (the 563 in `~/.ros/rammp_box_opening/worlds/` on this Jetson, the kitchen, the bench, box-opening's `world_bench.yaml`; §4.6): 0 files newly refused; max 26 boxes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Git                                         | sha256 201ec24a... for the blob at 59d5aef, 80908b9 and 0a94cce and for `~/mebot.urdf`; `branch -r --contains`: 59d5aef only on `origin/feature/106-drive-base-publisher`, 80908b9 on `origin/dev` (= `origin/HEAD`), 0a94cce on `origin/main`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| cuRobo v0.7.8 source read                   | warm-up and early exits (motion_gen.py:1868-1960, 2105-2113, 3007-3015); `update_world` (motion_gen.py:1825-1837); cache init and load (geom/sdf/world.py:716, 724-727, 827-866); mesh `_init_cache` delegation (world_mesh.py:72-81); sphere buffer (cuda_robot_generator.py:759-771); `sum_collisions_` (sphere_obb_kernel.cu:2711); box count from device memory (sphere_obb_kernel.cu:2453); `enable_obstacle` / `enable_obb` / `get_obb_idx` (geom/sdf/world.py:978-1014, 1094-1110); `get_cuboid` and the cylinder trimesh (geom/types.py:99-132, 341); `get_obb_world` (geom/types.py:1096); inverse cube poses in `batch_tensor_cube` (geom/types.py:1309-1312); `normalize_quaternion` (types/math.py:536); MESH-checker traps (world_mesh.py:96-99, 101-117, 103-105, 167-173) |
+| Evidence                                       | Result                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Design-phase CPU prototype of the generator    | platform, person and floor text; 16 platform boxes (a second, independent prototype produced the same 16, box for box); over 10.9 %; overlap 0.026491 m³; keep-out 53.4 mm; person 6 boxes at 5.1 mm, and the torso_head intrusions at `world_padding` 0.030 (§7.4); floor top -0.4593; determinism under ±1e-12. Budget sweep in §5.5; the whole-layer objective at 16 boxes (§5.4); legs-platform overlap and the composed stack (§13, risk 10)                                                                                                                                                                                                                                                                                                                                        |
+| Design-phase CPU sphere model of the arm       | retract clearance per layer and per box (§7.4); joint-space fractions (yourdfpy FK on cuRobo's Gen3 URDF with the packaged robot config's spheres + the 0.005 buffer; prototype only)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Design-phase MuJoCo prototype                  | registration 0 of 23,216 samples, and 4,321 after a 1 mm shrink; stand-in coverage (§6.4); MuJoCo retract distances; scene counts; the `upright_lap` and `forearms_forward` posture searches                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Sim spike with the v1.0.0 planner (2026-10-01) | 3 platform pairs and 3 person pairs behaved as designed (detours 0.15 to 0.62 rad with no contact; without the layer, straight paths 10 to 52 mm into the true shape); 7 of 8 reaches planned, all contact-free; an independent re-check confirmed it; joint-space freedom, joint-goal and `mj_geomDistance` findings (§13)                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ROS prototype of the sim stack (2026-10-02)    | 20 of 20 cases as expected over `/rammp_curobo` and `/execute_joint_trajectory` on domain 88 (§8)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Consumer world scan                            | 566 consumer worlds (the 563 in `~/.ros/rammp_box_opening/worlds/` on this Jetson, the kitchen, the bench, box-opening's `world_bench.yaml`; §4.6): 0 files newly refused; max 26 boxes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Git                                            | sha256 201ec24a... for the blob at 59d5aef, 80908b9 and 0a94cce and for `~/mebot.urdf`; `branch -r --contains`: 59d5aef only on `origin/feature/106-drive-base-publisher`, 80908b9 on `origin/dev` (= `origin/HEAD`), 0a94cce on `origin/main`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| cuRobo v0.7.8 source read                      | warm-up and early exits (motion_gen.py:1868-1960, 2105-2113, 3007-3015); `update_world` (motion_gen.py:1825-1837); cache init and load (geom/sdf/world.py:716, 724-727, 827-866); mesh `_init_cache` delegation (world_mesh.py:72-81); sphere buffer (cuda_robot_generator.py:759-771); `sum_collisions_` (sphere_obb_kernel.cu:2711); box count from device memory (sphere_obb_kernel.cu:2453); `enable_obstacle` / `enable_obb` / `get_obb_idx` (geom/sdf/world.py:978-1014, 1094-1110); `get_cuboid` and the cylinder trimesh (geom/types.py:99-132, 341); `get_obb_world` (geom/types.py:1096); inverse cube poses in `batch_tensor_cube` (geom/types.py:1309-1312); `normalize_quaternion` (types/math.py:536); MESH-checker traps (world_mesh.py:96-99, 101-117, 103-105, 167-173) |
 
 cuRobo paths are relative to `src/curobo/` of v0.7.8 (d64c4b0).
 `geom/sdf/world.py`, `geom/types.py` and `types/math.py` are written in full;
