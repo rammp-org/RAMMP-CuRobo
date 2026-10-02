@@ -23,7 +23,8 @@ After one outward snap onto a 0.1 mm grid all geometry is integers, and the
 text is printed from them, so amd64 and arm64 write the same bytes and the
 committed files can be diff-asserted (`make layers`, and a regeneration test).
 
-Run:
+Run, with this checkout's rammp_curobo the one that is imported (the arm's
+spheres are read from its robot config; another checkout's is refused):
     python3 scripts/generate_layers.py            # report, then write the files
     python3 scripts/generate_layers.py --check    # write nothing; diff instead
 """
@@ -371,8 +372,8 @@ def urdf_primitives(urdf_bytes, mount_xyz, perturb=0.0):
             if len(shapes) != 1 or shapes[0].tag not in ("box", "cylinder"):
                 found = ", ".join("<%s>" % s.tag for s in shapes) or "empty"
                 raise ValueError(
-                    "%s: %s geometry is not supported, only <box> and <cylinder>"
-                    " (mesh is the stretch goal)" % (what, found)
+                    "%s: %s geometry is not supported, only one <box> or one"
+                    " <cylinder> (mesh is the stretch goal)" % (what, found)
                 )
             pose = _mul(link_pose, _origin(collision.find("origin"), what))
             if shapes[0].tag == "box":
@@ -516,7 +517,8 @@ def merge(primitives, max_boxes, spheres, pad, margin):
             i += 1
 
     absorb()
-    while len(clusters) > max_boxes:
+    # "not <=" where ">" would read better: a budget that is NaN is never met.
+    while not len(clusters) <= max_boxes:
         best = None
         for i in range(len(clusters)):
             for j in range(i + 1, len(clusters)):
@@ -530,7 +532,7 @@ def merge(primitives, max_boxes, spheres, pad, margin):
                     best = (key, both)
         if best is None:
             raise ValueError(
-                "cannot merge %d boxes down to %d without touching the arm's"
+                "cannot merge %d boxes down to %s without touching the arm's"
                 " keep-out" % (len(clusters), max_boxes)
             )
         (_, _, i, j), both = best
@@ -581,7 +583,8 @@ def _platform(data, primitives, spheres):
     # Integer round-half-up to 0.1 %, so the number written is the one gated.
     over = union - primitive_union
     over_pct = (over * 1000 + primitive_union // 2) // primitive_union / 10
-    if over_pct > budget["max_over_pct"]:
+    # "not <=" here too: a NaN budget passes nothing.
+    if not over_pct <= budget["max_over_pct"]:
         raise ValueError(
             "platform: %d boxes add %.1f %% to the primitives' bounding boxes,"
             " above max_over_pct %s" % (len(boxes), over_pct, budget["max_over_pct"])
@@ -613,7 +616,8 @@ def _person_segments(data):
     # The backrest face is somewhere in this range. The chest, the knees and
     # the feet take its front end and the back of the knees its rear end, so
     # the segments hold the occupant wherever in the range the face is.
-    back_min, back_max = seat["backrest_face_x"]
+    # Sorted: written front first, the range would shrink every segment.
+    back_min, back_max = sorted(seat["backrest_face_x"])
     shoulder = size["shoulder_breadth_bideltoid"] / 2
     hip = size["hip_breadth"] / 2
     chest_front = back_max + max(size["abdominal_depth"], size["chest_depth"]) + m
@@ -883,6 +887,16 @@ def generate(data, urdf_bytes, perturb=0.0):
             " base_link, so the arm must be mounted square to the chair"
             % mount["rpy_deg"]
         )
+    # The arm's spheres come from the rammp_curobo that is imported, and a
+    # host may have an editable install of another checkout: the layers would
+    # be gated against that tree's robot config and written to this one. An
+    # installed package (the image) is under no core/ and is no checkout.
+    package = PACKAGED_CONFIG_DIR.parents[1]
+    if package.name == "core" and package != REPO / "core":
+        raise ValueError(
+            "rammp_curobo is imported from %s, not this checkout (%s); run with"
+            " PYTHONPATH=%s" % (package, REPO / "core", REPO / "core")
+        )
 
     spheres = keep_out_spheres(data)
     primitives = urdf_primitives(urdf_bytes, mount["position"], perturb)
@@ -893,10 +907,21 @@ def generate(data, urdf_bytes, perturb=0.0):
     }
     pad, gate = data["padding_assumed_m"], data["keep_out"]["min_clearance_m"]
     for name, layer in result.items():
+        # The person's and the floor's sizes are data: a negative one turns a
+        # box inside out, and a zero leaves it flat.
+        for box in layer["boxes"]:
+            dims = [hi - lo for lo, hi in zip(*box["box"])]
+            if min(dims) <= 0:
+                raise ValueError(
+                    "layer %s: box %r would have dims [%s]; a box without volume"
+                    " is one cuRobo never sees"
+                    % (name, box["name"], ", ".join(_decimal(d, 4) for d in dims))
+                )
         layer["clearance_m"], nearest = min(
             (clearance(box["box"], spheres, pad), box["name"]) for box in layer["boxes"]
         )
-        if layer["clearance_m"] < gate:
+        # "not >=": a NaN gate passes nothing.
+        if not layer["clearance_m"] >= gate:
             raise ValueError(
                 "layer %s: box %r, padded by %s m, clears the arm's fixed spheres"
                 " by %.1f mm; at least %.1f mm is required"

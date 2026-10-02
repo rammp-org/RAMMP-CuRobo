@@ -5,6 +5,7 @@ clone, so these tests need no network, no cache and no Demo-Software checkout.
 """
 
 import hashlib
+import http.client
 import importlib.util
 import io
 import math
@@ -12,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import urllib.error
 import urllib.request
 from decimal import Decimal
 from pathlib import Path
@@ -42,11 +44,55 @@ QUARTER = "1.5707963267948966"
 X, Y, Z = 0, 1, 2
 LO, HI = 0, 1
 SEGMENTS = ("torso_head", "lap", "legs")
+# The spec's occupant (its 6.1): ANSUR II 95th percentiles, in inches.
+OCCUPANT_IN = {
+    "sitting_height": 38.46,
+    "sitting_elbow_height": 11.46,
+    "thigh_clearance": 8.15,
+    "buttock_knee_length": 26.34,
+    "buttock_popliteal_length": 21.57,
+    "popliteal_height": 18.54,
+    "shoulder_breadth_bideltoid": 22.32,
+    "hip_breadth": 15.75,
+    "chest_depth": 11.73,
+    "abdominal_depth": 12.60,
+    "hand_breadth": 3.78,
+    "foot_length": 11.54,
+}
+
+
+def _inputs():
+    """The generator's inputs, with the geometry the spec tabulates (5.1, 6.1).
+
+    scripts/mebot_layers.yaml gives only their shape. It is where a measured
+    mount or a tuned size goes, and such an edit must not turn these tests red.
+    """
+    data = gen.load_data()
+    data["mount"]["arm_base_in_mebot"] = {
+        "position": [0.505, -0.265, 0.376],
+        "rpy_deg": [0, 0, 0],
+    }
+    data["padding_assumed_m"] = 0.02
+    data["keep_out_margin_m"] = 0.005
+    data["keep_out"]["min_clearance_m"] = 0.004
+    data["platform"] = {"max_boxes": 16, "max_over_pct": 15.0}
+    person = data["person"]
+    for key, inches in OCCUPANT_IN.items():
+        person["ansur_p95_in"][key]["inches"] = inches
+    person["margin_m"] = 0.05
+    person["seat"] = {
+        "pan_top_z": 0.4705,
+        "backrest_face_x": [0.1587, 0.2733],
+        "backrest_rear_x": -0.1502,
+        "centreline_y": 0,
+    }
+    data["floor"] = {"half_extent_m": 1.5, "thickness_m": 0.1}
+    return data
 
 
 @pytest.fixture
 def data():
-    return gen.load_data()
+    return _inputs()
 
 
 @pytest.fixture
@@ -141,6 +187,16 @@ def _clone(repo, path, content):
 
 
 # ------------------------------------------------------------------------ FK
+def _rpy_matrix(roll, pitch, yaw):
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    about_x = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
+    about_y = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
+    about_z = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
+    return about_z @ about_y @ about_x
+
+
 def test_fk_and_mount_on_a_synthetic_urdf(data):
     urdf = _urdf(
         _link(
@@ -215,6 +271,26 @@ def test_fk_and_mount_on_a_synthetic_urdf(data):
     assert rod[:3, :3] == pytest.approx(np.array([[0, 1, 0], [0, 0, 1], [1, 0, 0]]))
     assert rod[:3, 3] == pytest.approx([1.1 - 1.0, 0.5 + 2.0, 0.0 - 0.5])
 
+    # All three angles at once, which no quarter turn above combines: a
+    # joint's frame is Rz(yaw) Ry(pitch) Rx(roll), a point of its child turns
+    # with it, and a box's bounds are those of its eight corners.
+    rpy, at = (0.7, -0.4, 1.1), (0.3, -0.2, 0.5)
+    offset, size = (0.1, 0.2, 0.3), (0.2, 0.4, 0.6)
+    tilted = _urdf(
+        _link("hub"),
+        _link("slab", _box("%s %s %s" % size, "%s %s %s" % offset)),
+        _joint("tilt", "fixed", "hub", "slab", "%s %s %s" % at, "%s %s %s" % rpy),
+    )
+    (slab,) = gen.urdf_primitives(tilted, [0.0, 0.0, 0.0])
+    turn = _rpy_matrix(*rpy)
+    pose = np.array(slab["pose"])
+    assert pose[:3, :3] == pytest.approx(turn, abs=1e-12)
+    assert pose[:3, 3] == pytest.approx(turn @ offset + at, abs=1e-12)
+    signs = [(i, j, k) for i in (-1, 1) for j in (-1, 1) for k in (-1, 1)]
+    corners = (np.array(signs) * size / 2 + offset) @ turn.T + at
+    assert slab["lo"] == pytest.approx(corners.min(axis=0), abs=1e-12)
+    assert slab["hi"] == pytest.approx(corners.max(axis=0), abs=1e-12)
+
     # The same boxes as written: snapped outward to 0.1 mm (a bound on a grid
     # line moves a whole tick; base_1's x bounds are off the grid), centres in
     # 0.05 mm steps, dims in 0.1 mm steps.
@@ -235,16 +311,6 @@ def test_fk_and_mount_on_a_synthetic_urdf(data):
     assert _obstacle_lines(files[data["outputs"]["floor"]]) == _box_lines(
         ("floor", "0.00000, 0.00000, -1.60990", "4.0000, 4.0000, 0.2000")
     )
-
-
-def _rpy_matrix(roll, pitch, yaw):
-    cr, sr = math.cos(roll), math.sin(roll)
-    cp, sp = math.cos(pitch), math.sin(pitch)
-    cy, sy = math.cos(yaw), math.sin(yaw)
-    about_x = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
-    about_y = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
-    about_z = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
-    return about_z @ about_y @ about_x
 
 
 def test_cylinder_bounding_box_is_exact():
@@ -280,7 +346,7 @@ def test_cylinder_bounding_box_is_exact():
     assert (hi - points.max(axis=0) < 1e-9).all()
 
 
-def test_unsupported_input_is_refused(data, tmp_path):
+def test_unsupported_input_is_refused(data, tmp_path, monkeypatch):
     def pair(joint):
         return _urdf(_link("a", CUBE), _link("b", CUBE), joint)
 
@@ -294,6 +360,11 @@ def test_unsupported_input_is_refused(data, tmp_path):
         ),
         (_urdf(_link("hollow", "<collision><geometry/></collision>")), ["hollow"]),
         (_urdf(_link("bare", "<collision/>")), ["bare"]),
+        # two shapes in one <geometry>: reading the first would drop the other
+        (
+            _urdf(_link("two", _shape('<box size="0.1 0.1 0.1"/><box size="1 1 1"/>'))),
+            ["two", "<box>, <box>"],
+        ),
         # sizes cuRobo would turn into a box that can never collide
         (_urdf(_link("nanbox", _box("0.1 nan 0.1"))), ["nanbox"]),
         (_urdf(_link("infbox", _box("0.1 inf 0.1"))), ["infbox"]),
@@ -324,6 +395,7 @@ def test_unsupported_input_is_refused(data, tmp_path):
             ["left", "right", "one root"],
         ),
         (_urdf(_link("twin", CUBE), _link("twin", CUBE)), ["twin"]),
+        (_urdf("<link>%s</link>" % CUBE), ["unnamed"]),
         (pair(_joint("dangling", "fixed", "a", "ghost")), ["dangling", "ghost"]),
         (
             _urdf(
@@ -368,37 +440,83 @@ def test_unsupported_input_is_refused(data, tmp_path):
             assert part in str(caught.value), (named, str(caught.value))
 
     # A rotated mount: the boxes are axis-aligned in base_link.
-    rotated = gen.load_data()
+    rotated = _inputs()
     rotated["mount"]["arm_base_in_mebot"]["rpy_deg"] = [0, 0, 90]
     with pytest.raises(ValueError, match="rpy_deg"):
         _generate(rotated, FAR_BOX)
 
     # A grid the printed decimals do not match.
-    coarse = gen.load_data()
+    coarse = _inputs()
     coarse["grid_m"] = 0.001
     with pytest.raises(ValueError, match="grid_m"):
         _generate(coarse, FAR_BOX)
 
+    # Sizes that would write a box without volume, which cuRobo never sees: a
+    # floor with no thickness, a torso turned inside out.
+    flat = _inputs()
+    flat["floor"]["thickness_m"] = 0.0
+    with pytest.raises(ValueError, match="layer floor: box 'floor'"):
+        _generate(flat, FAR_BOX)
+    headless = _inputs()
+    headless["person"]["ansur_p95_in"]["sitting_height"]["inches"] = -40.0
+    with pytest.raises(ValueError, match="layer person: box 'torso_head'"):
+        _generate(headless, FAR_BOX)
+
+    # A budget or a gate that is not a number holds nothing back.
+    for block, key in (
+        ("platform", "max_boxes"),
+        ("platform", "max_over_pct"),
+        ("keep_out", "min_clearance_m"),
+    ):
+        unset = _inputs()
+        unset[block][key] = math.nan
+        with pytest.raises(ValueError, match="nan"):
+            _generate(unset, FAR_BOX)
+
     # Bytes that are not the pinned ones (the data file pins the real URDF).
     with pytest.raises(ValueError, match="sha256"):
-        gen.generate(gen.load_data(), FAR_BOX)
+        gen.generate(_inputs(), FAR_BOX)
 
     # A name that would put non-ASCII bytes in a layer file.
     with pytest.raises(ValueError, match="ASCII"):
-        _generate(gen.load_data(), _urdf(_link("caf\u00e9", CUBE)))
+        _generate(_inputs(), _urdf(_link("caf\u00e9", CUBE)))
 
-    # A shoulder sphere off the joint_1 axis moves with joint_1: it is not
-    # part of the fixed column, and treating it as fixed would be wrong.
-    spheres = {
-        "base_link": [{"center": [0.0, 0.0, 0.065], "radius": 0.075}],
-        "shoulder_link": [{"center": [0.01, 0.0, -0.04], "radius": 0.07}],
-    }
-    kinematics = {"collision_sphere_buffer": 0.005, "collision_spheres": spheres}
-    robot = tmp_path / "robot.yaml"
-    robot.write_text(yaml.safe_dump({"robot_cfg": {"kinematics": kinematics}}))
-    data["keep_out"]["robot_config"] = str(robot)
-    with pytest.raises(ValueError, match="shoulder_link"):
-        gen.keep_out_spheres(data)
+    # rammp_curobo imported from another checkout (this host has an editable
+    # install of one): its robot config is not the one beside the layers being
+    # written. An installed package, as in the image, is no checkout.
+    def packaged_under(parent):
+        configs = tmp_path / parent / "rammp_curobo" / "configs"
+        configs.mkdir(parents=True)
+        shutil.copy(PACKAGED_CONFIG_DIR / data["keep_out"]["robot_config"], configs)
+        return configs
+
+    with monkeypatch.context() as patched:
+        patched.setattr(gen, "PACKAGED_CONFIG_DIR", packaged_under("site-packages"))
+        _generate(_inputs(), FAR_BOX)
+        patched.setattr(gen, "PACKAGED_CONFIG_DIR", packaged_under("elsewhere/core"))
+        with pytest.raises(ValueError) as caught:
+            _generate(_inputs(), FAR_BOX)
+    for part in (
+        str(tmp_path / "elsewhere" / "core"),
+        str(REPO / "core"),
+        "PYTHONPATH",
+    ):
+        assert part in str(caught.value)
+
+    # A shoulder sphere off the joint_1 axis, in x or in y, moves with
+    # joint_1: it is not part of the fixed column, and treating it as fixed
+    # would be wrong.
+    for off_axis in ([0.01, 0.0, -0.04], [0.0, 0.01, -0.04]):
+        spheres = {
+            "base_link": [{"center": [0.0, 0.0, 0.065], "radius": 0.075}],
+            "shoulder_link": [{"center": off_axis, "radius": 0.07}],
+        }
+        kinematics = {"collision_sphere_buffer": 0.005, "collision_spheres": spheres}
+        robot = tmp_path / "robot.yaml"
+        robot.write_text(yaml.safe_dump({"robot_cfg": {"kinematics": kinematics}}))
+        data["keep_out"]["robot_config"] = str(robot)
+        with pytest.raises(ValueError, match="shoulder_link"):
+            gen.keep_out_spheres(data)
 
 
 # --------------------------------------------------------------------- fetch
@@ -441,7 +559,7 @@ def test_pinned_fetch_verifies_sha256_and_uses_the_cache(isolated, monkeypatch):
     (cache / name).write_bytes(b"garbage")
     raw, origin = gen.fetch_pinned(source, cache_dir=cache, clone=clone)
     assert raw == content
-    assert str(clone) in origin and "mismatch" in origin
+    assert str(clone) in origin and "ignored: sha256 mismatch" in origin
     assert (cache / name).read_bytes() == content
 
     # A wrong hash is an error naming the origin and both hashes, and the
@@ -460,6 +578,12 @@ def test_pinned_fetch_verifies_sha256_and_uses_the_cache(isolated, monkeypatch):
         )
     for part in (str(tmp_path / "empty" / name), str(missing), url):
         assert part in str(caught.value)
+    # A cache file that fails its hash is listed as that, not as missing.
+    stale = tmp_path / "stale"
+    stale.mkdir()
+    (stale / name).write_bytes(b"garbage")
+    with pytest.raises(FileNotFoundError, match="sha256 mismatch, ignored"):
+        gen.fetch_pinned(source, cache_dir=stale, clone=missing, offline=True)
 
     # GitHub raw is the last resort, verified like the clone.
     asked = []
@@ -477,6 +601,44 @@ def test_pinned_fetch_verifies_sha256_and_uses_the_cache(isolated, monkeypatch):
         assert (web / name).read_bytes() == content
         with pytest.raises(ValueError, match="raw.githubusercontent.com"):
             gen.fetch_pinned(wrong, cache_dir=web, clone=missing)
+
+    # GitHub out of reach, or the body cut short: no source is left either,
+    # and the error says what each one answered.
+    class CutShort(io.BytesIO):
+        def read(self, *args):
+            raise http.client.IncompleteRead(self.getvalue())
+
+    def unreachable(url, data=None, timeout=None):
+        raise urllib.error.URLError("no route to host")
+
+    def cut_short(url, data=None, timeout=None):
+        return CutShort(content[:9])
+
+    for answer, said in ((unreachable, "no route to host"), (cut_short, "9 bytes")):
+        with monkeypatch.context() as patched:
+            patched.setattr(urllib.request, "urlopen", answer)
+            with pytest.raises(FileNotFoundError) as caught:
+                gen.fetch_pinned(source, cache_dir=tmp_path / "empty", clone=missing)
+        for part in (str(tmp_path / "empty" / name), str(missing), url, said):
+            assert part in str(caught.value)
+
+    # git missing, or hung (it gets 30 s): the next source is asked.
+    for failure in (
+        FileNotFoundError(2, "No such file or directory", "git"),
+        subprocess.TimeoutExpired("git", 30),
+    ):
+        limits = []
+
+        def git_fails(command, failure=failure, **kwargs):
+            limits.append(kwargs.get("timeout"))
+            raise failure
+
+        with monkeypatch.context() as patched:
+            patched.setattr(subprocess, "run", git_fails)
+            patched.setattr(urllib.request, "urlopen", urlopen)
+            fresh = tmp_path / type(failure).__name__
+            fetched = gen.fetch_pinned(source, cache_dir=fresh, clone=clone)
+        assert fetched == (content, url) and limits == [30]
 
     # Defaults: the clone is $RAMMP_DEMO_SOFTWARE, then ~/Demo-Software; the
     # cache is ${XDG_CACHE_HOME:-~/.cache}/rammp_curobo/cad.
@@ -502,6 +664,18 @@ def test_pinned_fetch_verifies_sha256_and_uses_the_cache(isolated, monkeypatch):
     raw, origin = gen.fetch_pinned(source, cache_dir=blocker / "cad", clone=clone)
     assert raw == content
     assert str(clone) in origin and "cache not written" in origin
+
+    # A write that fails at its last step, the rename, leaves no temp file
+    # behind and the file it was to replace as it was.
+    def refuse(src, dst):
+        raise OSError("rename refused")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "replace", refuse)
+        raw, origin = gen.fetch_pinned(source, cache_dir=stale, clone=clone)
+    assert raw == content and "cache not written: rename refused" in origin
+    assert os.listdir(stale) == [name]
+    assert (stale / name).read_bytes() == b"garbage"
 
 
 # --------------------------------------------------------------------- merge
@@ -563,16 +737,28 @@ def test_merge_meets_the_budget_and_never_touches_the_keep_out(data):
     # At equal cost the pair with the smaller bounding box goes first, though
     # the other is first in name order: both gaps are 100 ticks of the same
     # cross-section, between long boxes (f, g) and between short ones (j, k).
+    # Of members equal in volume, the last in name order names the box.
     f = _prim("f", (0, 0, 0), (1000, 100, 100))
     g = _prim("g", (1100, 0, 0), (2100, 100, 100))
     j = _prim("j", (10000, 0, 0), (10100, 100, 100))
     k = _prim("k", (10200, 0, 0), (10300, 100, 100))
     short_first = gen.merge([f, g, j, k], 3, [], pad, margin)
-    assert sorted(c["members"] for c in short_first) == [["f"], ["g"], ["j", "k"]]
+    assert {c["name"]: c["members"] for c in short_first} == {
+        "f": ["f"],
+        "g": ["g"],
+        "k": ["j", "k"],
+    }
+
+    # The boxes come back in name order, the order they are written in: s and
+    # y merge at s's place in the list, ahead of t, and take y's name.
+    s = _prim("s", (0, 0, 0), (10, 10, 10))
+    t = _prim("t", (5000, 0, 0), (5100, 100, 100))
+    y = _prim("y", (20, 0, 0), (500, 100, 100))
+    assert [c["name"] for c in gen.merge([s, t, y], 2, [], pad, margin)] == ["t", "y"]
 
     # Coming within the margin is enough to skip a merge, without containing
-    # the sphere: the padded box of p+q would touch it (clearance 0) at
-    # x 0.07, and clears it by 10 mm at x 0.08.
+    # the sphere: the padded box of p+q would clear it by 4.9 mm at x 0.0749,
+    # and does by 5.1 mm at x 0.0751.
     def beside(x):
         return [
             _prim("p", (x, 2000, -500), (1000, 3000, 500)),
@@ -580,9 +766,9 @@ def test_merge_meets_the_budget_and_never_touches_the_keep_out(data):
         ]
 
     with pytest.raises(ValueError, match="keep-out"):
-        gen.merge(beside(700), 1, sphere, pad, margin)
-    (both,) = gen.merge(beside(800), 1, sphere, pad, margin)
-    assert both["box"] == ((800, -3000, -500), (1000, 3000, 500))
+        gen.merge(beside(749), 1, sphere, pad, margin)
+    (both,) = gen.merge(beside(751), 1, sphere, pad, margin)
+    assert both["box"] == ((751, -3000, -500), (1000, 3000, 500))
 
     # A pair costs the empty volume its bounding box adds; what the two cover
     # together counts once. u and v make an L (they share a corner) and w lies
@@ -602,6 +788,24 @@ def test_merge_meets_the_budget_and_never_touches_the_keep_out(data):
     assert closed["box"] == ((0, 0, 0), (1000, 1000, 100))
     assert closed["members"] == ["r", "u", "v"]
 
+    # A box takes in every box inside it, not only the first one found.
+    crate = _prim("crate", (0, 0, 0), (1000, 1000, 1000))
+    nut = _prim("nut", (100, 100, 100), (200, 200, 200))
+    washer = _prim("washer", (700, 700, 700), (800, 800, 800))
+    (packed,) = gen.merge([crate, nut, washer], 3, [], pad, margin)
+    assert packed["members"] == ["crate", "nut", "washer"]
+
+    # Inside on two axes is not inside: a post through a plate sticks out
+    # along the third, from one face of the plate or from the other.
+    for axis in (X, Y, Z):
+        for lo, hi in ((-900, 100), (0, 1000)):
+            plate_hi, post_lo, post_hi = [1000] * 3, [400] * 3, [500] * 3
+            plate_hi[axis], post_lo[axis], post_hi[axis] = 100, lo, hi
+            plate = _prim("plate", (0, 0, 0), plate_hi)
+            post = _prim("post", post_lo, post_hi)
+            apart = gen.merge([plate, post], 2, [], pad, margin)
+            assert [c["members"] for c in apart] == [["plate"], ["post"]], axis
+
     # As written: a merged box carries its largest member's name, and the
     # other members ride in a comment.
     hull_and_peg = _urdf(
@@ -609,12 +813,33 @@ def test_merge_meets_the_budget_and_never_touches_the_keep_out(data):
         _link("peg", _box("0.05 0.05 0.05")),
         _joint("stem", "fixed", "hull", "peg", "1.3 0 0"),
     )
-    roomy = gen.load_data()
+    roomy = _inputs()
     roomy["platform"] = {"max_boxes": 1, "max_over_pct": 1000.0}
     files = _generate(roomy, hull_and_peg)["files"]
     (line,) = _obstacle_lines(files[roomy["outputs"]["platform"]])
     hull = ("hull", "0.60750, 0.26500, -0.37600", "0.4252, 0.2002, 0.2002")
     assert line == _box_lines(hull)[0] + "  # + peg"
+
+    # generate() hands the merge the arm's own spheres, the padding and the
+    # margin. Three cubes in a row along y, just in front of the arm (it is
+    # at 0.505, -0.265, 0.376 here), and a foot that keeps the floor far
+    # below. The cheapest pair straddles the arm: their padded box would
+    # clear the base sphere by 4.4 mm. That passes the 4 mm gate, so only
+    # the merge's 5 mm margin turns it down, and the dearer pair is merged.
+    row = ("0.6595 -0.565 0.441", "0.6595 0.035 0.441", "0.6595 2.035 0.441")
+    cubes = [_box("0.1 0.1 0.1", at) for at in row + ("3.505 -0.265 -1.5",)]
+    crowded = _inputs()
+    crowded["platform"] = {"max_boxes": 3, "max_over_pct": 5000.0}
+    platform = _generate(crowded, _urdf(_link("chair", *cubes)))["platform"]
+    (lo_a, hi_a), (lo_b, hi_b) = (p["box"] for p in platform["primitives"][:2])
+    around = tuple(map(min, lo_a, lo_b)), tuple(map(max, hi_a, hi_b))
+    turned_down = gen.clearance(around, gen.keep_out_spheres(crowded), 0.02)
+    assert 0.004 <= turned_down < 0.005
+    assert [box["members"] for box in platform["boxes"]] == [
+        ["chair_0"],
+        ["chair_1", "chair_2"],
+        ["chair_3"],
+    ]
 
     # A primitive that is itself inside the arm's column cannot be merged
     # away from it: the layer is refused.
@@ -623,10 +848,17 @@ def test_merge_meets_the_budget_and_never_touches_the_keep_out(data):
         _generate(data, at_the_arm)
     assert "platform" in str(caught.value) and "chassis" in str(caught.value)
 
+    # Every layer is held to the gate. A shelf 2.5 m in front of the arm and
+    # level with it is far enough itself, but the floor goes under the URDF's
+    # lowest point, and here that slab runs through the arm.
+    shelf = _urdf(_link("shelf", _box("0.1 0.1 0.1", "3.005 -0.265 0.626")))
+    with pytest.raises(ValueError, match="layer floor: box 'floor'"):
+        _generate(data, shelf)
+
 
 # ------------------------------------------------------------------ coverage
 def _meta(urdf, **budget):
-    data = gen.load_data()
+    data = _inputs()
     data["platform"] = budget
     files = _generate(data, urdf)["files"]
     return data, yaml.safe_load(files[data["outputs"]["platform"]])["meta"]
@@ -730,22 +962,31 @@ def test_containment_certificate_catches_a_defective_layer(data, monkeypatch, de
     data["platform"] = {"max_boxes": 2, "max_over_pct": 100.0}
     _generate(data, urdf)  # sound as generated
 
+    # One box wrong along one axis at a time: its low or its high face one
+    # tick inside, or the whole box 1 mm (10 ticks) to either side.
+    moves = {
+        "drop": [],
+        "shrink_1_tick": [(1, 0), (0, -1)],
+        "shift_1mm": [(10, 10), (-10, -10)],
+    }[defect]
+    defects = [(axis, move) for axis in (X, Y, Z) for move in moves] or [None]
     sound = gen.merge
+    for moved in defects:
 
-    def defective(*args):
-        clusters = sound(*args)
-        (x0, y0, z0), (x1, y1, z1) = clusters[0]["box"]
-        if defect == "drop":
-            return clusters[1:]
-        if defect == "shrink_1_tick":
-            clusters[0]["box"] = ((x0, y0, z0), (x1 - 1, y1, z1))
-        else:
-            clusters[0]["box"] = ((x0 + 10, y0, z0), (x1 + 10, y1, z1))
-        return clusters
+        def defective(*args, moved=moved):
+            clusters = sound(*args)
+            if moved is None:
+                return clusters[1:]
+            axis, (lo_by, hi_by) = moved
+            lo, hi = (list(corner) for corner in clusters[0]["box"])
+            lo[axis] += lo_by
+            hi[axis] += hi_by
+            clusters[0]["box"] = (tuple(lo), tuple(hi))
+            return clusters
 
-    monkeypatch.setattr(gen, "merge", defective)
-    with pytest.raises(ValueError, match="chassis_"):
-        _generate(data, urdf)
+        monkeypatch.setattr(gen, "merge", defective)
+        with pytest.raises(ValueError, match="containment: primitive 'chassis_"):
+            _generate(data, urdf)
 
 
 # -------------------------------------------------------------------- person
@@ -815,10 +1056,10 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
     assert radii == pytest.approx([s["radius"] + buffer for s in base + shoulder])
 
     margin = data["keep_out_margin_m"]
-    # The real mount and padding, where only the torso meets the column, and a
-    # mount that stands the column in all three segments, with more padding.
+    # The spec's mount and padding, where only the torso meets the column, and
+    # a mount that stands the column in all three segments, with more padding.
     for mount, pad in (([0.505, -0.265, 0.376], 0.02), ([0.65, 0.1, 0.30], 0.03)):
-        placed = gen.load_data()
+        placed = _inputs()
         placed["mount"]["arm_base_in_mebot"]["position"] = mount
         placed["padding_assumed_m"] = pad
         result = _generate(placed, FAR_BOX)
@@ -883,9 +1124,21 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
             abs=1e-6,
         )
 
+    # Where the boxes are, which the deltas below cannot see: the spec's
+    # occupant at the spec's mount is its table of six boxes (6.2).
+    files = _generate(_inputs(), FAR_BOX)["files"]
+    assert _obstacle_lines(files[data["outputs"]["person"]]) == _box_lines(
+        ("lap", "0.31285, 0.26500, 0.28800", "0.3491, 0.6670, 0.4872"),
+        ("legs", "0.46600, 0.26500, -0.19095", "0.6290, 0.5002, 0.4711"),
+        ("torso_head_0", "-0.40520, 0.26500, 0.58290", "0.6002, 0.6670, 1.0770"),
+        ("torso_head_1", "0.12175, 0.26500, 0.58290", "0.0333, 0.6670, 1.0770"),
+        ("torso_head_2", "0.00000, 0.35180, 0.58290", "0.2102, 0.4934, 1.0770"),
+        ("torso_head_3", "0.00000, 0.01830, 0.76495", "0.2102, 0.1736, 0.7129"),
+    )
+
     # Each parameter moves exactly its faces. Lengths grow by 0.1 m (1000
     # ticks; a breadth moves each side by half of it).
-    base_faces = _faces(gen.load_data())
+    base_faces = _faces(_inputs())
     grow = 0.1 / 0.0254
     all_z = {(s, side, Z): 1000 for s in SEGMENTS for side in (LO, HI)}
     all_y = {(s, side, Y): 1000 for s in SEGMENTS for side in (LO, HI)}
@@ -911,7 +1164,7 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
     }
 
     def moved(change):
-        changed = gen.load_data()
+        changed = _inputs()
         change(changed["person"], changed["mount"]["arm_base_in_mebot"]["position"])
         faces = _faces(changed)
         return {f: faces[f] - base_faces[f] for f in faces if faces[f] != base_faces[f]}
@@ -972,6 +1225,12 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
     assert moved(backrest(1)) == {**chest, **knees}
     assert moved(backrest(0)) == {("legs", LO, X): 1000}
 
+    # ... whichever end of the range is written first.
+    def front_first(person, mount):
+        person["seat"]["backrest_face_x"].reverse()
+
+    assert moved(front_first) == {}
+
     # The margin is on every face. Where two segments meet (the chest front,
     # the pan underside) the face moves with the segment that owns it.
     def margin_up(person, mount):
@@ -999,13 +1258,13 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
     }
 
     # Carved back by only 1 mm, the padded person comes within 4 mm of the
-    # arm: such a layer is not written. Nor is the real one (5.1 mm clear)
+    # arm: such a layer is not written. Nor is the spec's (5.1 mm clear)
     # under a 6 mm gate.
-    tight = gen.load_data()
+    tight = _inputs()
     tight["keep_out_margin_m"] = 0.001
     with pytest.raises(ValueError, match="person"):
         _generate(tight, FAR_BOX)
-    strict = gen.load_data()
+    strict = _inputs()
     strict["keep_out"]["min_clearance_m"] = 0.006
     with pytest.raises(ValueError, match="person"):
         _generate(strict, FAR_BOX)
@@ -1035,14 +1294,17 @@ def test_output_is_deterministic_under_float_noise(data):
     )
     data["platform"] = {"max_boxes": 2, "max_over_pct": 100.0}
 
-    files = _generate(data, urdf)["files"]
+    def bounds(result):
+        return [v for p in result["platform"]["primitives"] for v in p["lo"] + p["hi"]]
+
+    exact = _generate(data, urdf)
+    files = exact["files"]
     assert _generate(data, urdf)["files"] == files
-    mount = data["mount"]["arm_base_in_mebot"]["position"]
-    exact = [p["lo"] + p["hi"] for p in gen.urdf_primitives(urdf, mount)]
     for noise in (1e-12, -1e-12):
-        noisy = [p["lo"] + p["hi"] for p in gen.urdf_primitives(urdf, mount, noise)]
-        assert all(a != b for a, b in zip(sum(exact, []), sum(noisy, [])))
-        assert _generate(data, urdf, perturb=noise)["files"] == files
+        noisy = _generate(data, urdf, perturb=noise)
+        # the noise did reach every bound that was then snapped
+        assert all(a != b for a, b in zip(bounds(exact), bounds(noisy)))
+        assert noisy["files"] == files
     # The key order is the generator's, not the data file's (safe_dump sorts).
     assert gen.generate(yaml.safe_load(yaml.safe_dump(data)), urdf)["files"] == files
 
@@ -1085,18 +1347,30 @@ def test_output_is_deterministic_under_float_noise(data):
 
 
 # ----------------------------------------------------------------------- CLI
-def test_cli_writes_only_after_every_gate_and_check_prints_a_diff(isolated, capsys):
+def test_cli_writes_only_after_every_gate_and_check_prints_a_diff(
+    isolated, monkeypatch, capsys
+):
     tmp_path = isolated
     urdf = _urdf(
         _link("chassis", _box("0.1 0.1 0.1", "1 0 0"), _box("0.1 0.1 0.1", "1.3 0 0"))
     )
     clone, commit = _clone(tmp_path / "clone", "chair.urdf", urdf)
     pinned = hashlib.sha256(urdf).hexdigest()
-    out = tmp_path / "out"
+    # A throwaway checkout with its package beside it, and the command run
+    # from another directory: the outputs are relative to the repository root.
+    repo, elsewhere = tmp_path / "repo", tmp_path / "elsewhere"
+    packaged = repo / "core" / "rammp_curobo" / "configs"
+    packaged.mkdir(parents=True)
+    elsewhere.mkdir()
+    shutil.copy(PACKAGED_CONFIG_DIR / "robot_gen3_2f85.yaml", packaged)
+    monkeypatch.setattr(gen, "REPO", repo)
+    monkeypatch.setattr(gen, "PACKAGED_CONFIG_DIR", packaged)
+    monkeypatch.chdir(elsewhere)
+    out = repo / "out"
     names = {layer: "%s.yaml" % layer for layer in ("platform", "person", "floor")}
 
-    def run(*flags, out=out, max_boxes=2, sha256=pinned, clone=clone, cache="cache"):
-        data = gen.load_data()
+    def run(*flags, into="out", max_boxes=2, sha256=pinned, clone=clone, cache="cache"):
+        data = _inputs()
         data["source"] = {
             "repo": "example/chair",
             "commit": commit,
@@ -1104,7 +1378,7 @@ def test_cli_writes_only_after_every_gate_and_check_prints_a_diff(isolated, caps
             "sha256": sha256,
         }
         data["platform"]["max_boxes"] = max_boxes
-        data["outputs"] = {layer: str(out / name) for layer, name in names.items()}
+        data["outputs"] = {layer: "%s/%s" % (into, names[layer]) for layer in names}
         (tmp_path / "data.yaml").write_text(yaml.safe_dump(data))
         argv = ["--data", str(tmp_path / "data.yaml"), "--clone", str(clone)]
         argv += ["--cache", str(tmp_path / cache), *flags]
@@ -1130,7 +1404,7 @@ def test_cli_writes_only_after_every_gate_and_check_prints_a_diff(isolated, caps
     # the report says where the URDF and the arm's spheres came from (on a
     # host with several checkouts, which one) and what was written
     assert str(clone) in said.out
-    assert str(PACKAGED_CONFIG_DIR / "robot_gen3_2f85.yaml") in said.out
+    assert str(packaged / "robot_gen3_2f85.yaml") in said.out
     assert all(str(out / name) in said.out for name in names.values())
     assert os.listdir(tmp_path / "cache") == [pinned + ".urdf"]
 
@@ -1159,6 +1433,19 @@ def test_cli_writes_only_after_every_gate_and_check_prints_a_diff(isolated, caps
     assert (out / names["platform"]).read_text() == edited
     assert not (out / names["floor"]).exists()
 
+    # A write that fails at its last step, the rename: the file is replaced
+    # whole or not at all, and no temp file is left beside it.
+    def refuse(src, dst):
+        raise OSError("rename refused")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "replace", refuse)
+        with pytest.raises(OSError, match="rename refused"):
+            run()
+    capsys.readouterr()
+    assert (out / names["platform"]).read_text() == edited
+    assert sorted(os.listdir(out)) == [names["person"], names["platform"]]
+
     # Regenerating puts them back.
     status, said = run()
     assert status == 0
@@ -1166,9 +1453,9 @@ def test_cli_writes_only_after_every_gate_and_check_prints_a_diff(isolated, caps
 
     # A failed gate (one box is 99.7 % over, the budget is 15 %): non-zero,
     # and nothing is written, not even the directory.
-    status, said = run(out=tmp_path / "refused", max_boxes=1)
+    status, said = run(into="refused", max_boxes=1)
     assert status != 0 and "99.7" in said.err
-    assert not (tmp_path / "refused").exists()
+    assert not (repo / "refused").exists()
 
     # --offline with no cache and no clone: non-zero, and GitHub is not asked
     # (the fixture's urlopen would raise).
@@ -1180,8 +1467,11 @@ def test_cli_writes_only_after_every_gate_and_check_prints_a_diff(isolated, caps
     status, said = run(cache="blocker/cad")
     assert status == 0 and "cache not written" in said.out
 
+    # Nothing was written relative to the directory the command ran in.
+    assert os.listdir(elsewhere) == []
+
     # Without --data the inputs are scripts/mebot_layers.yaml: it is the real
     # pin that is asked for (and, isolated and offline, not found).
     status = gen.main(["--offline", "--check"])
     assert status != 0
-    assert "rammp_prototype_base.urdf" in capsys.readouterr().err
+    assert gen.load_data()["source"]["path"] in capsys.readouterr().err
