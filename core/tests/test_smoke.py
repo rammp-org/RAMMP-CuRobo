@@ -183,48 +183,101 @@ def test_joint_goal_normalized_to_start_branch(planner):
     assert np.abs(np.diff(j3)).sum() < 0.2  # no winding
 
 
-def test_constrained_plan_holds_orientation(planner, start):
-    """A held-axis plan keeps roll and pitch fixed for the WHOLE path, not
-    just at the endpoints — checked by FK over every point."""
-    from rammp_curobo.constraints import HOLD_LEVEL, PoseConstraint
-    from rammp_curobo.geometry import rotvec_between
-
-    q_target = list(planner.retract_pose)
-    q_target[0] += 0.4
-    pos, quat = planner.fk(q_target)
-
-    # joint_1 is a rotation about the base's own z axis, so it changes
-    # neither roll nor pitch — this setup is constructed to satisfy the
-    # pre-check, so require that rather than skip past it. A skip here
-    # would let the constrained smoke test quietly stop testing itself on
-    # exactly the machine it exists to validate.
-    level = PoseConstraint(hold=HOLD_LEVEL)
-    ok, why = planner.constraint_satisfied_at_start(start, pos, quat, level)
-    assert ok, "pre-check failed for a goal constructed to satisfy it: %s" % why
-
-    res = planner.plan_to_pose(pos, quat, start, constraint=level)
-    assert res.success, res.error
-
-    # Deliberately an INDEPENDENT check: plan_to_pose now verifies the hold
-    # itself and refuses on breach, so asserting here with the production
-    # helper would only confirm that code agrees with itself. This walks FK
-    # in the test and uses hypot(rx, ry) -- the same tilt measure, derived
-    # separately -- so a bug in _verify_hold cannot hide behind it.
-    _, quat0 = planner.fk(res.joint_traj.positions[0])
-    worst = 0.0
-    for q in res.joint_traj.positions:
-        _, qk = planner.fk(q)
-        rot = rotvec_between(quat0, qk)
-        worst = max(worst, math.hypot(rot[0], rot[1]))
-    assert worst < 0.05, "tilt drifted %.4f rad along the path" % worst
-
-    # LEVEL frees yaw along the way, never at the goal: this goal is 0.4 rad
-    # of yaw from the start, and the plan must END on it.
-    _, quat_end = planner.fk(res.joint_traj.positions[-1])
-    end_err = float(np.linalg.norm(rotvec_between(quat, quat_end)))
-    assert end_err < planner.constraint_tolerance_rad, (
-        "plan ended %.2f deg from the goal orientation" % math.degrees(end_err)
+def _rotmat(q_xyzw):
+    x, y, z, w = q_xyzw
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ]
     )
+
+
+def _tilt(q_xyzw, ref_xyzw):
+    """Tilt between two orientations, ignoring any spin about base Z: the angle
+    between world-vertical as each tool sees it. Deliberately NOT the
+    production formula, so a bug there cannot hide behind this."""
+    a = _rotmat(q_xyzw).T @ [0.0, 0.0, 1.0]
+    b = _rotmat(ref_xyzw).T @ [0.0, 0.0, 1.0]
+    return math.acos(max(-1.0, min(1.0, float(a @ b))))
+
+
+def _yawed_goal(planner, start, d_xyz, yaw):
+    """The start's own orientation spun by `yaw` about base Z, at the start's
+    position offset by d_xyz and then spun the same way -- so it is level
+    exactly as the start is, and a hold is satisfiable from it."""
+    spos, squat = planner.fk(start)
+    c, s = math.cos(yaw / 2), math.sin(yaw / 2)
+    x, y, z, w = squat
+    quat = [c * x - s * y, c * y + s * x, c * z + s * w, c * w - s * z]
+    px, py, pz = (spos[k] + d_xyz[k] for k in range(3))
+    c, s = math.cos(yaw), math.sin(yaw)
+    return [c * px - s * py, s * px + c * py, pz], quat
+
+
+# Found by probing on the Jetson (2026-10-01): unconstrained, cuRobo tilts the
+# tool ~19.7 deg on the way; held LEVEL, ~0.5 deg. A goal that a plain base
+# rotation reaches would pass whether or not the hold were applied.
+_TILTING_GOAL = ([-0.15, 0.30, -0.15], 1.2)
+
+
+def test_constrained_plan_holds_orientation(planner, start):
+    """LEVEL keeps the tilt for the WHOLE path, on a goal where an unconstrained
+    plan demonstrably does not -- and still ends on the goal's yaw."""
+    from rammp_curobo.constraints import HOLD_LEVEL, PoseConstraint
+
+    pos, quat = _yawed_goal(planner, start, *_TILTING_GOAL)
+    level = PoseConstraint(hold=HOLD_LEVEL)
+    tol = planner.constraint_tolerance_rad
+
+    def worst(res):
+        return max(_tilt(planner.fk(q)[1], quat) for q in res.joint_traj.positions)
+
+    free = planner.plan_to_pose(pos, quat, start)
+    assert free.success, free.error
+    assert worst(free) > math.radians(5.0), (
+        "the unconstrained plan no longer tilts (%.2f deg), so this goal "
+        "cannot tell a hold from no hold -- pick another" % math.degrees(worst(free))
+    )
+
+    held = planner.plan_to_pose(pos, quat, start, constraint=level)
+    assert held.success, held.error
+    assert worst(held) < tol, "tilt %.2f deg along the held path" % math.degrees(
+        worst(held)
+    )
+
+    # LEVEL frees yaw along the way, never at the goal: 1.2 rad of yaw here.
+    _, quat_end = planner.fk(held.joint_traj.positions[-1])
+    dot = abs(float(np.dot(quat_end, quat)))
+    end_err = 2.0 * math.acos(min(1.0, dot))
+    assert end_err < tol, "plan ended %.2f deg from the goal" % math.degrees(end_err)
+
+
+def test_a_raising_plan_does_not_leave_its_hold_behind(planner, start, monkeypatch):
+    """cuRobo resets the pose cost metric only on a normal return. If the solve
+    raises after the metric is installed, the next UNCONSTRAINED plan must not
+    inherit it."""
+    from rammp_curobo.constraints import HOLD_LEVEL, PoseConstraint
+
+    mg = planner._motion_gen
+    real = mg.plan_single
+
+    def install_then_raise(start_state, goal, config):
+        mg.update_pose_cost_metric(config.pose_cost_metric, start_state, goal)
+        raise RuntimeError("injected")
+
+    pos, quat = _yawed_goal(planner, start, *_TILTING_GOAL)
+    monkeypatch.setattr(mg, "plan_single", install_then_raise)
+    res = planner.plan_to_pose(
+        pos, quat, start, constraint=PoseConstraint(hold=HOLD_LEVEL)
+    )
+    assert res.status == "EXCEPTION"
+    monkeypatch.setattr(mg, "plan_single", real)
+
+    for rollout in mg.get_all_pose_rollout_instances():
+        held = rollout.goal_cost.run_vec_weight
+        assert float(held.abs().sum()) == 0.0, "hold leaked: %s" % held.tolist()
 
 
 def test_hold_verification_cost_is_a_rounding_error_on_planning(planner, start):
@@ -292,14 +345,11 @@ def test_via_point_does_not_stop_the_arm(planner, start):
     would still pass while the feature did nothing, so this also requires
     the joint paths to diverge measurably.
 
-    cuRobo's via point (create_grasp_approach_metric) forces a hold on
-    every pose component except its own approach axis — see ViaPoint's
-    docstring — so the start must already match the goal on the other
-    five. Build the goal as the START's own FK, offset only along z (the
-    default linear_axis), rather than perturbing joints the way the other
-    smoke tests do: any joint perturbation here would also move x/y/
-    orientation and trip the implied hold before the via-blend behaviour
-    this test exists to check is even reached."""
+    cuRobo's via point (create_grasp_approach_metric) holds every pose
+    component except its own approach axis from tstep_fraction onward — see
+    ViaPoint's docstring. Build the goal as the START's own FK, offset only
+    along z (the default linear_axis), so the approach leg has nothing but
+    that one axis to travel and any divergence is the via's doing."""
     from rammp_curobo import ViaPoint
 
     pos, quat = planner.fk(start)

@@ -174,17 +174,16 @@ class CuRoboPlanner:
         apply_tool_correction: apply the configured tool spin/tip-offset
             calibration (authored-fingertip goals). None = apply whenever
             the config carries non-zero values.
-        constraint: PoseConstraint — tool axes to hold fixed for the whole
-            trajectory (keeping a carried object level). None = free.
+        constraint: PoseConstraint — how much of the tool's orientation to
+            hold for the whole trajectory (keeping a carried object level).
+            None = free.
         via: ViaPoint — one blended intermediate target offset from the
             goal along a tool axis. The path passes NEAR it without
             stopping; it is a cost, not a waypoint to hit. None = none.
-            An ACTIVE via point forces cuRobo's own hold on the other five
-            pose components (see ViaPoint's docstring) regardless of what
-            `constraint` asks for individually — combining the two only
-            makes sense to add a redundant lock or to catch a direct
-            contradiction (locking the via's own approach axis), which
-            raises BAD_CONSTRAINT instead of reaching cuRobo.
+            An active hold and an active via together are refused as
+            BAD_CONSTRAINT: cuRobo's approach metric zeroes the per-step
+            pose cost before tstep_fraction, so the hold would not be
+            applied for most of the path.
         """
         t0 = time.monotonic()
         try:
@@ -217,10 +216,10 @@ class CuRoboPlanner:
         if err is not None:
             return PlanResult.failure("START_OUTSIDE_LIMITS", err)
 
-        # Refuse a self-contradictory request BEFORE planning. This check used
-        # to exist only behind the hold-check SERVICE, so the plan path --
-        # the one the arm actually uses -- surfaced the same problem as
-        # cuRobo's bare INVALID_PARTIAL_POSE_COST_METRIC, or not at all.
+        # Refuse a self-contradictory request BEFORE planning. cuRobo does
+        # not check a base-frame hold's start itself, so without this a
+        # contradictory goal would only surface as a hold violation after a
+        # wasted plan.
         if constraint is not None and constraint.is_active():
             ok, why = self.constraint_satisfied_at_start(
                 start, xyz, wxyz, constraint, quat_order="wxyz"
@@ -239,6 +238,10 @@ class CuRoboPlanner:
                 start_state, goal, self._plan_config(constraint, via)
             )
         except Exception as exc:
+            # cuRobo resets the pose cost metric only on a normal return, so
+            # a raise would leave this plan's hold or via in the rollouts and
+            # silently constrain the next, unconstrained plan.
+            self._reset_pose_cost_metric()
             return PlanResult.failure(
                 "EXCEPTION",
                 "cuRobo plan_single raised: %s" % exc,
@@ -255,6 +258,11 @@ class CuRoboPlanner:
                     "CONSTRAINT_VIOLATED", bad, timing=time.monotonic() - t0
                 )
         return out
+
+    def _reset_pose_cost_metric(self):
+        from curobo.rollout.cost.pose_cost import PoseCostMetric
+
+        self._motion_gen.update_pose_cost_metric(PoseCostMetric.reset_metric())
 
     def _verify_hold(self, traj, goal_wxyz, constraint):
         """None if the trajectory honoured the hold, else why it did not.
@@ -462,17 +470,13 @@ class CuRoboPlanner:
     ):
         """Can this constrained plan even be attempted from `start`?
 
-        cuRobo requires the HELD components of the start pose to already
-        match the goal, so 'keep the tool level' is two-phase: level it
-        with an unconstrained move, then transport under the constraint.
-
-        `via`: an ACTIVE ViaPoint implies cuRobo's own hold on the five
-        pose components other than its approach axis (see ViaPoint's
-        docstring) — REGARDLESS of `constraint`'s individual hold_* flags.
-        Pass the same `constraint`/`via` pair here that will go to
-        `plan_to_pose` and this reproduces exactly what cuRobo will
-        require, so a via-point-only request gets the same clear sentence
-        instead of surfacing as the bare INVALID_PARTIAL_POSE_COST_METRIC.
+        A hold keeps the held components AT THE GOAL'S VALUE, so a start
+        that disagrees with the goal on them asks for two orientations at
+        once; 'keep the tool level' is two-phase: level it with an
+        unconstrained move, then transport under the hold. cuRobo does not
+        check this itself for a base-frame hold (its start check in
+        update_pose_cost_metric only runs the orientation test when
+        projecting to the goal frame), so this is the only gate.
 
         `quat_order` describes only the caller's own `quaternion` argument
         (the goal) — the start pose is always read from `fk` in xyzw, so a
@@ -734,23 +738,24 @@ class CuRoboPlanner:
         once `via` is folded in.
 
         An INACTIVE via point changes nothing: the effective hold is just
-        `constraint.hold_vec_weight()`. An ACTIVE via point overrides it —
-        cuRobo's grasp-approach metric holds every component except its own
-        `linear_axis` (see ViaPoint's docstring); `constraint`'s individual
-        hold_* flags cannot loosen that. The one thing `constraint` can do
-        is contradict it, by asking to hold the very axis `via` needs free
-        to approach along — that raises ValueError rather than silently
-        picking a winner.
+        `constraint.hold_vec_weight()`. An ACTIVE via point replaces it with
+        cuRobo's grasp-approach metric, which holds every component except
+        its own `linear_axis` -- but only from tstep_fraction on, because
+        update_offset_waypoint zeroes the per-step weights before that.
+        A hold combined with a via would therefore not be applied for most
+        of the path, so the combination raises ValueError rather than
+        quietly dropping the hold.
         """
         constraint = constraint or PoseConstraint()
         via = via or ViaPoint()
         if not via.is_active():
             return constraint.hold_vec_weight()
-        if constraint.hold_vec_weight()[3 + via.linear_axis] != 0.0:
+        if constraint.is_active():
             raise ValueError(
-                "via point travels along linear_axis=%d, but the "
-                "constraint asks to hold that same axis fixed — pick a "
-                "different approach axis or drop the lock" % via.linear_axis
+                "an orientation hold cannot be combined with a via point: "
+                "cuRobo's approach metric zeroes the path cost before "
+                "tstep_fraction=%.2f, so the '%s' hold would not be applied "
+                "for that part of the path" % (via.tstep_fraction, constraint.name())
             )
         hold = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
         hold[3 + via.linear_axis] = 0.0
@@ -788,9 +793,10 @@ class CuRoboPlanner:
             "hold_vec_weight": CuRoboPlanner._effective_hold_vec_weight(
                 constraint, via
             ),
-            # Always the BASE frame. Goal-frame projection is gone with the
-            # frame parameter: "level" means level with the world, and only
-            # the base frame can express that.
+            # The BASE frame for a hold: "level" means level with the world,
+            # and only the base frame can express that. Not used on the via
+            # path -- create_grasp_approach_metric ignores the argument and
+            # projects to the goal frame (see ViaPoint).
             "project_to_goal_frame": False,
         }
         if via.is_active():
@@ -821,7 +827,6 @@ class CuRoboPlanner:
                     offset_position=metric_kw["offset_position"],
                     linear_axis=metric_kw["linear_axis"],
                     tstep_fraction=metric_kw["offset_tstep_fraction"],
-                    project_to_goal_frame=metric_kw["project_to_goal_frame"],
                     tensor_args=self._tensor_args,
                 )
             else:
@@ -919,14 +924,6 @@ class CuRoboPlanner:
     @staticmethod
     def _explain(status):
         s = str(status).upper().replace(" ", "_")
-        if "PARTIAL_POSE" in s:
-            return (
-                "the constrained plan was refused because the START pose "
-                "does not already match the GOAL on the held axes — a held "
-                "axis is held at the goal's value, so an unconstrained move "
-                "has to bring those axes there first (see "
-                "constraint_satisfied_at_start)."
-            )
         if "IK" in s:
             return (
                 "no collision-free joint solution AT the goal — move it "

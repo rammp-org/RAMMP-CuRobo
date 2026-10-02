@@ -326,23 +326,27 @@ def test_pose_cost_kwargs_for_a_held_constraint():
     assert "offset_position" not in kw
 
 
-def test_via_point_forces_a_full_hold_except_the_approach_axis():
-    """cuRobo's grasp-approach metric (create_grasp_approach_metric, read
-    from real cuRobo v0.7.8 on the Jetson) holds ALL FIVE non-approach pose
-    components at the goal's value — not just the axes a PoseConstraint
-    happened to ask for. A caller who only locked roll/pitch still gets
-    yaw/x/y held too, because that is the only shape cuRobo's via point
-    supports; there is no way to combine "hold roll/pitch only" with an
-    approach the way an earlier, never-run version of this code assumed."""
+def test_a_hold_and_a_via_together_are_refused():
+    """cuRobo's approach metric zeroes the per-step pose cost before
+    tstep_fraction (pose_cost.py update_run_weight), so a hold sent with a
+    via would not be applied for most of the path. Refused, not dropped."""
+    from rammp_curobo.planner import CuRoboPlanner
+
+    for mode in (HOLD_LEVEL, HOLD_FIXED):
+        for axis in (0, 1, 2):
+            with pytest.raises(ValueError, match="cannot be combined"):
+                CuRoboPlanner._pose_cost_kwargs(
+                    PoseConstraint(hold=mode),
+                    ViaPoint(offset_m=0.10, linear_axis=axis),
+                )
+
+
+def test_a_via_alone_carries_its_offset():
     from rammp_curobo.planner import CuRoboPlanner
 
     kw = CuRoboPlanner._pose_cost_kwargs(
-        PoseConstraint(hold=HOLD_LEVEL),
-        ViaPoint(offset_m=0.10, linear_axis=2, tstep_fraction=0.8),
+        None, ViaPoint(offset_m=0.10, linear_axis=2, tstep_fraction=0.8)
     )
-    # everything held except z (3 + linear_axis=2), regardless of which
-    # axes the constraint explicitly asked to lock
-    assert kw["hold_vec_weight"] == [1.0, 1.0, 1.0, 1.0, 1.0, 0.0]
     assert kw["offset_position"] == 0.10
     assert kw["linear_axis"] == 2
     assert kw["offset_tstep_fraction"] == 0.8
@@ -358,22 +362,6 @@ def test_via_point_ignores_the_constraint_when_via_is_inactive():
     )
     assert kw["hold_vec_weight"] == [1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
     assert "offset_position" not in kw
-
-
-def test_a_constraint_can_no_longer_contradict_a_via():
-    """There used to be a contradiction to catch — holding z while asking to
-    approach along z. With position holds removed a constraint only ever
-    holds rotations and a via only ever frees a LINEAR axis, so the two
-    cannot collide. Kept as a test so the removal of that guard is
-    deliberate and visible rather than looking like an oversight."""
-    from rammp_curobo.planner import CuRoboPlanner
-
-    for mode in (HOLD_LEVEL, HOLD_FIXED):
-        for axis in (0, 1, 2):
-            kw = CuRoboPlanner._pose_cost_kwargs(
-                PoseConstraint(hold=mode), ViaPoint(offset_m=0.10, linear_axis=axis)
-            )
-            assert kw["hold_vec_weight"][3 + axis] == 0.0
 
 
 def test_rotvec_between_is_zero_for_equal_quaternions():
@@ -541,8 +529,8 @@ def test_level_deviation_is_the_true_tilt_regardless_of_yaw():
     catch it because they only ever probed a PURE yaw (tilt = 0), the single
     case where hypot happens to be exact.
 
-    Each row below fails under the old formula and passes under the geodesic
-    distance to the yaw orbit.
+    Every row with a non-zero yaw fails under the old formula and passes
+    under the geodesic distance to the yaw orbit.
     """
     from rammp_curobo.planner import CuRoboPlanner
 
@@ -559,6 +547,25 @@ def test_level_deviation_is_the_true_tilt_regardless_of_yaw():
                 "tilt %.1f deg with %.0f deg of yaw measured %.4f deg"
                 % (tilt_deg, yaw_deg, math.degrees(got))
             )
+
+
+def test_batch_and_scalar_deviation_agree_on_combined_tilt_and_yaw():
+    """_verify_hold uses the batch form, the start check the scalar one; one
+    tolerance only means one thing if they agree."""
+    from rammp_curobo.planner import CuRoboPlanner
+
+    goal = euler_deg_to_quat_xyzw([3.0, -2.0, 25.0])
+    qs = [
+        euler_deg_to_quat_xyzw([r, p, y])
+        for r, p, y in ((1.3, 0.0, 90.0), (-4.0, 2.5, 170.0), (0.0, 7.0, -60.0))
+    ]
+    wxyz = np.array([[q[3], q[0], q[1], q[2]] for q in qs])
+    for mode in (HOLD_LEVEL, HOLD_FIXED):
+        c = PoseConstraint(hold=mode)
+        batch = CuRoboPlanner._hold_deviation_batch(wxyz, goal, c)
+        for k, q in enumerate(qs):
+            scalar, _ = CuRoboPlanner._hold_deviation(q, goal, c)
+            assert batch[k] == pytest.approx(scalar, abs=1e-9)
 
 
 def test_fixed_deviation_is_the_full_angle():
@@ -590,29 +597,6 @@ def test_level_tolerates_a_pure_yaw_difference_but_fixed_does_not():
     ok, why = _check(stub, [0.6, 0.0, 0.4], goal_q, PoseConstraint(hold=HOLD_FIXED))
     assert not ok
     assert "orientation" in why and "40" in why
-
-
-def test_pre_check_ignores_an_active_via_point():
-    """A via must NOT be folded into the start check, and this is a
-    regression test for a real false refusal.
-
-    The old behaviour treated an active via as implying a five-axis hold AT
-    THE START, and refused accordingly. Measured against real cuRobo: a via's
-    hold engages at tstep_fraction, not at the start, so the same goal plans
-    perfectly well. The pre-check was refusing plans that work — through the
-    hold-check service, to callers who had no way to tell it was wrong.
-
-    With no constraint and only a via, there is nothing for this check to
-    judge, so it must pass regardless of how tilted the start is."""
-    from rammp_curobo.planner import CuRoboPlanner
-
-    tilted = euler_deg_to_quat_xyzw([12.0, 0.0, 0.0])
-    stub = _StubFk([0.3, 0.0, 0.4], tilted)
-    goal_q = euler_deg_to_quat_xyzw([0.0, 0.0, 0.0])
-    ok, why = CuRoboPlanner.constraint_satisfied_at_start(
-        stub, [0.0] * 7, [0.3, 0.0, 0.4], goal_q, PoseConstraint(hold=HOLD_NONE)
-    )
-    assert ok and why is None
 
 
 def test_pre_check_rejects_a_zero_quaternion_goal():
