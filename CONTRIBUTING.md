@@ -139,6 +139,30 @@ This binds hardest on `PlanToPose.action` and `PlanToJoints.action`, which
 `kinova_arm_ros2` builds against. Adding a *new* action or service alongside the
 existing ones is genuinely minor; growing one of these three is not.
 
+**The carve-out: appending a field at the very end, with a default, is MINOR.**
+On **ROS 2 Humble** a subscriber matches a publisher on the **type name
+alone** — the type-description hashes (`RIHS01_…`) that would let the runtime
+tell "old" from "new" arrived in Iron; Humble's `librmw` has no
+`type_hash.h` and no `RIHS` symbols to check. A CDR message is deserialised
+in field order: a field **appended at the very end** means the deserialiser
+simply runs out of payload before reaching it and leaves it at its declared
+default, so an older publisher's message reads, on a newer subscriber, as
+that field taking its default — exactly as if the field had never fired. That
+is additive, so it is MINOR. A field **inserted anywhere else** is still
+MAJOR under any RMW: every field after the insertion point now reads the
+previous field's bytes, which is corruption, not graceful degradation.
+
+This carve-out rests on two conditions, both true of this fleet today: every
+module runs **Cyclone DDS** (under Fast-DDS a mismatched subscriber does not
+match at all, so the topic silently carries nothing rather than a
+stale-but-sensible default), and the fleet is on **Humble** (revisit this on
+Iron and later, where the runtime can actually tell old endpoints from new
+ones via the type hash). One more wrinkle: a *nested* message field cannot
+carry a default — only primitive/array fields in the top-level message can —
+so for a nested field the "off" state must be whatever a default-constructed
+instance of that nested message already means; there is no separate default
+to fall back to.
+
 The milder case is the core Python API, where adding a keyword argument with a
 default is additive as usual.
 

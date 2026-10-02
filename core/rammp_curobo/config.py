@@ -40,6 +40,16 @@ PLANNER_DEFAULTS = {
         "no_pad_names": ["pedestal"],
         "joint_space_method": "auto",
         "limit_clamp_rad": 0.05,
+        # A constrained plan must hold the orientation within this much, and
+        # that applies to the START too: the start is part of "throughout", so
+        # a goal whose held components disagree with the start by more than
+        # this is REFUSED before planning rather than silently re-aimed.
+        #
+        # Needed because cuRobo's hold is a COST, not a clamp -- it penalises
+        # deviation without forbidding it. The planner measures the returned
+        # trajectory and fails the plan if the worst deviation exceeds this,
+        # so "held level" is a checked claim instead of a hope.
+        "constraint_tolerance_deg": 2.0,
         "warmup": True,
     },
     "tool": {

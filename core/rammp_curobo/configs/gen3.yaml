@@ -45,6 +45,12 @@ planner:
                                      # position limits are clamped inward (the real
                                      # Gen3 PARKS with joint_4 ~0.8 deg past cuRobo's
                                      # URDF bound); larger violations are refused
+  constraint_tolerance_deg: 2.0       # orientation holds are a cuRobo COST, not a
+                                      # clamp. A plan whose worst deviation from
+                                      # the held orientation exceeds this is
+                                      # REFUSED, and so is a goal whose held
+                                      # components disagree with the start by more
+                                      # than this (the start is part of the hold).
   warmup: true                       # first-run kernel compile at init, not mid-task
 
 tool:

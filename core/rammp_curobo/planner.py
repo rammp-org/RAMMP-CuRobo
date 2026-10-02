@@ -33,6 +33,8 @@ import numpy as np
 
 from rammp_curobo import geometry
 from rammp_curobo.config import load_planner_config, resolve_config
+from rammp_curobo import constraints
+from rammp_curobo.constraints import PoseConstraint, ViaPoint
 from rammp_curobo.robot_config import load_robot_config
 from rammp_curobo.scene import Scene, load_scene, scene_from_obstacles
 from rammp_curobo.types import PlanResult, Trajectory
@@ -63,6 +65,12 @@ class CuRoboPlanner:
         self.collision_cache_mesh = int(p["collision_cache_mesh"])
         self.collision_activation_distance = float(p["collision_activation_distance"])
         self.world_padding = float(p["world_padding"])
+        # One tolerance, two jobs: it gates the start-vs-goal check AND the
+        # verification of the returned trajectory, because the start is part
+        # of "held throughout".
+        self.constraint_tolerance_rad = math.radians(
+            float(p["constraint_tolerance_deg"])
+        )
         self.no_pad_names = frozenset(p["no_pad_names"] or [])
         self.joint_space_method = str(p["joint_space_method"])
         self.limit_clamp_rad = float(p["limit_clamp_rad"])
@@ -151,6 +159,8 @@ class CuRoboPlanner:
         start,
         quat_order="xyzw",
         apply_tool_correction=None,
+        constraint=None,
+        via=None,
     ):
         """Plan a collision-free trajectory to an end-effector pose.
 
@@ -164,8 +174,22 @@ class CuRoboPlanner:
         apply_tool_correction: apply the configured tool spin/tip-offset
             calibration (authored-fingertip goals). None = apply whenever
             the config carries non-zero values.
+        constraint: PoseConstraint — how much of the tool's orientation to
+            hold for the whole trajectory (keeping a carried object level).
+            None = free.
+        via: ViaPoint — one blended intermediate target offset from the
+            goal along a tool axis. The path passes NEAR it without
+            stopping; it is a cost, not a waypoint to hit. None = none.
+            An active hold and an active via together are refused as
+            BAD_CONSTRAINT: cuRobo's approach metric zeroes the per-step
+            pose cost before tstep_fraction, so the hold would not be
+            applied for most of the path.
         """
         t0 = time.monotonic()
+        try:
+            self._pose_cost_kwargs(constraint, via)
+        except ValueError as exc:
+            return PlanResult.failure("BAD_CONSTRAINT", str(exc))
         if quat_order == "xyzw":
             wxyz = geometry.xyzw_to_wxyz(quaternion)
         elif quat_order == "wxyz":
@@ -191,19 +215,129 @@ class CuRoboPlanner:
         start, err = self._clamp_to_limits(start, "start")
         if err is not None:
             return PlanResult.failure("START_OUTSIDE_LIMITS", err)
+
+        # Refuse a self-contradictory request BEFORE planning. cuRobo does
+        # not check a base-frame hold's start itself, so without this a
+        # contradictory goal would only surface as a hold violation after a
+        # wasted plan.
+        if constraint is not None and constraint.is_active():
+            ok, why = self.constraint_satisfied_at_start(
+                start, xyz, wxyz, constraint, quat_order="wxyz"
+            )
+            if not ok:
+                return PlanResult.failure(
+                    "CONSTRAINT_UNSATISFIABLE", why, timing=time.monotonic() - t0
+                )
+            if why:
+                log.warning("%s", why)
+
         start_state = self._start_state(start)
         goal = Pose(position=self._tensor([xyz]), quaternion=self._tensor([wxyz]))
         try:
             result = self._motion_gen.plan_single(
-                start_state, goal, self._plan_config()
+                start_state, goal, self._plan_config(constraint, via)
             )
         except Exception as exc:
+            # cuRobo resets the pose cost metric only on a normal return, so
+            # a raise would leave this plan's hold or via in the rollouts and
+            # silently constrain the next, unconstrained plan.
+            self._reset_pose_cost_metric()
             return PlanResult.failure(
                 "EXCEPTION",
                 "cuRobo plan_single raised: %s" % exc,
                 timing=time.monotonic() - t0,
             )
-        return self._finish(result, t0)
+        out = self._finish(result, t0)
+        # A hold is a COST, so a returned plan is a proposal, not a promise.
+        # Measure it and refuse rather than hand over a trajectory that quietly
+        # tipped the thing we were asked to keep upright.
+        if out.success and constraint is not None and constraint.is_active():
+            bad = self._verify_hold(out.joint_traj, wxyz, constraint)
+            if bad is not None:
+                return PlanResult.failure(
+                    "CONSTRAINT_VIOLATED", bad, timing=time.monotonic() - t0
+                )
+        return out
+
+    def _reset_pose_cost_metric(self):
+        from curobo.rollout.cost.pose_cost import PoseCostMetric
+
+        self._motion_gen.update_pose_cost_metric(PoseCostMetric.reset_metric())
+
+    def _verify_hold(self, traj, goal_wxyz, constraint):
+        """None if the trajectory honoured the hold, else why it did not.
+
+        Measures the held deviation from the goal orientation with the SAME
+        metric the start check uses, so one tolerance means one thing.
+
+        Then checks that the plan ENDS at the goal's full orientation, yaw
+        included. LEVEL frees yaw along the way, never at the goal: cuRobo's
+        terminal cost keeps full weights, but its own success test allows
+        sin(err/2) < 0.05 (about 5.7 deg), so a plan it calls successful can
+        still miss the requested yaw by more than this tolerance.
+
+        ONE kinematics call for the whole trajectory, then numpy: the joint
+        reorder is a precomputed index permutation and the quaternion maths is
+        vectorised. A per-waypoint Python loop would put ~100 GPU round trips
+        on the planning path, which is not an acceptable cost for a check that
+        runs on every constrained plan.
+        """
+        if traj is None or traj.n_points == 0:
+            return None
+        # controller order -> cuRobo cspace order, as an index permutation
+        # rather than _to_curobo_order's per-row dict rebuild.
+        idx = [self.joint_names.index(n) for n in self._curobo_joint_names]
+        # ascontiguousarray is REQUIRED, not defensive. cuRobo's fused
+        # kinematics kernel asserts joint_vec.is_contiguous(), and the tensor
+        # built from this column selection arrives non-contiguous, so the
+        # batched call dies with an INTERNAL ASSERT FAILED from
+        # kinematics_fused_kernel.cu. The single-row fk() path never hit it.
+        # Measured in the container: as-is contiguous=False -> assert;
+        # ascontiguousarray -> (N, 4) quaternions back.
+        rows = np.ascontiguousarray(np.asarray(traj.positions, dtype=float)[:, idx])
+        state = self._motion_gen.kinematics.get_state(self._tensor(rows))
+        wxyz = state.ee_quaternion.detach().cpu().numpy().astype(float)
+        dev = self._hold_deviation_batch(
+            wxyz, geometry.wxyz_to_xyzw(goal_wxyz), constraint
+        )
+        worst_k = int(np.argmax(dev))
+        worst = float(dev[worst_k])
+        tol = self.constraint_tolerance_rad
+        if worst <= tol:
+            end = float(
+                self._hold_deviation_batch(
+                    wxyz[-1:],
+                    geometry.wxyz_to_xyzw(goal_wxyz),
+                    PoseConstraint(hold=constraints.HOLD_FIXED),
+                )[0]
+            )
+            if end <= tol:
+                return None
+            return (
+                "the plan ends %.2f deg from the goal orientation (limit "
+                "%.2f). The '%s' hold frees nothing at the goal: every "
+                "component of the goal orientation, yaw included, must be "
+                "reached." % (math.degrees(end), math.degrees(tol), constraint.name())
+            )
+        what = (
+            "tilt (roll/pitch)"
+            if constraint.hold == constraints.HOLD_LEVEL
+            else "orientation"
+        )
+        return (
+            "the plan does not honour the '%s' hold: worst %s deviation "
+            "%.2f deg at waypoint %d of %d (limit %.2f). cuRobo's hold is a "
+            "cost, not a clamp, so a plan can come back having bent it; this "
+            "refuses rather than executing it."
+            % (
+                constraint.name(),
+                what,
+                math.degrees(worst),
+                worst_k,
+                traj.n_points,
+                math.degrees(tol),
+            )
+        )
 
     def plan_to_joints(self, q_goal, start, method=None):
         """Plan a collision-free trajectory to a joint configuration.
@@ -324,6 +458,153 @@ class CuRoboPlanner:
         pos = [float(v) for v in state.ee_position[0].tolist()]
         wxyz = [float(v) for v in state.ee_quaternion[0].tolist()]
         return pos, (wxyz if quat_order == "wxyz" else geometry.wxyz_to_xyzw(wxyz))
+
+    # The old HOLD_TOL_RAD / HOLD_TOL_M constants are gone: the rotational
+    # one became the configurable constraint_tolerance_deg, and the linear one
+    # has nothing left to gate now that position is never held.
+
+    def constraint_satisfied_at_start(
+        self, start, position, quaternion, constraint, quat_order="xyzw"
+    ):
+        """Can this constrained plan even be attempted from `start`?
+
+        A hold keeps the held components AT THE GOAL'S VALUE, so a start
+        that disagrees with the goal on them asks for two orientations at
+        once; 'keep the tool level' is two-phase: level it with an
+        unconstrained move, then transport under the hold. cuRobo does not
+        check this itself for a base-frame hold (its start check in
+        update_pose_cost_metric only runs the orientation test when
+        projecting to the goal frame), so this is the only gate.
+
+        `quat_order` describes only the caller's own `quaternion` argument
+        (the goal) — the start pose is always read from `fk` in xyzw, so a
+        `quat_order="wxyz"` caller never mixes conventions between the two
+        operands fed to `rotvec_between`.
+
+
+        Returns (ok, reason). reason is None when clean, a 'marginal: ...'
+        string when inside tolerance but close to it, and an explanation
+        when not. There is no longer an out-of-scope case: holds are always
+        base-frame, and a via is not judged here at all.
+        """
+        constraint = constraint or PoseConstraint()
+        if not constraint.is_active():
+            return True, None
+        # No frame branch any more: holds are always base-frame, so there is no
+        # "cannot pre-check this mode" case left to decline. And no via branch:
+        # a via's hold engages at tstep_fraction, NOT at the start, so folding
+        # it in here refused plans that cuRobo accepts happily — a false
+        # refusal this check used to emit through the hold-check service.
+        try:
+            constraint.validate()
+        except ValueError as exc:
+            return False, str(exc)
+
+        pos = [float(v) for v in position]
+        if not all(math.isfinite(v) for v in pos):
+            return False, "goal position is non-finite"
+
+        if quat_order == "wxyz":
+            goal_quat = geometry.wxyz_to_xyzw(quaternion)
+        else:
+            goal_quat = [float(v) for v in quaternion]
+        if not all(math.isfinite(v) for v in goal_quat):
+            return False, "goal quaternion is non-finite"
+        quat_norm = math.sqrt(sum(v * v for v in goal_quat))
+        if quat_norm < 1e-6:
+            # mirrors plan_to_pose's own BAD_GOAL guard on a zero-length
+            # quaternion — this pre-check must refuse the same malformed
+            # goal, not report a confident "satisfied".
+            return False, "goal quaternion is zero-length"
+
+        _cur_pos, cur_quat = self.fk(start, quat_order="xyzw")
+        # Via the CLASS, not self: it is a staticmethod, and this method is
+        # also called unbound with a stub as `self` in the offline tests.
+        err, what = CuRoboPlanner._hold_deviation(cur_quat, goal_quat, constraint)
+        tol = self.constraint_tolerance_rad
+        ratio = err / tol if tol > 0.0 else 0.0
+
+        if ratio > 1.0:
+            return False, (
+                "the goal's %s differs from the start by %.2f deg (limit "
+                "%.2f): a hold keeps the orientation AT THE GOAL'S VALUE, so "
+                "a goal that disagrees with the start is asking for two "
+                "different orientations at once. Either pass the start's "
+                "orientation as the goal's, or move there with an "
+                "unconstrained plan first."
+                % (what, math.degrees(err), math.degrees(tol))
+            )
+        if ratio > 0.8:
+            return True, (
+                "marginal: the goal's %s is %.2f deg from the start (limit "
+                "%.2f, %.0f%% of it)"
+                % (what, math.degrees(err), math.degrees(tol), 100.0 * ratio)
+            )
+        return True, None
+
+    @staticmethod
+    def _hold_deviation_batch(a_wxyz, b_xyzw, constraint):
+        """Vectorised _hold_deviation: (N,) radians for (N,4) wxyz against one
+        xyzw goal.
+
+        Same closed forms as the scalar version, so the two cannot drift apart
+        in convention; see _hold_deviation for the derivation. Both measures
+        are invariant under conjugating e, which is why `a` may be the
+        waypoints here and the current pose in the scalar version.
+        """
+        ax, ay, az, aw = a_wxyz[:, 1], a_wxyz[:, 2], a_wxyz[:, 3], a_wxyz[:, 0]
+        bx, by, bz, bw = [float(v) for v in b_xyzw]
+        ew = bw * aw + bx * ax + by * ay + bz * az
+        ez = bz * aw - bw * az - bx * ay + by * ax
+        if constraint.hold == constraints.HOLD_LEVEL:
+            return 2.0 * np.arccos(np.minimum(1.0, np.hypot(ew, ez)))
+        return 2.0 * np.arccos(np.minimum(1.0, np.abs(ew)))
+
+    @staticmethod
+    def _hold_deviation(quat_a, quat_b, constraint):
+        """(radians, what) — how far apart two orientations are, counting only
+        what the hold actually holds.
+
+        LEVEL zeroes rz in hold_vec_weight, so cuRobo is indifferent to rotation
+        about base Z: it treats the whole ORBIT {Rz(psi) * goal} as satisfying
+        the hold. The honest deviation is therefore the geodesic distance from
+        the orientation to that orbit,
+
+            d = min over psi of angle(q, Rz(psi) * goal)
+              = 2 * acos( sqrt(e_w^2 + e_z^2) )     for e = q (x) conj(goal)
+
+        which has a closed form because maximising |w| of e (x) Rz(-psi) over
+        the unit circle (c, s) gives sqrt(e_w^2 + e_z^2) directly.
+
+        It replaces hypot(rx, ry), which was WRONG in exactly the case LEVEL is
+        for. That over-reported the true tilt by (psi/2)/sin(psi/2) where psi is
+        the yaw difference -- up to 1.571x at psi = 180 deg. Since LEVEL frees
+        yaw without bound, large yaw is the normal case, not an edge: a plan
+        honouring the hold to a genuine 1.3 deg while yawing 180 deg measured
+        2.04 deg and was refused as CONSTRAINT_VIOLATED. Verified against a
+        full-circle brute-force minimisation over 200 random orientation pairs,
+        agreeing to the brute force's own grid resolution.
+
+        Note the earlier evidence for hypot could not have caught this: a pure
+        yaw reads exactly 0 under BOTH formulas (it is the one case where hypot
+        is exact), and batch-vs-scalar agreement proves implementation
+        consistency, not that the quantity is the right one.
+
+        FIXED holds all three, so it is the full angle, 2 * acos(|e_w|).
+
+        The same measure serves the start check and the trajectory verification,
+        so "within tolerance" means one thing.
+        """
+        ax, ay, az, aw = [float(v) for v in quat_a]
+        bx, by, bz, bw = [float(v) for v in quat_b]
+        # e = b (x) conj(a), components in the BASE frame -- same convention as
+        # geometry.rotvec_between. Only e_w and e_z are needed; both measures
+        # below are invariant under conjugating e, so the a/b order is free.
+        ew = bw * aw + bx * ax + by * ay + bz * az
+        ez = bz * aw - bw * az - bx * ay + by * ax
+        if constraint.hold == constraints.HOLD_LEVEL:
+            return 2.0 * math.acos(min(1.0, math.hypot(ew, ez))), "tilt"
+        return 2.0 * math.acos(min(1.0, abs(ew))), "orientation"
 
     def joint_limits(self):
         """{'position': (2, dof) [lower; upper], 'velocity': (dof,)} in
@@ -449,7 +730,80 @@ class CuRoboPlanner:
             )
         return self._curobo_state(q)
 
-    def _plan_config(self):
+    @staticmethod
+    def _effective_hold_vec_weight(constraint, via):
+        """The 6-vector [rx, ry, rz, x, y, z] cuRobo will actually apply
+        once `via` is folded in.
+
+        An INACTIVE via point changes nothing: the effective hold is just
+        `constraint.hold_vec_weight()`. An ACTIVE via point replaces it with
+        cuRobo's grasp-approach metric, which holds every component except
+        its own `linear_axis` -- but only from tstep_fraction on, because
+        update_offset_waypoint zeroes the per-step weights before that.
+        A hold combined with a via would therefore not be applied for most
+        of the path, so the combination raises ValueError rather than
+        quietly dropping the hold.
+        """
+        constraint = constraint or PoseConstraint()
+        via = via or ViaPoint()
+        if not via.is_active():
+            return constraint.hold_vec_weight()
+        if constraint.is_active():
+            raise ValueError(
+                "an orientation hold cannot be combined with a via point: "
+                "cuRobo's approach metric zeroes the path cost before "
+                "tstep_fraction=%.2f, so the '%s' hold would not be applied "
+                "for that part of the path" % (via.tstep_fraction, constraint.name())
+            )
+        hold = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        hold[3 + via.linear_axis] = 0.0
+        return hold
+
+    @staticmethod
+    def _pose_cost_kwargs(constraint, via):
+        """Plain-value kwargs describing the PoseCostMetric to build, or
+        None if unconstrained.
+
+        Deliberately tensor-free so the mapping is testable without a GPU;
+        _plan_config does the tensor / PoseCostMetric(-subclass) work.
+
+        Verified against real cuRobo v0.7.8 by introspection on the Jetson:
+        `PoseCostMetric.__init__` takes NO `linear_axis` kwarg, and
+        `offset_position` is a 3-vector, not a scalar — passing them as
+        plain values straight to `PoseCostMetric(...)` (an earlier version
+        of this function did) raises `PoseCostMetric.__init__() got an
+        unexpected keyword argument 'linear_axis'`. So this function hands
+        back only PLAIN values; `_plan_config` builds the via-point case
+        through cuRobo's own supported entry point for it,
+        `PoseCostMetric.create_grasp_approach_metric(...)`, using
+        `offset_position` / `linear_axis` / `offset_tstep_fraction` from
+        here as that classmethod's own (scalar) arguments.
+        """
+        constraint = constraint or PoseConstraint()
+        via = via or ViaPoint()
+        constraint.validate()
+        via.validate()
+        if not constraint.is_active() and not via.is_active():
+            return None
+
+        kw = {
+            "hold_partial_pose": True,
+            "hold_vec_weight": CuRoboPlanner._effective_hold_vec_weight(
+                constraint, via
+            ),
+            # The BASE frame for a hold: "level" means level with the world,
+            # and only the base frame can express that. Not used on the via
+            # path -- create_grasp_approach_metric ignores the argument and
+            # projects to the goal frame (see ViaPoint).
+            "project_to_goal_frame": False,
+        }
+        if via.is_active():
+            kw["offset_position"] = float(via.offset_m)
+            kw["linear_axis"] = int(via.linear_axis)
+            kw["offset_tstep_fraction"] = float(via.tstep_fraction)
+        return kw
+
+    def _plan_config(self, constraint=None, via=None):
         from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
 
         kw = {}
@@ -458,6 +812,28 @@ class CuRoboPlanner:
             # attempts unless this is None — and the graph planner is the
             # exact thing the Jetson wheel cannot run. Never let it engage.
             kw["enable_graph_attempt"] = None
+
+        metric_kw = self._pose_cost_kwargs(constraint, via)
+        if metric_kw is not None:
+            from curobo.rollout.cost.pose_cost import PoseCostMetric
+
+            if (via or ViaPoint()).is_active():
+                # The supported path for an approach — it is what cuRobo's
+                # own tests use, and it builds the 3-vector offset_position
+                # PoseCostMetric.__init__ actually requires internally.
+                kw["pose_cost_metric"] = PoseCostMetric.create_grasp_approach_metric(
+                    offset_position=metric_kw["offset_position"],
+                    linear_axis=metric_kw["linear_axis"],
+                    tstep_fraction=metric_kw["offset_tstep_fraction"],
+                    tensor_args=self._tensor_args,
+                )
+            else:
+                metric_kw = dict(metric_kw)
+                metric_kw["hold_vec_weight"] = self._tensor(
+                    metric_kw["hold_vec_weight"]
+                )
+                kw["pose_cost_metric"] = PoseCostMetric(**metric_kw)
+
         return MotionGenPlanConfig(
             max_attempts=self.max_attempts,
             enable_graph=self.enable_graph,

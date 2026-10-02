@@ -30,6 +30,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
+from rammp_curobo import PoseConstraint, ViaPoint
 from rammp_curobo_interfaces.action import PlanToJoints, PlanToPose
 from rammp_curobo_interfaces.srv import SetWorld
 from rammp_curobo_ros.conversions import trajectory_to_msg
@@ -62,6 +63,45 @@ def check_start_joints(start_joints, joint_names):
     if not all(math.isfinite(float(v)) for v in start_joints):
         return "start_joints contains a non-finite value"
     return None
+
+
+_HOLD_MODES = (
+    PlanToPose.Goal.HOLD_NONE,
+    PlanToPose.Goal.HOLD_LEVEL,
+    PlanToPose.Goal.HOLD_FIXED,
+)
+
+
+def constraint_from_goal(goal):
+    """(PoseConstraint, ViaPoint, why_rejected) from a PlanToPose goal.
+
+    A goal that sets neither field maps to "unconstrained", which is also what
+    an older client's absent fields deserialise to.
+
+    An out-of-range mode is REFUSED rather than coerced to HOLD_NONE: silently
+    treating an unknown value as "no constraint" would hand back an
+    unconstrained trajectory to a caller who asked for a held one.
+    """
+    if goal.hold not in _HOLD_MODES:
+        return (
+            PoseConstraint(),
+            ViaPoint(),
+            "unknown hold %d (expected HOLD_NONE=%d, HOLD_LEVEL=%d or "
+            "HOLD_FIXED=%d)" % ((goal.hold,) + _HOLD_MODES),
+        )
+    constraint = PoseConstraint(hold=int(goal.hold))
+    approach = goal.approach_via
+    via = ViaPoint(
+        offset_m=float(approach.offset),
+        linear_axis=int(approach.axis),
+        tstep_fraction=float(approach.at_fraction),
+    )
+    try:
+        constraint.validate()
+        via.validate()
+    except ValueError as exc:
+        return constraint, via, str(exc)
+    return constraint, via, None
 
 
 class RammpCuroboNode(Node):
@@ -151,8 +191,16 @@ class RammpCuroboNode(Node):
             req.orientation.z,
             req.orientation.w,
         ]
+        constraint, via, why = constraint_from_goal(goal_handle.request)
+        if why is not None:
+            result.success = False
+            result.message = "invalid constraint: %s" % why
+            goal_handle.abort()
+            return result
         res = self._plan(
-            lambda q: self.planner.plan_to_pose(pos, quat, start=q),
+            lambda q: self.planner.plan_to_pose(
+                pos, quat, start=q, constraint=constraint, via=via
+            ),
             goal_handle.request.start_joints,
         )
         return self._finish_plan(goal_handle, result, res)
