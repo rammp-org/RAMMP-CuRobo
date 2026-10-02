@@ -18,12 +18,19 @@ def test_misplaced_layers_key_is_refused(tmp_path):
     assert load("")["layers"] == []
     assert load("layers: [a.yaml, b.yaml]\n")["layers"] == ["a.yaml", "b.yaml"]
 
-    # one message for both misplacements. Each is refused beside a valid
+    # one message for both misplacements, whatever the key holds: a bare file
+    # name is what a singular `layer:` invites. Each is refused beside a valid
     # `layers:` too: a config that lists the platform and misplaces the person
     # must not load without the person
     for extra in (
         "layer: [a.yaml]\n",
+        "layer: [a.yaml, b.yaml]\n",
+        "layer: a.yaml\n",
+        "layer:\n",
         "planner:\n  layers: [a.yaml]\n",
+        "planner:\n  layers: [a.yaml, b.yaml]\n",
+        "planner:\n  layers: a.yaml\n",
+        "planner:\n  layers:\n",
         "layers: [a.yaml]\nlayer: [b.yaml]\n",
         "layers: [a.yaml]\nplanner:\n  layers: [b.yaml]\n",
     ):
@@ -54,24 +61,32 @@ def test_misplaced_layers_key_is_refused(tmp_path):
 
 def test_resolve_config_searches_cwd_unless_told_not_to(tmp_path, monkeypatch):
     cwd, beside = tmp_path / "cwd", tmp_path / "beside"
-    cwd.mkdir()
+    (cwd / "sub").mkdir(parents=True)
     beside.mkdir()
     (cwd / "stray.yaml").write_text("")
+    (cwd / "sub" / "stray.yaml").write_text("")
     (cwd / "gen3.yaml").write_text("")  # the name of a packaged config
+    (cwd / "near.yaml").write_text("")  # the name of the file in beside/
     (beside / "near.yaml").write_text("")
     monkeypatch.chdir(cwd)
 
-    # the v1.0.0 order is still the default: CWD comes before the package
+    # the v1.0.0 order is still the default: beside the referencing file,
+    # then CWD, then the package
+    assert resolve_config("near.yaml", relative_to=beside) == beside / "near.yaml"
     assert resolve_config("stray.yaml") == cwd / "stray.yaml"
+    assert resolve_config("sub/stray.yaml") == cwd / "sub" / "stray.yaml"
     assert resolve_config("gen3.yaml") == cwd / "gen3.yaml"
 
     packaged = PACKAGED_CONFIG_DIR / "gen3.yaml"
     assert resolve_config("gen3.yaml", search_cwd=False) == packaged
     near = resolve_config("near.yaml", relative_to=beside, search_cwd=False)
     assert near == beside / "near.yaml"
-    with pytest.raises(FileNotFoundError) as exc:
-        resolve_config("stray.yaml", relative_to=beside, search_cwd=False)
-    assert str(exc.value) == "config 'stray.yaml' not found; tried: %s, %s" % (
-        beside / "stray.yaml",
-        PACKAGED_CONFIG_DIR / "stray.yaml",
-    )
+    # a directory part does not turn a reference into a CWD lookup
+    for ref in ("stray.yaml", "sub/stray.yaml"):
+        with pytest.raises(FileNotFoundError) as exc:
+            resolve_config(ref, relative_to=beside, search_cwd=False)
+        assert str(exc.value) == "config '%s' not found; tried: %s, %s" % (
+            ref,
+            beside / ref,
+            PACKAGED_CONFIG_DIR / ref,
+        )
