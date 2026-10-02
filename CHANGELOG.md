@@ -12,6 +12,36 @@ that heading to the new version and bumps the five places the number lives.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-10-02
+
+### Added
+
+- Plan while holding the tool's orientation (carry an object without tipping
+  it, #16) and approach a goal through one blended via point the arm does not
+  stop at (#17). New core types `PoseConstraint` and `ViaPoint`; `PlanToPose`
+  gains `hold` (`HOLD_NONE`, `HOLD_LEVEL` or `HOLD_FIXED`, constants on the
+  goal) and `approach_via` (new message `ApproachVia`). Both are appended at
+  the end and default to off, so a client that sets neither plans exactly as
+  before.
+- A held plan is checked, not trusted: refused before planning
+  (`CONSTRAINT_UNSATISFIABLE`) if the start disagrees with the goal on the
+  held components, and after planning (`CONSTRAINT_VIOLATED`) if any waypoint
+  breaks the hold or the plan does not end at the goal's full orientation —
+  yaw included, since `HOLD_LEVEL` frees yaw only in transit. One tolerance,
+  `constraint_tolerance_deg` (default 2 deg), for all three.
+- A hold and a via point together are refused (`BAD_CONSTRAINT`): cuRobo's
+  approach metric applies no per-step pose cost before `at_fraction`, so the
+  hold would silently lapse for most of the path.
+- Verified on the Jetson against real cuRobo (`ghcr.io/rammp-org/rammp-curobo:1.0.0`):
+  on a goal the unconstrained plan reaches with ~20 deg of tilt, `HOLD_LEVEL`
+  stays under 2 deg at every waypoint and ends on the goal's 1.2 rad of yaw.
+
+### Fixed
+
+- A plan that raised inside cuRobo left its hold installed, silently
+  constraining the next, unconstrained plan (cuRobo resets the metric only on
+  a normal return). The planner now resets it on the exception path.
+
 ## [1.0.0] — 2026-09-08
 
 First tagged release, and the first published container. The planner has been in
@@ -71,4 +101,5 @@ claim about all of it:
   kernel JIT never runs. The functional gate is the Jetson, via `.hil.yml`.
 
 [1.0.0]: https://github.com/rammp-org/RAMMP-CuRobo/releases/tag/v1.0.0
-[unreleased]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v1.0.0...HEAD
+[1.1.0]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v1.0.0...v1.1.0
+[unreleased]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v1.1.0...HEAD

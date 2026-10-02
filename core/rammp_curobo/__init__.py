@@ -5,6 +5,7 @@ inside CuRoboPlanner so the scene/geometry/retime/validate modules work on
 machines without the GPU stack.
 """
 
+from rammp_curobo.constraints import PoseConstraint, ViaPoint
 from rammp_curobo.planner import CuRoboPlanner
 from rammp_curobo.retime import scale_trajectory
 from rammp_curobo.scene import Scene, load_scene
@@ -15,6 +16,8 @@ __all__ = [
     "CuRoboPlanner",
     "PlanResult",
     "Trajectory",
+    "PoseConstraint",
+    "ViaPoint",
     "Scene",
     "load_scene",
     "scale_trajectory",
@@ -22,4 +25,4 @@ __all__ = [
     "start_state_matches",
 ]
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
