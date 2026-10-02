@@ -14,18 +14,23 @@ that heading to the new version and bumps the five places the number lives.
 
 ### Added
 
-- Plan while holding tool-pose axes fixed (carry an object at a fixed
-  orientation, #16) and approach a goal through one blended via point the arm
-  does not stop at (#17). New core types `PoseConstraint` and `ViaPoint`; new
-  messages `PoseAxisLock` and `ApproachVia`, carried by `PlanToPose` as
-  `axis_lock` and `approach_via`. Both are appended at the end and default to
-  "off", so a client that sets neither plans exactly as before. And
-  `~/check_pose_lock`, which answers whether a locked-axis plan can be
-  attempted from a given start without planning or moving anything.
-  **Neither the constrained nor the via-point path has yet been exercised
-  against a GPU** — the smoke tests that would run real cuRobo plans for
-  both are in place, but this development machine has no CUDA device, so
-  they have only been read against cuRobo v0.7.8 source, not run.
+- Plan while holding the tool's orientation (carry an object without tipping
+  it, #16) and approach a goal through one blended via point the arm does not
+  stop at (#17). New core types `PoseConstraint` and `ViaPoint`; `PlanToPose`
+  gains `hold` (`HOLD_NONE`, `HOLD_LEVEL` or `HOLD_FIXED`, constants on the
+  goal) and `approach_via` (new message `ApproachVia`). Both are appended at
+  the end and default to off, so a client that sets neither plans exactly as
+  before.
+- A held plan is checked, not trusted: refused before planning
+  (`CONSTRAINT_UNSATISFIABLE`) if the start disagrees with the goal on the
+  held components, and after planning (`CONSTRAINT_VIOLATED`) if any waypoint
+  breaks the hold or the plan does not end at the goal's full orientation —
+  yaw included, since `HOLD_LEVEL` frees yaw only in transit. One tolerance,
+  `constraint_tolerance_deg` (default 2 deg), for all three.
+- Verified on the Jetson against real cuRobo (`ghcr.io/rammp-org/rammp-curobo:1.0.0`):
+  the GPU smoke suite runs a `HOLD_LEVEL` plan with 0.4 rad of yaw and checks
+  tilt at every waypoint and the full orientation at the end, plus the via
+  point.
 
 ## [1.0.0] — 2026-09-08
 

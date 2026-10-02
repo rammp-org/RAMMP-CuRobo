@@ -38,8 +38,9 @@ _HOLD_NAMES = {HOLD_NONE: "none", HOLD_LEVEL: "level", HOLD_FIXED: "fixed"}
 class PoseConstraint:
     """How much of the tool's ORIENTATION to keep for the whole trajectory.
 
-    HOLD_LEVEL keeps roll and pitch and leaves yaw free, so the only motion the
-    tool may add is a spin about base Z. A pure rotation about Z has rotation
+    HOLD_LEVEL keeps roll and pitch and leaves yaw free IN TRANSIT, so the only
+    motion the tool may add on the way is a spin about base Z. The plan must
+    still end at the goal's yaw. A pure rotation about Z has rotation
     vector (0, 0, theta) for any theta, so that freedom is exact at any
     magnitude — and a spin about the vertical cannot change how far something
     is tipped.
@@ -48,8 +49,9 @@ class PoseConstraint:
 
     It PRESERVES tilt rather than creating level. roll/pitch are pinned at the
     held values, so a gripper that starts 20 degrees off stays 20 degrees off
-    for the whole motion. "Level" means "as level as you already are", which is
-    why the planner derives the held orientation from the START.
+    for the whole motion. "Level" means "as level as you already are". The
+    held values are the GOAL's; the planner refuses a start that disagrees
+    with them, which is what makes the two the same.
 
     It reads "level with the world" as "level with base Z". True while the arm
     is mounted level, and silently false the moment it is not: on a tilted
