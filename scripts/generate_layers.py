@@ -441,21 +441,38 @@ def keep_out_spheres(data):
     base_link's spheres never move. shoulder_link's turn about the joint_1
     axis, so the ones ON that axis stay put too; one off it is refused, since
     it sweeps a ring this keep-out would not cover. Radii include the robot
-    config's collision_sphere_buffer, as cuRobo's do.
+    config's collision_sphere_buffer, as cuRobo's do. A sphere that is not
+    finite, in the config or through shoulder_link's origin, is refused too.
     """
     keep_out = data["keep_out"]
     path = PACKAGED_CONFIG_DIR / keep_out["robot_config"]
     with open(path, encoding="utf-8") as f:
         kinematics = yaml.safe_load(f)["robot_cfg"]["kinematics"]
     buffer = float(kinematics["collision_sphere_buffer"])
-    spheres = [
-        (tuple(float(v) for v in s["center"]), float(s["radius"]) + buffer, "base_link")
-        for s in kinematics["collision_spheres"]["base_link"]
-    ]
+
+    def listed(link):
+        """The link's spheres in its own frame: (centre, radius with the buffer)."""
+        for index, s in enumerate(kinematics["collision_spheres"][link]):
+            c = [float(v) for v in s["center"]]
+            radius = float(s["radius"]) + buffer
+            # A NaN compares false with everything, so min() and max() pass
+            # over it: the sphere would drop out of the person's column and of
+            # every clearance.
+            if not all(math.isfinite(v) for v in (*c, radius)):
+                raise ValueError(
+                    "%s: %s sphere %d is not finite: center %s, radius %s, buffer %s"
+                    % (path, link, index, c, s["radius"], buffer)
+                )
+            yield c, radius
+
+    spheres = [(tuple(c), radius, "base_link") for c, radius in listed("base_link")]
     origin = keep_out["shoulder_link_origin"]
+    # ... and so would every shoulder_link sphere, placed by a pose that is
+    # not finite.
+    if not all(math.isfinite(v) for v in (*origin["xyz"], *origin["rpy"])):
+        raise ValueError("keep_out shoulder_link_origin %s is not finite" % origin)
     pose = _transform(origin["xyz"], origin["rpy"])
-    for s in kinematics["collision_spheres"]["shoulder_link"]:
-        c = [float(v) for v in s["center"]]
+    for c, radius in listed("shoulder_link"):
         if c[0] != 0.0 or c[1] != 0.0:
             raise ValueError(
                 "%s: the shoulder_link sphere at %s is off the joint_1 axis, so it"
@@ -464,7 +481,7 @@ def keep_out_spheres(data):
         centre = tuple(
             sum(pose[i][k] * c[k] for k in range(3)) + pose[i][3] for i in range(3)
         )
-        spheres.append((centre, float(s["radius"]) + buffer, "shoulder_link"))
+        spheres.append((centre, radius, "shoulder_link"))
     return spheres
 
 
@@ -473,12 +490,15 @@ def clearance(box, spheres, pad):
 
     The least of (distance from a sphere's centre to the padded box) minus its
     radius; a centre inside the box counts as minus its depth to the nearest
-    face.
+    face. NaN if a sphere is not a number, which no gate passes.
     """
     lo = [v * TICK - pad for v in box[0]]
     hi = [v * TICK + pad for v in box[1]]
     least = math.inf
     for centre, radius, _ in spheres:
+        # min() and max() pass over a NaN: the sphere would count for nothing.
+        if any(math.isnan(v) for v in (*centre, radius)):
+            return math.nan
         gaps = [min(max(c, a), b) - c for c, a, b in zip(centre, lo, hi)]
         depth = min(min(c - a, b - c) for c, a, b in zip(centre, lo, hi))
         distance = -depth if depth > 0 else math.sqrt(sum(g * g for g in gaps))
@@ -612,6 +632,17 @@ def _person_segments(data):
     person = data["person"]
     size = {key: row["inches"] * INCH for key, row in person["ansur_p95_in"].items()}
     seat, m = person["seat"], person["margin_m"]
+    # A size that is not positive, or a negative margin, shrinks a segment and
+    # may leave it with volume, which is all the gate on the boxes looks at.
+    # "not >": a NaN is refused too, which a max() below would pass over.
+    for key, row in person["ansur_p95_in"].items():
+        if not row["inches"] > 0:
+            raise ValueError(
+                "person ansur_p95_in %s: size must be positive, got %s inches"
+                % (key, row["inches"])
+            )
+    if not m >= 0:
+        raise ValueError("person margin_m must not be negative, got %s" % m)
     pan, centre = seat["pan_top_z"], seat["centreline_y"]
     # The backrest face is somewhere in this range. The chest, the knees and
     # the feet take its front end and the back of the knees its rear end, so
@@ -880,6 +911,12 @@ def generate(data, urdf_bytes, perturb=0.0):
             "grid_m %s is not supported: the layer files are printed on a %s m"
             " grid" % (data["grid_m"], TICK)
         )
+    # Below zero it would shrink every box before its clearance is measured,
+    # and the column carved out of the person. "not >=": a NaN is refused too.
+    if not data["padding_assumed_m"] >= 0:
+        raise ValueError(
+            "padding_assumed_m must not be negative, got %s" % data["padding_assumed_m"]
+        )
     mount = data["mount"]["arm_base_in_mebot"]
     if any(mount["rpy_deg"]):
         raise ValueError(
@@ -907,8 +944,9 @@ def generate(data, urdf_bytes, perturb=0.0):
     }
     pad, gate = data["padding_assumed_m"], data["keep_out"]["min_clearance_m"]
     for name, layer in result.items():
-        # The person's and the floor's sizes are data: a negative one turns a
-        # box inside out, and a zero leaves it flat.
+        # The seat's anchors and the floor's sizes are data: a backrest whose
+        # rear is in front of the chest, or a negative thickness, turns a box
+        # inside out, and a zero leaves it flat.
         for box in layer["boxes"]:
             dims = [hi - lo for lo, hi in zip(*box["box"])]
             if min(dims) <= 0:

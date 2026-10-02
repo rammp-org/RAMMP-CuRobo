@@ -138,8 +138,10 @@ def _joint(name, kind, parent, child, xyz=None, rpy=None, extra=""):
     return '<joint name="%s" type="%s">%s</joint>' % (name, kind, body)
 
 
-def _limit(lower, upper):
-    return '<limit lower="%s" upper="%s" effort="1" velocity="1"/>' % (lower, upper)
+def _limit(lower=None, upper=None):
+    given = [(k, v) for k, v in (("lower", lower), ("upper", upper)) if v is not None]
+    ends = "".join(' %s="%s"' % kv for kv in given)
+    return '<limit%s effort="1" velocity="1"/>' % ends
 
 
 def _urdf(*elements):
@@ -167,7 +169,11 @@ def _box_lines(*rows):
 
 
 def _clone(repo, path, content):
-    """A git repository holding `content` at `path`: (repo, commit)."""
+    """A git repository holding `content` at `path` in `commit`: (repo, commit).
+
+    The clone has moved on since, as a developer's will have: at HEAD the file
+    holds other bytes.
+    """
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     # the user's git config (hooks, signing, autocrlf) must not shape the blob
     env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull)
@@ -183,7 +189,10 @@ def _clone(repo, path, content):
     git("init", "-q")
     git("add", path)
     git("commit", "-q", "-m", "model")
-    return repo, git("rev-parse", "HEAD")
+    commit = git("rev-parse", "HEAD")
+    (repo / path).write_bytes(content + b"<!-- edited since -->\n")
+    git("commit", "-q", "-a", "-m", "model, edited")
+    return repo, commit
 
 
 # ------------------------------------------------------------------------ FK
@@ -371,6 +380,7 @@ def test_unsupported_input_is_refused(data, tmp_path, monkeypatch):
         (_urdf(_link("flat", _box("0.1 0 0.1"))), ["flat"]),
         (_urdf(_link("inverted", _box("0.1 -0.1 0.1"))), ["inverted"]),
         (_urdf(_link("short", _box("0.1 0.1"))), ["short"]),
+        (_urdf(_link("worded", _box("0.1 wide 0.1"))), ["worded"]),
         (_urdf(_link("unsized", _shape("<box/>"))), ["unsized"]),
         (_urdf(_link("thin", _cylinder("0", "0.1"))), ["thin"]),
         (_urdf(_link("endless", _cylinder("0.1", "inf"))), ["endless"]),
@@ -393,6 +403,11 @@ def test_unsupported_input_is_refused(data, tmp_path, monkeypatch):
         (
             _urdf(_link("left", CUBE), _link("right", CUBE)),
             ["left", "right", "one root"],
+        ),
+        # a ring that is the whole URDF: no link is left to be the root
+        (
+            pair(_joint("ab", "fixed", "a", "b") + _joint("ba", "fixed", "b", "a")),
+            ["one root", "none"],
         ),
         (_urdf(_link("twin", CUBE), _link("twin", CUBE)), ["twin"]),
         (_urdf("<link>%s</link>" % CUBE), ["unnamed"]),
@@ -421,6 +436,7 @@ def test_unsupported_input_is_refused(data, tmp_path, monkeypatch):
         # names that cannot be written as a layer's box names
         (_urdf(_link("a, b", CUBE)), ["a, b"]),
         (_urdf(_link("null", CUBE)), ["null"]),
+        (_urdf(_link("wheel[1]", CUBE)), ["wheel[1]"]),
         (_urdf(_link("x/y", CUBE)), ["x/y"]),
         (
             _urdf(
@@ -439,11 +455,19 @@ def test_unsupported_input_is_refused(data, tmp_path, monkeypatch):
         for part in named:
             assert part in str(caught.value), (named, str(caught.value))
 
-    # A rotated mount: the boxes are axis-aligned in base_link.
-    rotated = _inputs()
-    rotated["mount"]["arm_base_in_mebot"]["rpy_deg"] = [0, 0, 90]
-    with pytest.raises(ValueError, match="rpy_deg"):
-        _generate(rotated, FAR_BOX)
+    # A limit that leaves one end out has that end at 0, URDF's default: zero
+    # is inside it, and the joint is held there like any other.
+    for ends in ({"lower": -0.4}, {"upper": 0.4}):
+        hinge = _joint("hinge", "revolute", "a", "b", extra=_limit(**ends))
+        assert len(gen.urdf_primitives(pair(hinge), [0.0, 0.0, 0.0])) == 2
+
+    # A rotated mount, about any axis and either way: the boxes are
+    # axis-aligned in base_link.
+    for rpy_deg in ([90, 0, 0], [0, 90, 0], [0, 0, 90], [0, -0.5, 0]):
+        rotated = _inputs()
+        rotated["mount"]["arm_base_in_mebot"]["rpy_deg"] = rpy_deg
+        with pytest.raises(ValueError, match="rpy_deg"):
+            _generate(rotated, FAR_BOX)
 
     # A grid the printed decimals do not match.
     coarse = _inputs()
@@ -451,16 +475,44 @@ def test_unsupported_input_is_refused(data, tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="grid_m"):
         _generate(coarse, FAR_BOX)
 
-    # Sizes that would write a box without volume, which cuRobo never sees: a
-    # floor with no thickness, a torso turned inside out.
+    # Data that would write a box without volume, which cuRobo never sees: a
+    # floor with no thickness, a torso turned inside out by a backrest whose
+    # rear is in front of the chest.
     flat = _inputs()
     flat["floor"]["thickness_m"] = 0.0
     with pytest.raises(ValueError, match="layer floor: box 'floor'"):
         _generate(flat, FAR_BOX)
-    headless = _inputs()
-    headless["person"]["ansur_p95_in"]["sitting_height"]["inches"] = -40.0
+    inverted = _inputs()
+    inverted["person"]["seat"]["backrest_rear_x"] = 1.0
     with pytest.raises(ValueError, match="layer person: box 'torso_head'"):
-        _generate(headless, FAR_BOX)
+        _generate(inverted, FAR_BOX)
+
+    # Data no gate on the boxes can see, because the boxes keep their volume:
+    # a body size that is not positive (a foot of -11.54 in puts the legs'
+    # front face 0.59 m back) or not a number (a hand breadth drops out of a
+    # max(), and the lap's top by 0.18 m) or a margin below zero under-sizes
+    # the person, and a padding below zero measures every clearance from a
+    # shrunken box.
+    sizes = [(key, -inches) for key, inches in OCCUPANT_IN.items()]
+    for key, inches in sizes + [("hand_breadth", 0.0), ("hand_breadth", math.nan)]:
+        shrunk = _inputs()
+        shrunk["person"]["ansur_p95_in"][key]["inches"] = inches
+        with pytest.raises(ValueError, match="ansur_p95_in %s: " % key):
+            _generate(shrunk, FAR_BOX)
+    for below in (-0.01, math.nan):
+        thin = _inputs()
+        thin["person"]["margin_m"] = below
+        with pytest.raises(ValueError, match="person margin_m"):
+            _generate(thin, FAR_BOX)
+        shrinking = _inputs()
+        shrinking["padding_assumed_m"] = below
+        with pytest.raises(ValueError, match="padding_assumed_m"):
+            _generate(shrinking, FAR_BOX)
+    # Zero is a choice, though: the occupant as tabulated, under a planner
+    # that does not pad.
+    exact = _inputs()
+    exact["person"]["margin_m"] = exact["padding_assumed_m"] = 0.0
+    _generate(exact, FAR_BOX)
 
     # A budget or a gate that is not a number holds nothing back.
     for block, key in (
@@ -503,6 +555,35 @@ def test_unsupported_input_is_refused(data, tmp_path, monkeypatch):
     ):
         assert part in str(caught.value)
 
+    # A fixed sphere that is not finite, in the robot config or through the
+    # origin that places shoulder_link: min() and max() pass over a NaN, so
+    # the sphere would drop out of the keep-out without a word, and the layers
+    # be carved and gated without it.
+    robot = tmp_path / "robot.yaml"
+    packaged = (PACKAGED_CONFIG_DIR / data["keep_out"]["robot_config"]).read_text()
+    for link, index, key, value in (
+        ("base_link", 0, "radius", math.nan),
+        ("base_link", 1, "center", [math.nan, 0.0, 0.125]),
+        ("shoulder_link", 1, "radius", math.inf),
+        ("shoulder_link", 2, "radius", math.nan),
+        ("shoulder_link", 2, "center", [0.0, 0.0, math.nan]),
+    ):
+        config = yaml.safe_load(packaged)
+        spheres = config["robot_cfg"]["kinematics"]["collision_spheres"]
+        spheres[link][index][key] = value
+        robot.write_text(yaml.safe_dump(config))
+        lost = _inputs()
+        lost["keep_out"]["robot_config"] = str(robot)
+        with pytest.raises(ValueError) as caught:
+            _generate(lost, FAR_BOX)
+        for part in (str(robot), "%s sphere %d" % (link, index)):
+            assert part in str(caught.value), (part, str(caught.value))
+    for key in ("xyz", "rpy"):
+        lost = _inputs()
+        lost["keep_out"]["shoulder_link_origin"][key][X] = math.nan
+        with pytest.raises(ValueError, match="shoulder_link_origin"):
+            _generate(lost, FAR_BOX)
+
     # A shoulder sphere off the joint_1 axis, in x or in y, moves with
     # joint_1: it is not part of the fixed column, and treating it as fixed
     # would be wrong.
@@ -512,7 +593,6 @@ def test_unsupported_input_is_refused(data, tmp_path, monkeypatch):
             "shoulder_link": [{"center": off_axis, "radius": 0.07}],
         }
         kinematics = {"collision_sphere_buffer": 0.005, "collision_spheres": spheres}
-        robot = tmp_path / "robot.yaml"
         robot.write_text(yaml.safe_dump({"robot_cfg": {"kinematics": kinematics}}))
         data["keep_out"]["robot_config"] = str(robot)
         with pytest.raises(ValueError, match="shoulder_link"):
@@ -683,7 +763,7 @@ def _prim(name, lo, hi):
     return {"name": name, "box": (tuple(lo), tuple(hi))}
 
 
-def test_merge_meets_the_budget_and_never_touches_the_keep_out(data):
+def test_merge_meets_the_budget_and_never_touches_the_keep_out(data, monkeypatch):
     sphere = [((0.0, 0.0, 0.0), 0.05, "base_link")]
     pad, margin = 0.02, 0.005
 
@@ -695,6 +775,17 @@ def test_merge_meets_the_budget_and_never_touches_the_keep_out(data):
     # a centre inside the box counts as minus the depth to the nearest face
     around = ((-1000, -1000, -1000), (1000, 1000, 3000))
     assert gen.clearance(around, sphere, 0.02) == pytest.approx(-0.12 - 0.05)
+    # A sphere that is not a number makes the answer one too, wherever it is
+    # in the list: a gate passes no NaN, and min() would pass over this one.
+    for centre, radius in (
+        ((math.nan, 0.0, 0.0), 0.05),
+        ((0.0, 0.0, math.nan), 0.05),
+        ((0.0, 0.0, 0.0), math.nan),
+    ):
+        lost = [(centre, radius, "base_link")]
+        for box in (face_on, around):
+            for spheres in (lost, lost + sphere, sphere + lost):
+                assert math.isnan(gen.clearance(box, spheres, 0.02))
 
     # Boxes in ticks along x (0.1 mm): a, c, d in front of the sphere, b behind
     # it, e inside a. Any box holding b and another crosses the sphere.
@@ -770,6 +861,23 @@ def test_merge_meets_the_budget_and_never_touches_the_keep_out(data):
     (both,) = gen.merge(beside(751), 1, sphere, pad, margin)
     assert both["box"] == ((751, -3000, -500), (1000, 3000, 500))
 
+    # Off a face, padding and margin do not add up: padding grows the box on
+    # every axis, and the margin is measured from the grown box. The box of
+    # m+n turns an edge to the sphere, as far out in x as in y: padded, it
+    # would clear the sphere by 4.9 mm at 0.0588 and does by 5.2 mm at 0.0590.
+    # (5 mm of padding under a 20 mm margin would draw that line at 0.0545,
+    # and 25 mm of padding under none at 0.0604.)
+    def edge_on(xy):
+        return [
+            _prim("m", (xy, 2000, -500), (1000, 3000, 500)),
+            _prim("n", (2000, xy, -500), (3000, 1000, 500)),
+        ]
+
+    with pytest.raises(ValueError, match="keep-out"):
+        gen.merge(edge_on(588), 1, sphere, pad, margin)
+    (both,) = gen.merge(edge_on(590), 1, sphere, pad, margin)
+    assert both["box"] == ((590, 590, -500), (3000, 3000, 500))
+
     # A pair costs the empty volume its bounding box adds; what the two cover
     # together counts once. u and v make an L (they share a corner) and w lies
     # beside u: counted twice, the corner would make closing the L (u+v) look
@@ -830,7 +938,16 @@ def test_merge_meets_the_budget_and_never_touches_the_keep_out(data):
     cubes = [_box("0.1 0.1 0.1", at) for at in row + ("3.505 -0.265 -1.5",)]
     crowded = _inputs()
     crowded["platform"] = {"max_boxes": 3, "max_over_pct": 5000.0}
-    platform = _generate(crowded, _urdf(_link("chair", *cubes)))["platform"]
+    handed = []
+    sound = gen.merge
+
+    def recorded(primitives, *budget_and_keep_out):
+        handed.append(budget_and_keep_out)
+        return sound(primitives, *budget_and_keep_out)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(gen, "merge", recorded)
+        platform = _generate(crowded, _urdf(_link("chair", *cubes)))["platform"]
     (lo_a, hi_a), (lo_b, hi_b) = (p["box"] for p in platform["primitives"][:2])
     around = tuple(map(min, lo_a, lo_b)), tuple(map(max, hi_a, hi_b))
     turned_down = gen.clearance(around, gen.keep_out_spheres(crowded), 0.02)
@@ -840,6 +957,9 @@ def test_merge_meets_the_budget_and_never_touches_the_keep_out(data):
         ["chair_1", "chair_2"],
         ["chair_3"],
     ]
+    # That gap is face-on, where padding and margin count only as their sum:
+    # which of the two is which is read off the call.
+    assert handed == [(3, gen.keep_out_spheres(crowded), 0.02, 0.005)]
 
     # A primitive that is itself inside the arm's column cannot be merged
     # away from it: the layer is refused.
