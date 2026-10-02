@@ -7,7 +7,6 @@ Actions (node name rammp_curobo):
     /rammp_curobo/plan_to_joints      rammp_curobo_interfaces/PlanToJoints
 Services:
     /rammp_curobo/set_world           rammp_curobo_interfaces/srv/SetWorld
-    /rammp_curobo/check_orientation_hold  rammp_curobo_interfaces/srv/CheckOrientationHold
 
 World in, plan out. This node NEVER interacts with the arm: it holds no
 driver, no controller client, no gripper client, and no /joint_states
@@ -33,8 +32,7 @@ from rclpy.node import Node
 
 from rammp_curobo import PoseConstraint, ViaPoint
 from rammp_curobo_interfaces.action import PlanToJoints, PlanToPose
-from rammp_curobo_interfaces.msg import OrientationHold
-from rammp_curobo_interfaces.srv import CheckOrientationHold, SetWorld
+from rammp_curobo_interfaces.srv import SetWorld
 from rammp_curobo_ros.conversions import trajectory_to_msg
 
 
@@ -68,50 +66,36 @@ def check_start_joints(start_joints, joint_names):
 
 
 _HOLD_MODES = (
-    OrientationHold.HOLD_NONE,
-    OrientationHold.HOLD_LEVEL,
-    OrientationHold.HOLD_FIXED,
+    PlanToPose.Goal.HOLD_NONE,
+    PlanToPose.Goal.HOLD_LEVEL,
+    PlanToPose.Goal.HOLD_FIXED,
 )
 
 
-def constraint_from_goal(request):
-    """(PoseConstraint, ViaPoint, why_rejected) from a PlanToPose goal, or
-    from a CheckOrientationHold request.
+def constraint_from_goal(goal):
+    """(PoseConstraint, ViaPoint, why_rejected) from a PlanToPose goal.
 
-    A request that sets neither message maps to "unconstrained", which is also
-    what an older client's absent fields deserialise to. The service has no
-    `approach_via` field at all (it only asks about the hold), so that field is
-    read defensively and defaults to an inert ViaPoint — one mapper serves both
-    the action goal and the service request.
+    A goal that sets neither field maps to "unconstrained", which is also what
+    an older client's absent fields deserialise to.
 
     An out-of-range mode is REFUSED rather than coerced to HOLD_NONE: silently
     treating an unknown value as "no constraint" would hand back an
     unconstrained trajectory to a caller who asked for a held one.
     """
-    hold = request.hold
-    if hold.hold not in _HOLD_MODES:
+    if goal.hold not in _HOLD_MODES:
         return (
             PoseConstraint(),
             ViaPoint(),
             "unknown hold %d (expected HOLD_NONE=%d, HOLD_LEVEL=%d or "
-            "HOLD_FIXED=%d)"
-            % (
-                hold.hold,
-                OrientationHold.HOLD_NONE,
-                OrientationHold.HOLD_LEVEL,
-                OrientationHold.HOLD_FIXED,
-            ),
+            "HOLD_FIXED=%d)" % ((goal.hold,) + _HOLD_MODES),
         )
-    constraint = PoseConstraint(hold=int(hold.hold))
-    approach = getattr(request, "approach_via", None)
-    if approach is None:
-        via = ViaPoint()
-    else:
-        via = ViaPoint(
-            offset_m=float(approach.offset),
-            linear_axis=int(approach.axis),
-            tstep_fraction=float(approach.at_fraction),
-        )
+    constraint = PoseConstraint(hold=int(goal.hold))
+    approach = goal.approach_via
+    via = ViaPoint(
+        offset_m=float(approach.offset),
+        linear_axis=int(approach.axis),
+        tstep_fraction=float(approach.at_fraction),
+    )
     try:
         # PoseConstraint.validate() is a permanent no-op today — only
         # ViaPoint.validate() can raise. It's still called so this keeps
@@ -121,24 +105,6 @@ def constraint_from_goal(request):
     except ValueError as exc:
         return constraint, via, str(exc)
     return constraint, via, None
-
-
-def check_reply(ok, reason, deviation_rad, limit_rad):
-    """(ok, reason) plus the measured numbers -> the service reply fields.
-
-    The numbers are PASSED IN, not parsed back out of `reason`. This used to
-    regex its own error string for an axis name and the first two numerals in
-    it, which is fragile by construction and silently wrong the moment the
-    wording changes -- as it did when per-axis holds became two modes and the
-    units became degrees.
-    """
-    return {
-        "satisfied": bool(ok),
-        "message": reason or "",
-        "deviation_deg": math.degrees(deviation_rad),
-        "limit_deg": math.degrees(limit_rad),
-        "marginal": bool(ok) and bool(reason) and reason.startswith("marginal"),
-    }
 
 
 class RammpCuroboNode(Node):
@@ -195,12 +161,6 @@ class RammpCuroboNode(Node):
         )
         self.create_service(
             SetWorld, "~/set_world", self._set_world_cb, callback_group=self._cb
-        )
-        self.create_service(
-            CheckOrientationHold,
-            "~/check_orientation_hold",
-            self._check_orientation_hold_cb,
-            callback_group=self._cb,
         )
 
         # Real-arm misconfiguration tripwire: without sim time this node is
@@ -328,52 +288,6 @@ class RammpCuroboNode(Node):
                 response.message = str(exc)
         return response
 
-    def _check_orientation_hold_cb(self, request, response):
-        """FK and arithmetic only — this never plans. But it reaches into
-        cuRobo for forward kinematics on the same preallocated CUDA buffers
-        that `plan_single` uses, so it still serialises against a plan in
-        flight via the non-blocking plan lock rather than running
-        concurrently with one. Whether concurrent FK-vs-planning access to
-        those buffers would actually be safe on the GPU is an open hardware
-        question we have not verified — so it isn't attempted."""
-        if not self._plan_lock.acquire(blocking=False):
-            response.satisfied = False
-            response.message = "planner busy — a plan is in flight; retry"
-            return response
-        try:
-            why = check_start_joints(request.start_joints, self.planner.joint_names)
-            if why is not None:
-                response.satisfied = False
-                response.message = why
-                return response
-            pos = [
-                request.target.position.x,
-                request.target.position.y,
-                request.target.position.z,
-            ]
-            quat = [
-                request.target.orientation.x,
-                request.target.orientation.y,
-                request.target.orientation.z,
-                request.target.orientation.w,
-            ]
-            constraint, _, bad = constraint_from_goal(request)
-            if bad is not None:
-                response.satisfied = False
-                response.message = bad
-                return response
-            q_start = [float(v) for v in request.start_joints]
-            ok, reason = self.planner.constraint_satisfied_at_start(
-                q_start, pos, quat, constraint
-            )
-            dev, lim = self.planner.hold_deviation_at_start(
-                q_start, pos, quat, constraint
-            )
-            for k, v in check_reply(ok, reason, dev, lim).items():
-                setattr(response, k, v)
-            return response
-        finally:
-            self._plan_lock.release()
 
 
 def main(args=None):

@@ -520,27 +520,6 @@ class CuRoboPlanner:
             )
         return True, None
 
-    def hold_deviation_at_start(
-        self, start, position, quaternion, constraint, quat_order="xyzw"
-    ):
-        """(deviation_rad, limit_rad) behind constraint_satisfied_at_start.
-
-        Exists so a caller reporting the numbers does not have to scrape them
-        back out of the prose message. The ROS service used to regex its own
-        error string for them, which quietly broke the moment the wording
-        changed.
-        """
-        if constraint is None or not constraint.is_active():
-            return 0.0, self.constraint_tolerance_rad
-        goal_quat = (
-            geometry.wxyz_to_xyzw(quaternion)
-            if quat_order == "wxyz"
-            else [float(v) for v in quaternion]
-        )
-        _pos, cur_quat = self.fk(start, quat_order="xyzw")
-        err, _what = CuRoboPlanner._hold_deviation(cur_quat, goal_quat, constraint)
-        return err, self.constraint_tolerance_rad
-
     @staticmethod
     def _hold_deviation_batch(a_wxyz, b_xyzw, constraint):
         """Vectorised _hold_deviation: (N,) radians for (N,4) wxyz against one
