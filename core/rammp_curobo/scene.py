@@ -152,15 +152,44 @@ class _StrictLoader(yaml.SafeLoader):
     keeps the last one, so a second `obstacles:` in a layer file would
     silently drop the boxes of the first."""
 
+    def __init__(self, stream):
+        super().__init__(stream)
+        self._checked = set()
+
     def construct_mapping(self, node, deep=False):
+        self._refuse_duplicate_keys(node, deep)
+        return super().construct_mapping(node, deep=deep)
+
+    def _refuse_duplicate_keys(self, node, deep):
+        """Check `node` and every mapping it merges in, each of them once.
+
+        PyYAML resolves `<<` in place: it copies the merged keys into the
+        node, after doing the same to the node of each mapping they come
+        from. A node rewritten like that holds a key that overrides a merged
+        one twice, though it was written once, and it may be rewritten
+        before its mapping is constructed. A mapping written under `<<` and
+        nowhere else is not constructed at all. So each node is checked the
+        first time construction reaches it, by itself or through a merge
+        key: that is before PyYAML rewrites it.
+        """
         # a node that is no mapping, and a key that cannot be hashed (hence
-        # a list, not a set), are PyYAML's to refuse, below
-        pairs = node.value if isinstance(node, yaml.MappingNode) else []
+        # a list, not a set), are PyYAML's to refuse
+        if not isinstance(node, yaml.MappingNode) or node in self._checked:
+            return
+        # before its merge keys are followed: they may lead back to it
+        self._checked.add(node)
         seen = []
-        for key_node, _ in pairs:
+        for key_node, value_node in node.value:
             # `<<` is not a key of this mapping, and a key that overrides
             # one it merges in is not written twice
             if key_node.tag == "tag:yaml.org,2002:merge":
+                merged = (
+                    value_node.value
+                    if isinstance(value_node, yaml.SequenceNode)
+                    else [value_node]
+                )
+                for source in merged:
+                    self._refuse_duplicate_keys(source, deep)
                 continue
             key = self.construct_object(key_node, deep=deep)
             if key in seen:
@@ -169,7 +198,6 @@ class _StrictLoader(yaml.SafeLoader):
                     "%s: duplicate key %r on line %d" % (mark.name, key, mark.line + 1)
                 )
             seen.append(key)
-        return super().construct_mapping(node, deep=deep)
 
 
 _LAYER_KEYS = ("layer", "excludable", "meta", "obstacles")
@@ -230,10 +258,14 @@ def _entries(cls, raw, where, section, check=None):
 
     A malformed entry is a ValueError naming the file and the entry, e.g.
     "<file>: obstacles[3] (table): missing 'dims'": SetWorld replies with
-    the bare message, and a KeyError's is only "'dims'". `check(d, built)`
-    sees each entry first, with the ones built before it, and refuses it
-    the way cls would: a KeyError for a missing key, a ValueError otherwise.
+    the bare message, and a KeyError's is only "'dims'". A section that is
+    not a list is one naming the file and the section: `obstacles:` with
+    every entry commented out is None. `check(d, built)` sees each entry
+    first, with the ones built before it, and refuses it the way cls would:
+    a KeyError for a missing key, a ValueError otherwise.
     """
+    if not isinstance(raw, list):
+        raise ValueError("%s: %r must be a list, got %r" % (where, section, raw))
     built = []
     for i, d in enumerate(raw):
         try:
@@ -242,7 +274,7 @@ def _entries(cls, raw, where, section, check=None):
             if check is not None:
                 check(d, built)
             built.append(cls(d))
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
             name = d.get("name") if isinstance(d, dict) else None
             raise ValueError(
                 "%s: %s[%d]%s: %s"
@@ -266,11 +298,17 @@ def load_layer(path):
     otherwise pass unnoticed and leave a box out or wrong: a key written
     twice, an unknown key (`rpy:` for `rpy_deg:`, a nested `layers:`), two
     boxes of one name, a number that is not one. Every refusal is a
-    ValueError naming the file, the layer and the entry.
+    ValueError naming the file, the layer and the entry. Only YAML that
+    PyYAML itself cannot read stays its yaml.YAMLError, which names the
+    file and the line.
     """
     path = Path(path).resolve()
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.load(f, Loader=_StrictLoader)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.load(f, Loader=_StrictLoader)
+    except UnicodeDecodeError as exc:
+        # its message names no file, and several layers may be listed
+        raise ValueError("%s: not UTF-8: %s" % (path, exc)) from None
     if not isinstance(data, dict):
         raise ValueError(
             "%s: a layer file must be a mapping, got %s" % (path, type(data).__name__)
@@ -312,9 +350,12 @@ def load_layers(refs, relative_to, listed_in):
     directory of the listing file) or the name of a packaged layer. It is
     never looked up in the current directory: the planner can be started
     from anywhere, and a file there that shares a packaged layer's name
-    must not replace that layer. A file listed twice loads once; two files
-    that declare the same layer are refused. `listed_in` names the listing
-    file in the messages.
+    must not replace that layer. For a listing file opened through a
+    symlink, `relative_to` is the link's directory, not its target's: an
+    install made of links (colcon's --symlink-install) then finds the
+    layers a copying install would. A file listed twice loads once; two
+    files that declare the same layer are refused. `listed_in` names the
+    listing file in the messages.
     """
     if not isinstance(refs, list) or not all(isinstance(r, str) for r in refs):
         raise ValueError(
