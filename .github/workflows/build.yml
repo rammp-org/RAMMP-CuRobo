@@ -122,4 +122,9 @@ jobs:
         run: |
           . /opt/ros/humble/setup.sh
           . install/setup.sh
-          python3 -m pytest rammp_curobo_ros/test -q -p no:anyio
+          # core/ on PYTHONPATH: planner_node imports rammp_curobo (lazy
+          # cuRobo/torch, so it imports fine without a GPU), and without it
+          # both test modules skip at import and pytest exits 5 with nothing
+          # collected.
+          PYTHONPATH="$PWD/core${PYTHONPATH:+:$PYTHONPATH}" \
+            python3 -m pytest rammp_curobo_ros/test -q -p no:anyio
