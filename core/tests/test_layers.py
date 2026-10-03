@@ -1939,17 +1939,35 @@ def test_config_layers_reach_every_world_input(tmp_path, monkeypatch):
     planner.update_world("world_mebot.yaml")
     assert planner.world_boxes == whole
 
+    def held():
+        """How many worlds reached cuRobo, and the world the planner says it
+        holds."""
+        return (
+            len(sent),
+            len(loaded),
+            planner.scene,
+            planner.world_boxes,
+            planner.world_summary(),
+        )
+
     # a push with nothing of its own is refused, a list as much as a file: the
-    # chair alone is not a world anyone pushed. A refused push reaches neither
-    # cuRobo nor what the planner says it holds
-    before = (len(sent), len(loaded), planner.scene, planner.world_boxes)
+    # chair alone is not a world anyone pushed. So is one that overflows the
+    # cache beside the chair, and nothing is cut to fit. A refused push reaches
+    # neither cuRobo nor what the planner says it holds
+    before = held()
     for world in ([], Scene("base_link", [], [])):
         with pytest.raises(ValueError) as exc:
             planner.update_world(world)
         assert str(exc.value) == CHAIR_ONLY
+    with pytest.raises(ValueError) as exc:
+        planner.update_world([_box("b%d" % i) for i in range(39)])
+    assert str(exc.value) == (
+        "61 collision boxes > collision_cache_obb=60 (scene 39, platform 16, "
+        "person 6); raise the cache setting in the planner config or shrink a layer"
+    )
     with pytest.raises(ValueError, match="layer 'platform' is not excludable"):
         planner.update_world("world_mebot.yaml", ignore={"platform"})
-    assert (len(sent), len(loaded), planner.scene, planner.world_boxes) == before
+    assert held() == before
 
     # a deployment mounts its own copy of the config (/config/gen3_mebot.yaml),
     # naming the layers the package ships: those are the layers, whichever
