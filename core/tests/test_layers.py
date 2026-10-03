@@ -1,5 +1,7 @@
 """Obstacle layers, offline: no torch, no cuRobo, no ROS, so they run in CI."""
 
+import importlib.util
+import logging
 import math
 import os
 import subprocess
@@ -113,11 +115,102 @@ def _no_gpu(monkeypatch):
         inits.append(warmup)
         planner._motion_gen = types.SimpleNamespace(update_world=loaded.append)
         # the arm's fixed spheres come from cuRobo's FK, which the GPU tests
-        # run; with none, no layer box is refused for reaching into them
+        # run and _curobo_stand_in stands in for; with none, no layer box is
+        # refused for reaching into them
         planner._fixed_spheres = np.empty((0, 4))
 
     monkeypatch.setattr(CuRoboPlanner, "_init_curobo", init_curobo)
     return inits, sent, loaded
+
+
+def _curobo_stand_in(monkeypatch):
+    """Let the planner's own cuRobo code run, _init_curobo included, without
+    cuRobo or a GPU. Stand-in modules take the places of cuRobo, torch and
+    warp, and MotionGen records in `events`, in order, the world it is built
+    with ("built", keys), its warm-up ("warmup",) and each world it loads
+    ("loaded", keys). What only cuRobo computes, a test sets on the returned
+    namespace: `feasible`, the verdict of every constraint check, and
+    `spheres(q)`, FK's collision spheres at controller-order joints q,
+    (n, 4). The joint limits are 3.2 rad either way."""
+    spec = importlib.util.spec_from_file_location(
+        "generate_layers",
+        Path(__file__).resolve().parents[2] / "scripts" / "generate_layers.py",
+    )
+    generator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(generator)
+    keep_out = generator.keep_out_spheres(generator.load_data())
+    fixed = np.array([[*centre, radius] for centre, radius, _ in keep_out])
+    person = load_layer(PACKAGED_CONFIG_DIR / "layer_mebot_person.yaml")
+    x, y, z = next(box.position for box in person.obstacles if box.name == "lap")
+
+    def spheres(q):
+        # the spheres no joint moves, as the layer generator finds them, and
+        # one that joint_1 swings about the base's z axis: at the retract
+        # (joint_1 0) it is at the centre of the person's lap, which the real
+        # arm's wrist reaches into there
+        c, s = math.cos(q[0]), math.sin(q[0])
+        return np.vstack([fixed, [c * x - s * y, s * x + c * y, z, 0.05]])
+
+    stand_in = types.SimpleNamespace(
+        events=[], feasible=True, spheres=spheres, fixed=fixed
+    )
+
+    def from_dict(data):
+        kinds = dict(sphere=[], cylinder=[], capsule=[], mesh=[])
+        return types.SimpleNamespace(data=data, cuboid=list(data["cuboid"]), **kinds)
+
+    class MotionGen:
+        def __init__(self, world):
+            stand_in.events.append(("built", list(world.data["cuboid"])))
+            joints = ["joint_%d" % i for i in range(1, 8)]
+            self.kinematics = types.SimpleNamespace(joint_names=joints)
+
+        def warmup(self, enable_graph):
+            stand_in.events.append(("warmup",))
+
+        def update_world(self, world):
+            stand_in.events.append(("loaded", list(world.data["cuboid"])))
+
+        def check_constraints(self, state):
+            return types.SimpleNamespace(feasible=np.array([stand_in.feasible]))
+
+    def module(name, **attributes):
+        stand_in_module = types.ModuleType(name)
+        stand_in_module.__dict__.update(attributes)
+        monkeypatch.setitem(sys.modules, name, stand_in_module)
+
+    module("torch", tensor=lambda data, device, dtype: np.asarray(data, dtype=float))
+    monkeypatch.setitem(sys.modules, "warp", None)
+    module("curobo.geom.types", WorldConfig=types.SimpleNamespace(from_dict=from_dict))
+    module("curobo.geom.sdf.world", CollisionCheckerType=types.SimpleNamespace(MESH=0))
+    module(
+        "curobo.types.base",
+        TensorDeviceType=lambda: types.SimpleNamespace(device=None, dtype=None),
+    )
+    module("curobo.types.math", Pose=dict)
+    module(
+        "curobo.types.robot",
+        JointState=types.SimpleNamespace(from_position=lambda position, **_: position),
+    )
+    module(
+        "curobo.wrap.reacher.motion_gen",
+        MotionGen=MotionGen,
+        MotionGenConfig=types.SimpleNamespace(
+            load_from_robot_config=lambda robot, world, **_: world
+        ),
+        MotionGenPlanConfig=dict,
+    )
+    limits = {"position": np.array([[-3.2] * 7, [3.2] * 7]), "velocity": np.ones(7)}
+    monkeypatch.setattr(CuRoboPlanner, "joint_limits", lambda planner: limits)
+    monkeypatch.setattr(
+        CuRoboPlanner, "_spheres", lambda planner, q: stand_in.spheres(q)
+    )
+    return stand_in
+
+
+def _failed(status):
+    """A cuRobo plan result that failed with `status`."""
+    return types.SimpleNamespace(success=np.array(False), status=status)
 
 
 def test_misplaced_layers_key_is_refused(tmp_path):
@@ -1864,3 +1957,261 @@ def test_config_layers_reach_every_world_input(tmp_path, monkeypatch):
         "floor 1); raise the cache setting in the planner config or shrink a layer"
     )
     assert inits == [True, True]
+
+
+def test_the_chair_warms_up_in_its_scene_and_then_loads_its_layers(
+    tmp_path, monkeypatch, caplog
+):
+    caplog.set_level(logging.INFO, logger="rammp_curobo")
+    stand_in = _curobo_stand_in(monkeypatch)
+    # as on the chair, cuRobo finds the retract infeasible
+    stand_in.feasible = False
+    planner = CuRoboPlanner.from_config("gen3_mebot.yaml")
+    whole = [box["name"] for box in planner.world_boxes]
+    assert Counter(box["layer"] for box in planner.world_boxes) == {
+        "platform": 16,
+        "person": 6,
+        "floor": 1,
+    }
+    # warm-up plans from the retract, which is in the person's lap: MotionGen
+    # is built in the scene's own world, the floor, warms up there, and only
+    # then loads the world the planner says it holds
+    assert stand_in.events == [
+        ("built", ["floor/floor"]),
+        ("warmup",),
+        ("loaded", whole),
+    ]
+    assert planner._warm_boxes == 1
+    messages = [(r.levelno, r.getMessage()) for r in caplog.records]
+    assert (
+        logging.INFO,
+        "warming up in the scene-only world (1 box); config layers load after "
+        "warm-up",
+    ) in messages
+    # the spheres no joint moves are the ones the generator keeps every layer
+    # clear of, and not the one joint_1 swings into the lap
+    assert planner._fixed_spheres.tolist() == stand_in.fixed.tolist()
+    # the retract is cuRobo's IK seed, and the start-up log says why it is no
+    # valid start here: the 5 cm sphere at the lap's centre is in it by its
+    # radius and the half-width to the lap's nearest padded face
+    lap = next(box for box in planner.world_boxes if box["name"] == "person/lap")
+    assert [m for level, m in messages if level == logging.WARNING] == [
+        "the IK seed (retract_config) is not a valid state in this world: "
+        "constraint violation at state; collides with person/lap (%.0f mm) — "
+        "plans still work from valid starts; a chair seed is #20"
+        % (1e3 * (0.05 + min(lap["dims"]) / 2))
+    ]
+
+    # without a warm-up nothing plans before the layers are in, so MotionGen is
+    # built in the whole world
+    text = (PACKAGED_CONFIG_DIR / "gen3_mebot.yaml").read_text(encoding="utf-8")
+    (tmp_path / "cold.yaml").write_text(
+        text + "planner: {warmup: false}\n", encoding="utf-8"
+    )
+    stand_in.events.clear()
+    cold = CuRoboPlanner.from_config(tmp_path / "cold.yaml")
+    assert stand_in.events == [("built", whole)]
+    assert cold._warm_boxes == 23
+
+    # a padding the layers were not generated for grows the person into the
+    # arm's base, where every start state would collide: the planner refuses
+    # to start, before warm-up
+    (tmp_path / "wide.yaml").write_text(
+        text + "planner: {world_padding: 0.03}\n", encoding="utf-8"
+    )
+    stand_in.events.clear()
+    with pytest.raises(ValueError) as exc:
+        CuRoboPlanner.from_config(tmp_path / "wide.yaml")
+    assert str(exc.value) == (
+        "layer box person/torso_head_3 intrudes 4.9 mm into the arm's fixed "
+        "base/shoulder spheres (world_padding 0.030 m): every start state would "
+        "be infeasible; the layers were generated for 0.02 m — regenerate them "
+        "or restore world_padding"
+    )
+    assert stand_in.events == [("built", ["floor/floor"])]
+
+
+def test_a_layer_box_in_the_arms_fixed_spheres_is_refused_and_the_world_kept(
+    tmp_path, monkeypatch
+):
+    stand_in = _curobo_stand_in(monkeypatch)
+    planner = CuRoboPlanner.from_config("gen3_mebot.yaml")
+    (tmp_path / "block.yaml").write_text(
+        "layer: block\nobstacles:\n"
+        "  - {name: over_base, position: [0, 0, 0.2], dims: [0.05, 0.05, 0.05]}\n"
+    )
+    (tmp_path / "scene.yaml").write_text(
+        "obstacles:\n"
+        "  - {name: crate, position: [1.5, 1.5, 0.5], dims: [0.2, 0.2, 0.2]}\n"
+        "layers: [block.yaml]\n"
+    )
+
+    # a layer box over the arm's base would put every start state in
+    # collision: refused, before cuRobo or the planner's record of its world
+    # changes. At the padding the layers were made for, the box is to blame
+    before = (len(stand_in.events), planner.scene, planner.world_boxes)
+    with pytest.raises(ValueError) as exc:
+        planner.update_world(tmp_path / "scene.yaml")
+    assert str(exc.value) == (
+        "layer box block/over_base intrudes 116.4 mm into the arm's fixed "
+        "base/shoulder spheres (world_padding 0.020 m): every start state would "
+        "be infeasible; move or shrink that box, or regenerate its layer"
+    )
+    assert (len(stand_in.events), planner.scene, planner.world_boxes) == before
+    # and below it too: there, restoring the padding would only grow the box
+    text = (PACKAGED_CONFIG_DIR / "gen3_mebot.yaml").read_text(encoding="utf-8")
+    (tmp_path / "narrow.yaml").write_text(
+        text + "planner: {world_padding: 0.01}\n", encoding="utf-8"
+    )
+    narrow = CuRoboPlanner.from_config(tmp_path / "narrow.yaml")
+    with pytest.raises(ValueError) as exc:
+        narrow.update_world(tmp_path / "scene.yaml")
+    assert str(exc.value).endswith(
+        "(world_padding 0.010 m): every start state would be infeasible; move or "
+        "shrink that box, or regenerate its layer"
+    )
+
+    # the same box as the scene's own is cuRobo's to judge, as in v1.0.0
+    planner.update_world(
+        [_box("over_base", position=[0, 0, 0.2], dims=[0.05, 0.05, 0.05])]
+    )
+    assert stand_in.events[-1] == ("loaded", [b["name"] for b in planner.world_boxes])
+    assert "obj_over_base" in stand_in.events[-1][1]
+
+    # and a world cuRobo fails to load is not the world the planner says it
+    # holds
+    def out_of_memory(world):
+        raise RuntimeError("CUDA error: out of memory")
+
+    planner._motion_gen.update_world = out_of_memory
+    before = (planner.scene, planner.world_boxes)
+    with pytest.raises(RuntimeError, match="out of memory"):
+        planner.update_world("world_sim_kitchen.yaml")
+    assert (planner.scene, planner.world_boxes) == before
+
+
+def test_attribution_explains_an_answer_and_never_changes_or_hides_it(
+    tmp_path, monkeypatch
+):
+    stand_in = _curobo_stand_in(monkeypatch)
+    planner = CuRoboPlanner.from_config("gen3_mebot.yaml")
+    # a prop and a layer box, far from the chair, so that every depth below
+    # is plain arithmetic: padded, each box reaches 0.12 m from its centre
+    (tmp_path / "block.yaml").write_text(
+        "layer: block\nobstacles:\n"
+        "  - {name: wall, position: [1, 0.27, 0.5], dims: [0.2, 0.2, 0.2]}\n"
+    )
+    (tmp_path / "scene.yaml").write_text(
+        "objects:\n"
+        "  - {name: crate, position: [1, 0, 0.5], dims: [0.2, 0.2, 0.2]}\n"
+        "layers: [block.yaml]\n"
+    )
+    planner.update_world(tmp_path / "scene.yaml")
+    world = (
+        " [world: 24 boxes: scene 1 | config layers: platform 16, person 6 "
+        "| scene layers: block 1]"
+    )
+    # a 3 cm sphere 10 cm from the crate's centre reaches 50 mm in, and one at
+    # the wall's centre 150 mm: the deeper is named first, though the world
+    # lists the crate first
+    reaching = np.array([[1.1, 0, 0.5, 0.03], [1, 0.27, 0.5, 0.03]])
+    hits = "block/wall (150 mm), obj_crate (50 mm)"
+    # an infinite joint value gives spheres FK cannot place
+    lost = np.array([[math.nan, 0.0, 0.0, 0.03]])
+    unplaced = "spheres must be finite, got [nan, 0.0, 0.0, 0.03]"
+    q = [0.0] * 7
+
+    # an infeasible state is named by the boxes it reaches into
+    stand_in.spheres = lambda q: reaching
+    stand_in.feasible = False
+    assert planner.check_state_valid(q) == (
+        False,
+        "constraint violation at state; collides with " + hits,
+    )
+    # the names only explain cuRobo's verdict: a state it finds feasible is
+    # valid whatever the boxes, and one it does not stays infeasible when
+    # there is nothing to name it by, without raising
+    stand_in.feasible = True
+    assert planner.check_state_valid(q) == (True, "")
+    stand_in.feasible = False
+    stand_in.spheres = lambda q: lost
+    assert planner.check_state_valid(q) == (
+        False,
+        "constraint violation at state (attribution unavailable: %s)" % unplaced,
+    )
+
+    def note(status, **kw):
+        """What a failed plan's error says after cuRobo's status explained."""
+        res = planner._finish(_failed(status), 0.0, **kw)
+        explained = planner._explain(status)
+        assert (res.success, res.status) == (False, status)
+        assert res.error.startswith(explained), res.error
+        return res.error[len(explained) :]
+
+    # a failed plan's error adds what the world has to do with it: the boxes
+    # its start reaches into, when cuRobo refused the start, ...
+    stand_in.spheres = lambda q: reaching
+    refused = "MotionGenStatus.INVALID_START_STATE_WORLD_COLLISION"
+    assert note(refused, start=q) == " [start collides with %s]%s" % (hits, world)
+    stand_in.spheres = lambda q: np.array([[0.0, 0.0, 2.0, 0.03]])
+    assert note(refused, start=q) == (
+        " [start: no world box penetrated — self-collision or joint limits]" + world
+    )
+    # ... the boxes a joint goal reaches into, ...
+    stand_in.spheres = lambda q: reaching
+    trajopt = "MotionGenStatus.TRAJOPT_FAIL"
+    assert note(trajopt, start=q, q_goal=q) == (
+        " [goal collides with %s]%s" % (hits, world)
+    )
+    # ... the boxes around a pose goal's tool point, when no arm could hold it
+    # there, ...
+    ik = "MotionGenStatus.IK_FAIL"
+    assert note(ik, start=q, goal_point=[1, 0.11, 0.5]) == (
+        " [goal point inside obj_crate; within 5 cm of block/wall] (heuristic: "
+        "tool point only)" + world
+    )
+    # ... and, always, where the world's boxes come from
+    assert note(trajopt, start=q) == world
+    # it never raises: a failure is reported, whatever its explanation
+    stand_in.spheres = lambda q: lost
+    res = planner._finish(None, 0.0, start=q, q_goal=q)
+    assert (res.success, res.status, res.error) == (
+        False,
+        "no result",
+        "planning failed (no result) (attribution unavailable: %s)" % unplaced,
+    )
+
+
+def test_auto_logs_the_joint_space_failure_it_falls_back_from(monkeypatch, caplog):
+    stand_in = _curobo_stand_in(monkeypatch)
+    planner = CuRoboPlanner.from_config("gen3_mebot.yaml")
+    planner.update_world([_box("crate", position=[1, 0, 0.5], dims=[0.2, 0.2, 0.2])])
+    world = (
+        " [world: 23 boxes: scene 1 | config layers: platform 16, person 6 "
+        "| scene layers: none]"
+    )
+    # the joint goal puts a 3 cm sphere at the crate's centre, 150 mm into it,
+    # and its tool point there too: cuRobo plans neither to the joints nor to
+    # their pose
+    stand_in.spheres = lambda q: np.array([[1, 0, 0.5, 0.03]])
+    planner.fk = lambda q, quat_order: ([1, 0, 0.5], [1, 0, 0, 0])
+    trajopt, ik = "MotionGenStatus.TRAJOPT_FAIL", "MotionGenStatus.IK_FAIL"
+    planner._motion_gen.plan_single_js = lambda *_: _failed(trajopt)
+    planner._motion_gen.plan_single = lambda *_: _failed(ik)
+
+    caplog.clear()
+    res = planner.plan_to_joints([0.1] * 7, start=[0.0] * 7)
+    # 'auto', the default, returns the fallback's failure, which knows only the
+    # pose: the joint-space failure, which names the boxes the joint goal
+    # reaches into, is logged
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == [
+        "plan_single_js failed (%s: %s [goal collides with obj_crate (150 mm)]%s) "
+        "— falling back to FK-pose planning"
+        % (trajopt, planner._explain(trajopt), world)
+    ]
+    assert (res.status, res.error) == (
+        ik,
+        planner._explain(ik)
+        + " [goal point inside obj_crate] (heuristic: tool point only)"
+        + world,
+    )

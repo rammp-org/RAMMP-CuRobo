@@ -234,19 +234,22 @@ class CuRoboPlanner:
         hits = sphere_box_penetration(self._fixed_spheres, layered)
         if hits:
             key = max(hits, key=hits.get)
+            # The generated layers assume the default padding
+            # (padding_assumed_m in scripts/mebot_layers.yaml). Above it, the
+            # padding grew the box into the spheres; at or below it, the box
+            # itself reaches them, and restoring the padding would not help.
+            assumed = PLANNER_DEFAULTS["planner"]["world_padding"]
+            if self.world_padding > assumed:
+                fix = (
+                    "the layers were generated for %g m — regenerate them or "
+                    "restore world_padding" % assumed
+                )
+            else:
+                fix = "move or shrink that box, or regenerate its layer"
             raise ValueError(
                 "layer box %s intrudes %.1f mm into the arm's fixed base/shoulder "
                 "spheres (world_padding %.3f m): every start state would be "
-                "infeasible; the layers were generated for %g m — regenerate "
-                "them or restore world_padding"
-                % (
-                    key,
-                    hits[key] * 1e3,
-                    self.world_padding,
-                    # the generated layers assume the default padding
-                    # (padding_assumed_m in scripts/mebot_layers.yaml)
-                    PLANNER_DEFAULTS["planner"]["world_padding"],
-                )
+                "infeasible; %s" % (key, hits[key] * 1e3, self.world_padding, fix)
             )
 
     # ---------------------------------------------------------------- planning
@@ -345,9 +348,12 @@ class CuRoboPlanner:
             res = self.plan_to_joints(q_goal, start=start, method="js")
             if res.success:
                 return res
+            # the error too: it names the boxes the joint goal reaches into,
+            # which the fallback's result, about a pose, cannot
             log.warning(
-                "plan_single_js failed (%s) — falling back to " "FK-pose planning",
+                "plan_single_js failed (%s: %s) — falling back to FK-pose planning",
                 res.status,
+                res.error,
             )
             res = self.plan_to_joints(q_goal, start=start, method="fk_pose")
             res.timing = time.monotonic() - t0
