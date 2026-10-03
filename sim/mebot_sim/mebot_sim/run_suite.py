@@ -41,7 +41,13 @@ failure (a busy planner, an exception, a re-check that could not run, no
 answer) judged nothing and fails. A positive control that does not hit, a
 start or goal the planner refuses that find_pairs found valid, and requests
 that find_pairs found with other layer files than the committed ones, or
-fewer than it finds, fail with "premise broken; re-run find_pairs".
+fewer than it finds, fail with "premise broken; re-run find_pairs". The goal
+of each request planned with its layers that the planner refused or flew is
+checked as a start, in the world it planned in (client.Tester.check_state).
+
+A chair planner that refused every request would pass every gate: how many
+of its requests it flew is reported, and a run in which it flew none says
+so in a WARNING line.
 """
 
 import argparse
@@ -60,8 +66,8 @@ from mebot_sim.client import WHO, Tester, contact_text
 SCENARIOS = ("S0", "S1", "S2", "S3", "S4", "S5")
 GATES = {
     "G0": "MuJoCo's MEBot is inside the platform, and not when it shrinks 1 mm",
-    "G1": "the stand-in, of its measured size, is in the padded person layer, "
-    "but for at most 1 % in the arm's column",
+    "G1": "the stand-in, the humanoid at its scale, is in the padded person "
+    "layer (covered_pct of it) or the arm's column",
     "G2": "no flight planned with the layers touches anything",
     "G3": "every positive control is planned, flown, and hits what its layer covers",
     "G4": "the layers survive a consumer's push",
@@ -104,30 +110,47 @@ def planned_in(planner, reply, world):
 def with_layers(name, where, report, limit, gates=("G2",)):
     """The case of a request planned with every layer that covers what it
     would hit: refused, or flown touching nothing and at rest within `limit`
-    rad of the plan's last point (G6). `report` is client.Tester.move's;
-    `gates` are the gates its refusal or its flight bears on."""
+    rad of the plan's last point (G6), its goal still a valid state.
+    `report` is Suite._request's; `gates` are the gates its refusal or its
+    flight bears on."""
 
     def verdict(passed, outcome, **more):
         return stack.case(
             name, where, outcome, dict({g: passed for g in gates}, **more), **report
         )
 
+    message = report["message"]
+    status = _status(message)
     if not report["planned"]:
-        message = report["message"]
-        status = _status(message)
-        # find_pairs found the start and the goal valid, and inside the
-        # limits: refusing either says nothing about the path
+        # find_pairs found the start valid, and the start and the goal
+        # inside the limits: refusing any of that says nothing about the path
         if status.startswith("INVALID_START") or status == "START_OUTSIDE_LIMITS":
             return verdict(False, "%s: the start is refused: %s" % (PREMISE, message))
-        if status == "GOAL_OUTSIDE_LIMITS" or "[goal collides with" in message:
+        if status == "GOAL_OUTSIDE_LIMITS":
             return verdict(False, "%s: the goal is refused: %s" % (PREMISE, message))
-        if refusal(message):
-            return verdict(True, "refused: %s" % status)
-        return verdict(False, "not a refusal: %s" % (message or "no message"))
-    if not report["executed"]:
+        if not refusal(message):
+            return verdict(False, "not a refusal: %s" % (message or "no message"))
+    elif not report["executed"]:
         return verdict(False, "not flown to its end: %s" % report["exec_error"])
-    if report["contacts"]:
+    elif report["contacts"]:
         return verdict(False, contact_text(report["contacts"]))
+    # find_pairs found the goal valid too. A goal the planner takes as a
+    # start is still valid, whether or not it then finds a plan from it; one
+    # it refuses makes the request's refusal, or its flight to another arm
+    # at the goal's pose, say nothing about the path
+    check = report["goal_as_start"]
+    if not (check["planned"] or refusal(check["message"])):
+        if _status(check["message"]).startswith("INVALID_START"):
+            return verdict(
+                False,
+                "%s: the goal is refused as a start: %s" % (PREMISE, check["message"]),
+            )
+        return verdict(
+            False,
+            "its goal's check judged nothing: %s" % (check["message"] or "no message"),
+        )
+    if not report["planned"]:
+        return verdict(True, "refused: %s" % status)
     rest = report["end_error_rad"]
     return verdict(
         True,
@@ -310,6 +333,24 @@ class Suite:
         for scenario in flown:
             getattr(self, "_" + scenario.lower())(data)
 
+    def _request(self, planner, world, start, goal, layers=True):
+        """client.Tester.move's report of a request to the joint goal `goal`,
+        flown from `start`, the sim arm put there first; with its `planner`.
+        Planned with its `layers`, a request the planner refused or planned
+        holds `goal_as_start` as well: client.Tester.check_state's report of
+        the goal, in the world the request was planned in.
+
+        find_pairs found the goal valid. A failed plan names the boxes its
+        joint goal is in only when the planner plans to joints by 'js'; the
+        stack's planners plan by 'auto', whose fallback plans to the goal's
+        pose and fails about that, or flies another arm there."""
+        self.tester.teleport(start)
+        report = self.tester.move(planner, world, start, joints=goal, speed=self.speed)
+        report["planner"] = planner
+        if layers and (report["planned"] or refusal(report["message"])):
+            report["goal_as_start"] = self.tester.check_state(planner, goal)
+        return report
+
     def _pairs(self, scenario, pairs, on, off, group):
         """Each pair planned with the layer that covers `group` (`on`: a key of
         stack.worlds) and without it (`off`), and flown."""
@@ -318,9 +359,8 @@ class Suite:
             name = "%s%s" % (scenario, chr(ord("a") + k))
             for key in (on, off):
                 planner, world, _ = worlds[key]
-                self.tester.teleport(pair["start"])
-                report = self.tester.move(
-                    planner, world, pair["start"], joints=pair["goal"], speed=self.speed
+                report = self._request(
+                    planner, world, pair["start"], pair["goal"], layers=key == on
                 )
                 where = planned_in(planner, report["world"], world)
                 if key == on:
@@ -342,10 +382,7 @@ class Suite:
         self.tester.posture(data["person_pairs"]["posture"])
         planner, world, _ = stack.worlds()["all"]
         for k, goal in enumerate(data["reaches"]["goals"]):
-            self.tester.teleport(data["start"])
-            report = self.tester.move(
-                planner, world, data["start"], joints=goal, speed=self.speed
-            )
+            report = self._request(planner, world, data["start"], goal)
             where = planned_in(planner, report["world"], world)
             self.add(with_layers("S3 reach %d" % (k + 1), where, report, self.limit))
 
@@ -364,10 +401,7 @@ class Suite:
             if not ok:
                 self.add(stack.case(name, where, "not asked: no push", {"G4": False}))
                 continue
-            self.tester.teleport(pair["start"])
-            report = self.tester.move(
-                stack.CHAIR, None, pair["start"], joints=pair["goal"], speed=self.speed
-            )
+            report = self._request(stack.CHAIR, None, pair["start"], pair["goal"])
             self.add(with_layers(name, where, report, self.limit, ("G4", "G2")))
 
     def _s5(self, data):
@@ -377,9 +411,22 @@ class Suite:
         )
         self.add(from_retract(planned_in(planner, report["world"], world), report))
 
+    def _chair_flights(self):
+        """(flown, asked): of the requests asked of the chair planner with its
+        layers, how many it flew. G2 and G4 pass a refusal, and G6 needs a
+        flight of either planner: a chair planner that refused every request
+        would pass every gate."""
+        asked = [
+            case
+            for case in self.cases
+            if case.get("planner") == stack.CHAIR and "G2" in case["gates"]
+        ]
+        return sum(bool(case.get("executed")) for case in asked), len(asked)
+
     def reported(self):
         """What the suite reports without a gate."""
         reaches = [case for case in self.cases if case["case"].startswith("S3 ")]
+        flown, asked = self._chair_flights()
         plans = sorted(case["plan_s"] for case in self.cases if "plan_s" in case)
         flights = [case for case in self.cases if case.get("executed")]
         closest = {}
@@ -399,6 +446,7 @@ class Suite:
             % (sum(c["planned"] for c in reaches), len(reaches))
             if reaches
             else None,
+            "chair_flown": "%d of %d" % (flown, asked) if asked else None,
             "plan_s": {
                 "min": plans[0],
                 "median": statistics.median(plans),
@@ -451,6 +499,8 @@ class Suite:
         said = []
         if reported["s3_planned"]:
             said.append("%s S3 reaches planned" % reported["s3_planned"])
+        if reported["chair_flown"]:
+            said.append("%s chair planner requests flown" % reported["chair_flown"])
         if reported["plan_s"]:
             said.append(
                 "plans in %(min).2f to %(max).2f s, median %(median).2f s"
@@ -471,6 +521,14 @@ class Suite:
             )
         if said:
             print("reported: " + "; ".join(said))
+        flown, asked = self._chair_flights()
+        if asked and not flown:
+            print(
+                "WARNING: the chair planner, %s, flew none of the %d requests "
+                "asked of it with its layers. The gates pass a refusal, so they "
+                "pass a chair planner that refuses everything: this run shows "
+                "none of its plans." % (stack.CHAIR, asked)
+            )
         if self.error:
             print("run_suite: %s" % self.error, file=sys.stderr)
         print("result: %s" % path)

@@ -50,15 +50,31 @@ def refused(message=IK_FAIL):
     return {"planned": False, "message": message, "plan_s": 0.15, "world": WORLD}
 
 
+# client.Tester.check_state's report: the planner's answer to a plan from a
+# state to itself, in the world it holds
+VALID = {
+    "planned": True,
+    "message": "planned 2 points, 0.00 s at full speed",
+    "plan_s": 0.12,
+    "world": None,
+}
+
+
+def checked(report, check=VALID):
+    """`report` of a request planned with its layers, as Suite makes it: with
+    the planner's `check` of its goal."""
+    return dict(report, goal_as_start=check)
+
+
 def test_a_request_with_its_layers_on_is_refused_or_flown_clear():
-    case = run_suite.with_layers("S1a on", "here", refused(), LIMIT)
+    case = run_suite.with_layers("S1a on", "here", checked(refused()), LIMIT)
     assert case["gates"] == {"G2": True} and case["outcome"].startswith("refused")
-    case = run_suite.with_layers("S1a on", "here", flown(), LIMIT)
+    case = run_suite.with_layers("S1a on", "here", checked(flown()), LIMIT)
     assert case["gates"] == {"G2": True, "G6": True} and case["passed"]
-    case = run_suite.with_layers("S1a on", "here", flown(WHEEL), LIMIT)
+    case = run_suite.with_layers("S1a on", "here", checked(flown(WHEEL)), LIMIT)
     assert case["gates"] == {"G2": False} and "the wheelchair" in case["outcome"]
     # G6: came to rest away from its last point, so the sim did not fly it
-    case = run_suite.with_layers("S1a on", "here", flown(end=0.08), LIMIT)
+    case = run_suite.with_layers("S1a on", "here", checked(flown(end=0.08)), LIMIT)
     assert case["gates"] == {"G2": True, "G6": False}
     unflown = dict(flown(), executed=False, exec_error="PREEMPTED by a stop")
     case = run_suite.with_layers("S1a on", "here", unflown, LIMIT)
@@ -72,9 +88,11 @@ def test_a_request_with_its_layers_on_is_refused_or_flown_clear():
         case = run_suite.with_layers("S1a on", "here", refused(message), LIMIT)
         assert case["gates"] == {"G2": False} and message in case["outcome"]
     # after a consumer's push, a request bears on G4 as well
-    case = run_suite.with_layers("S4a", "here", flown(THIGH), LIMIT, ("G4", "G2"))
+    case = run_suite.with_layers(
+        "S4a", "here", checked(flown(THIGH)), LIMIT, ("G4", "G2")
+    )
     assert case["gates"] == {"G4": False, "G2": False}
-    case = run_suite.with_layers("S4a", "here", flown(), LIMIT, ("G4", "G2"))
+    case = run_suite.with_layers("S4a", "here", checked(flown()), LIMIT, ("G4", "G2"))
     assert case["gates"] == {"G4": True, "G2": True, "G6": True}
 
 
@@ -93,7 +111,8 @@ def test_only_a_planner_that_judged_a_request_and_found_no_plan_refuses_it(gates
         "retiming failed",
         RECHECK + "constraint re-check flagged 3/120 states infeasible",
     ):
-        case = run_suite.with_layers("S2a on", "here", refused(message), LIMIT, gates)
+        report = checked(refused(message))
+        case = run_suite.with_layers("S2a on", "here", report, LIMIT, gates)
         assert case["gates"] == dict.fromkeys(gates, True), message
         assert case["outcome"].startswith("refused: ")
     # a planner that did not judge it refused nothing: busy with another
@@ -110,19 +129,59 @@ def test_only_a_planner_that_judged_a_request_and_found_no_plan_refuses_it(gates
         case = run_suite.with_layers("S2a on", "here", refused(message), LIMIT, gates)
         assert case["gates"] == dict.fromkeys(gates, False), message
         assert case["outcome"] == "not a refusal: %s" % (message or "no message")
-    # find_pairs found the start and the goal valid, inside the limits: a
-    # planner that refuses either was not asked what was found
+    # find_pairs found the start and the goal inside the limits: a planner
+    # that refuses either was not asked what was found
     for message in (
         "START_OUTSIDE_LIMITS: start: joint_2 is 0.120 rad outside the model "
         "position limits [-2.250, 2.250] (max clamp 0.050)",
         "GOAL_OUTSIDE_LIMITS: goal: joint_4 is 0.120 rad outside the model "
         "position limits [-2.580, 2.580] (max clamp 0.050)",
-        "MotionGenStatus.TRAJOPT_FAIL: the goal is reachable but no collision-free "
-        "PATH was found [goal collides with person/lap (12 mm)] [world: 23 boxes]",
     ):
         case = run_suite.with_layers("S2a on", "here", refused(message), LIMIT, gates)
         assert case["gates"] == dict.fromkeys(gates, False), message
         assert case["outcome"].startswith(run_suite.PREMISE)
+
+
+# What the stack's planners answer a request whose joint goal is in a layer.
+# They plan to joints by 'auto': the joint-space plan fails naming the boxes
+# the goal is in, but that is only logged, and the fallback plans to the
+# goal's pose, whose failure says nothing of the joint goal.
+AUTO_IK_FAIL = (
+    "MotionGenStatus.IK_FAIL: no collision-free joint solution AT the goal — move "
+    "it away from obstacles or relax the orientation. [world: 23 boxes: scene 0 | "
+    "config layers: platform 16, person 6 | scene layers: floor 1]"
+)
+
+
+@pytest.mark.parametrize("gates", [("G2",), ("G4", "G2")])
+def test_a_request_whose_goal_the_planner_refuses_as_a_start_tests_nothing(gates):
+    # find_pairs found the goal valid; asked from it, the planner refuses it
+    in_person = dict(refused(INVALID_START), world=None)
+    # refused, or flown to another arm at the goal's pose by the fallback
+    for report in (refused(AUTO_IK_FAIL), flown()):
+        case = run_suite.with_layers(
+            "S3 reach 1", "here", checked(report, in_person), LIMIT, gates
+        )
+        assert case["gates"] == dict.fromkeys(gates, False)
+        assert case["outcome"].startswith(run_suite.PREMISE + ": the goal is refused")
+        assert "person/lap (154 mm)" in case["outcome"]
+    # a goal it judged leaves the request's verdict as it was: one it plans
+    # from, or one it plans from to no plan (it took the start)
+    for check in (VALID, dict(refused(IK_FAIL), world=None)):
+        case = run_suite.with_layers(
+            "S3 reach 1", "here", checked(refused(AUTO_IK_FAIL), check), LIMIT, gates
+        )
+        assert case["gates"] == dict.fromkeys(gates, True)
+        assert case["outcome"] == "refused: IK_FAIL"
+    # a check that judged nothing checked nothing
+    busy = dict(refused("planner busy — one plan at a time"), world=None)
+    case = run_suite.with_layers(
+        "S3 reach 1", "here", checked(flown(), busy), LIMIT, gates
+    )
+    assert case["gates"] == dict.fromkeys(gates, False)
+    assert case["outcome"] == (
+        "its goal's check judged nothing: planner busy — one plan at a time"
+    )
 
 
 def test_a_positive_control_passes_only_when_it_hits_what_its_layer_covers():
@@ -197,13 +256,14 @@ DATA = stack.scenarios()
 
 class Scripted:
     """client.Tester as run_suite uses it, answering from `script`, a function
-    of (planner, world, joints, execute) -> a move report; it records every
-    call."""
+    of (planner, world, joints, execute) -> a move report, and checking a
+    state with `check`, a function of (planner, q) -> a check_state report;
+    it records every call."""
 
     made = []
 
-    def __init__(self, name, script):
-        self.calls, self.script = [], script
+    def __init__(self, name, script, check):
+        self.calls, self.script, self.check = [], script, check
         self.planners = {stack.CHAIR: self}
         Scripted.made.append(self)
 
@@ -221,8 +281,12 @@ class Scripted:
         return True, REPLY
 
     def move(self, planner, world, start, joints=None, speed=0.5, execute=True):
-        self.calls.append(("move", planner, world and str(world), list(start)))
+        self.calls.append(("move", planner, world and str(world), list(start), joints))
         return self.script(planner, world and str(world), joints, execute)
+
+    def check_state(self, planner, q):
+        self.calls.append(("check_state", planner, list(q)))
+        return self.check(planner, list(q))
 
     def close(self):
         self.calls.append(("close",))
@@ -247,9 +311,10 @@ def _answers(planner, world, joints, execute):
 
 @pytest.fixture
 def scripted(monkeypatch, tmp_path):
-    """run_suite.main against a scripted Tester (answers: `script`), with S0
-    stood in for, results under tmp_path. Returns a runner: argv -> (exit
-    status, the Scripted made, if any, and the result file's contents)."""
+    """run_suite.main against a scripted Tester (answers: `script`; checks of
+    a state: `check`, every one valid unless given), with S0 stood in for,
+    results under tmp_path. Returns a runner: argv -> (exit status, the
+    Scripted made, if any, and the result file's contents)."""
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     Scripted.made = []
     monkeypatch.setattr(
@@ -262,8 +327,10 @@ def scripted(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(run_suite.scene, "Assets", lambda *args: None)
 
-    def run(argv, script=_answers):
-        monkeypatch.setattr(run_suite, "Tester", lambda name: Scripted(name, script))
+    def run(argv, script=_answers, check=lambda planner, q: VALID):
+        monkeypatch.setattr(
+            run_suite, "Tester", lambda name: Scripted(name, script, check)
+        )
         status = run_suite.main(argv)
         files = list((tmp_path / "rammp_curobo" / "sim").glob("*.json"))
         assert len(files) == 1
@@ -297,6 +364,19 @@ def test_each_scenario_plans_in_its_world_with_the_standin_as_found(scripted, ca
     # S4 is pushed the consumer's world before its requests
     pushes = [call[1] for call in tester.calls if call[0] == "set_world"]
     assert pushes == [str(stack.config("consumer_world.yaml"))]
+    # each request planned with its layers, refused or flown, is followed by
+    # the planner's check of its goal, in the world it planned in; a
+    # positive control's and the retract's are not checked
+    checks = [call[1:] for call in tester.calls if call[0] == "check_state"]
+    assert checks == (
+        [(stack.CONTROL, pair["goal"]) for pair in platform["pairs"]]
+        + [(stack.CHAIR, pair["goal"]) for pair in person["pairs"]]
+        + [(stack.CHAIR, goal) for goal in DATA["reaches"]["goals"]]
+        + [(stack.CHAIR, pair["goal"]) for pair in person["pairs"]]
+    )
+    for before, call in zip(tester.calls, tester.calls[1:]):
+        if call[0] == "check_state":
+            assert before[0] == "move" and (before[1], before[4]) == call[1:]
     # S5 plans from the bench retract, last, without flying (only a request
     # not flown is answered INVALID_START here)
     assert tester.calls[-2][0] == "move" and tester.calls[-1] == ("close",)
@@ -316,6 +396,8 @@ def test_each_scenario_plans_in_its_world_with_the_standin_as_found(scripted, ca
     assert result["passed"] and result["error"] is None
     assert result["gates"] == {gate: "PASS" for gate in run_suite.GATES}
     assert result["reported"]["s3_planned"] == "8 of 8"
+    # S2 on, S3 and S4: what a consumer on the chair asks
+    assert result["reported"]["chair_flown"] == "14 of 14" and "WARNING" not in out
     # how well the sim tracks, from the flights that touched nothing
     assert result["reported"]["tracking_rad_max"] == 0.012
 
@@ -367,6 +449,44 @@ def test_a_whole_run_fails_a_gate_that_no_case_bore_on(scripted, capsys):
     # a run of one scenario judges its own gates alone
     status, _, result = scripted(["--only", "S3"], script=refusing)
     assert status == 0 and result["gates"]["G6"] == "not run"
+
+
+def test_a_run_says_loudly_when_the_chair_planner_flew_nothing(scripted, capsys):
+    # G2 and G4 pass a refusal, and G6 the control planner's flights: a
+    # chair planner that refuses everything passes every gate (spec 8 gates
+    # no S3 success rate), so the run says so
+    platform = [pair["goal"] for pair in DATA["platform_pairs"]["pairs"]]
+
+    def chair_refuses(planner, world, joints, execute):
+        if planner == stack.CHAIR and execute:
+            return refused()
+        if planner == stack.CONTROL and joints in platform:
+            # S1, as on the Jetson: flown clear with the platform, a hit without
+            return flown() if world == stack.worlds()["no_person"][1] else flown(WHEEL)
+        return _answers(planner, world, joints, execute)
+
+    status, _, result = scripted([], script=chair_refuses)
+    out = capsys.readouterr().out
+    assert status == 0 and result["passed"]
+    assert result["gates"] == {gate: "PASS" for gate in run_suite.GATES}
+    assert result["reported"]["chair_flown"] == "0 of 14"
+    assert "WARNING: the chair planner, /rammp_curobo, flew none of the 14" in out
+
+
+def test_a_goal_the_planner_no_longer_finds_valid_fails_the_suite(scripted, capsys):
+    goal = DATA["reaches"]["goals"][0]
+
+    def check(planner, q):
+        return dict(refused(INVALID_START), world=None) if q == goal else VALID
+
+    status, _, result = scripted(["--only", "S3"], check=check)
+    out = capsys.readouterr().out
+    assert status == 1 and result["gates"]["G2"] == "FAIL"
+    first, *rest = result["cases"]
+    assert first["case"] == "S3 reach 1" and not first["passed"]
+    assert first["outcome"].startswith(run_suite.PREMISE + ": the goal is refused")
+    assert "premise broken; re-run find_pairs" in out
+    assert all(case["passed"] for case in rest)
 
 
 @pytest.mark.parametrize(

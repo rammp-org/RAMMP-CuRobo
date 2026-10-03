@@ -95,6 +95,38 @@ def test_a_flight_says_how_far_the_arm_was_from_its_last_point(monkeypatch):
     assert report["end_error_rad"] == pytest.approx(0.04)
 
 
+def test_a_state_is_checked_by_a_plan_from_it_to_itself():
+    # the planner's interfaces have no check of a state: a consumer asks one
+    # by planning from it, which the planner refuses INVALID_START if the
+    # state is in the world, and it is asked in the world the planner holds
+    tester = _tester({})
+    asked = []
+
+    def plan(start, pos=None, rpy_deg=None, joints=None):
+        asked.append((start, joints))
+        return types.SimpleNamespace(
+            success=True, message="planned 2 points", planning_time=0.12
+        )
+
+    def push(world):
+        raise AssertionError("a check pushes no world")
+
+    def fly(traj, speed):
+        raise AssertionError("a check flies nothing")
+
+    planner = types.SimpleNamespace(set_world=push, plan=plan)
+    tester.planners = {stack.CHAIR: planner}
+    tester.fly = fly
+    q = [0.1, -0.2, 0.3, 1.0, 0.0, 0.5, 0.0]
+    assert tester.check_state(stack.CHAIR, q) == {
+        "planned": True,
+        "message": "planned 2 points",
+        "plan_s": 0.12,
+        "world": None,
+    }
+    assert asked == [(q, q)]
+
+
 def test_a_plan_is_flown_slower_by_dilating_time():
     traj = msgs.JointTrajectory(joint_names=list(stack.JOINTS))
     point = msgs.JointTrajectoryPoint(

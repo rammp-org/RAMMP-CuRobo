@@ -187,6 +187,14 @@ class Tester:
             out.update(self.fly(result.trajectory, speed))
         return out
 
+    def check_state(self, planner, q):
+        """`planner`'s verdict on the arm at `q`, in the world it holds. Its
+        interfaces have no check of a state, so it is asked as a consumer
+        can ask it: a plan from `q` to `q`, which the planner refuses with an
+        INVALID_START status, naming the boxes `q` is in, when `q` is not a
+        valid state. Returns move's report of it; nothing is pushed or flown."""
+        return self.move(planner, None, q, joints=q, execute=False)
+
     def fly(self, traj, speed):
         """Fly a plan on the sim at `speed`, from where the arm is; what the
         sim saw of it (see move)."""

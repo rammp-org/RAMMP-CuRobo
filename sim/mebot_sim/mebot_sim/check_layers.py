@@ -10,7 +10,9 @@ and the layer files the generator writes, as the planner loads them.
     cylinder on rims of 72 points at its radius and at half of it, at 9
     heights. Every sample must lie in a box of the committed platform layer,
     unpadded; with every box shrunk by 1 mm, some must not, or the check
-    could not fail.
+    could not fail. The samples cover only what MuJoCo parsed, so its parse
+    must hold every primitive of the URDF as the generator reads it, link
+    by link, box or cylinder.
   * G1, stand-in coverage. The seated stand-in, in each posture and with its
     back at either end of the backrest face's CAD range, is sampled through
     its volume on a 6 mm grid. Every point must lie in the person layer as
@@ -18,14 +20,18 @@ and the layer files the generator writes, as the planner loads them.
     arm's own base is: any other point is a gap, a part of the body the
     planner does not keep the arm out of. The gap of the unpadded layer is
     reported beside it. The column is the generator's, and a column carved
-    too wide, or a body too small, leaves no gap either: so at least 99 % of
-    the body must lie in the layer, and the body must be the size spec 6.4
-    measured, 0.07 to 0.09 m3.
+    too wide, or a body too small, leaves no gap either. So, with bounds
+    from config/scenarios.yaml's thresholds, covered_pct of the body or more
+    must lie in the layer itself, and the body must be the whole humanoid at
+    the scale that seats the occupant: its volume within body_volume_pct of
+    the humanoid's own times the scale cubed. Both follow the occupant that
+    scripts/mebot_layers.yaml sizes. Spec 8's G1 is the gap alone.
 
 Exit status 1 if a gate fails.
 """
 
 import argparse
+import collections
 import math
 import sys
 
@@ -38,10 +44,6 @@ LATTICE = 9  # samples along a box's edge, or a cylinder's height
 ANGLES = 72  # samples around a cylinder's rim
 SHRINK_M = 0.001
 GRID_M = 0.006
-# G1's bounds on what it cannot fail on by a gap: of the 0.076 to 0.0805 m3
-# body, spec 6.4 found 99.11 to 99.86 % in the padded person layer
-COVERED_PCT = 99.0
-BODY_M3 = (0.07, 0.09)
 
 
 def surface_samples(m, d, geoms):
@@ -103,13 +105,36 @@ def _inside(points, boxes):
 
 def registration(m, platform, shrink=0.0):
     """How the MEBot of model `m` (scene.build) sits in the layer `platform`
-    with its boxes shrunk by `shrink` a side: {geoms, samples, outside}."""
+    with its boxes shrunk by `shrink` a side: {geoms, primitives, samples,
+    outside}, primitives counting its geoms by (link, "box" or "cylinder")
+    as urdf_primitives does."""
     d = mujoco.MjData(m)
     mujoco.mj_kinematics(m, d)
     geoms = scene.contact_groups(m)[1]["mebot"]
     points = surface_samples(m, d, geoms)
     outside = ~_inside(points, bounds(platform.obstacles, -shrink))
-    return {"geoms": len(geoms), "samples": len(points), "outside": int(outside.sum())}
+    primitives = collections.Counter(
+        (
+            m.body(m.geom_bodyid[g]).name.split("/", 1)[1],
+            "box" if m.geom_type[g] == mujoco.mjtGeom.mjGEOM_BOX else "cylinder",
+        )
+        for g in geoms
+    )
+    return {
+        "geoms": len(geoms),
+        "primitives": primitives,
+        "samples": len(points),
+        "outside": int(outside.sum()),
+    }
+
+
+def urdf_primitives(assets):
+    """The pinned URDF's collision primitives as the generator reads them,
+    counted by (link, "box" or "cylinder")."""
+    return collections.Counter(
+        (p["link"], p["kind"])
+        for p in stack.generator().urdf_primitives(assets.urdf, assets.mount)
+    )
 
 
 def _volume(g, grid):
@@ -136,6 +161,26 @@ def volume_samples(geoms, grid=GRID_M):
     and spheres, in base_link. Where geoms overlap, the place is sampled once
     for each."""
     return np.concatenate([_volume(g, grid) for g in geoms])
+
+
+def humanoid_m3(assets):
+    """The stock humanoid's own volume, as scene.standin takes it before it
+    poses and scales it: its capsules and spheres, exactly, where they
+    overlap counted once for each, as volume_samples samples them."""
+    m = mujoco.MjModel.from_xml_path(assets.humanoid)
+    total = 0.0
+    for g in range(m.ngeom):
+        kind = int(m.geom_type[g])
+        if kind == mujoco.mjtGeom.mjGEOM_PLANE:  # its own floor
+            continue
+        if kind not in (mujoco.mjtGeom.mjGEOM_CAPSULE, mujoco.mjtGeom.mjGEOM_SPHERE):
+            raise ValueError(
+                "humanoid geom %r is neither a capsule nor a sphere" % m.geom(g).name
+            )
+        radius = float(m.geom_size[g][0])
+        half = float(m.geom_size[g][1]) if kind == mujoco.mjtGeom.mjGEOM_CAPSULE else 0
+        total += math.pi * radius**2 * (2 * half + 4 / 3 * radius)
+    return total
 
 
 def coverage(geoms, boxes, column, grid=GRID_M):
@@ -186,6 +231,11 @@ def column(assets):
     return np.multiply(low, generator.TICK), np.multiply(high, generator.TICK)
 
 
+def _named(primitives):
+    """A Counter of (link, kind), in words."""
+    return ["%s (%s)" % p for p in sorted(primitives.elements())]
+
+
 def cases(assets):
     """S0's cases, as stack.case: the registration (G0), then the stand-in in
     each posture with its back at each end of the backrest face's range
@@ -196,20 +246,32 @@ def cases(assets):
     platform = layers["platform"]
     whole = registration(m, platform)
     shrunk = registration(m, platform, SHRINK_M)
+    urdf = urdf_primitives(assets)
+    missing, extra = urdf - whole["primitives"], whole["primitives"] - urdf
+    shortfall = "; ".join(
+        "%s %s" % (what, ", ".join(_named(these)))
+        for what, these in (("missing", missing), ("extra", extra))
+        if these
+    )
     out = [
         stack.case(
             "S0 registration",
             "MuJoCo's MEBot | platform, unpadded",
-            "%d of %d samples of %d primitives outside; shrunk %g mm: %d"
+            "%d of %d samples of %s primitives outside; shrunk %g mm: %d%s"
             % (
                 whole["outside"],
                 whole["samples"],
-                whole["geoms"],
+                whole["geoms"] if shortfall else "the URDF's %d" % whole["geoms"],
                 SHRINK_M * 1e3,
                 shrunk["outside"],
+                "; the URDF has %d: %s" % (sum(urdf.values()), shortfall)
+                if shortfall
+                else "",
             ),
-            {"G0": whole["outside"] == 0 and shrunk["outside"] > 0},
+            {"G0": whole["outside"] == 0 and shrunk["outside"] > 0 and not shortfall},
             geoms=whole["geoms"],
+            missing=_named(missing),
+            extra=_named(extra),
             samples=whole["samples"],
             outside=whole["outside"],
             outside_shrunk=shrunk["outside"],
@@ -219,13 +281,21 @@ def cases(assets):
     padded, unpadded = bounds(person, chair_padding()), bounds(person)
     carved = column(assets)
     faces = sorted(assets.data["person"]["seat"]["backrest_face_x"])
+    thresholds = stack.scenarios()["thresholds"]
+    unscaled = humanoid_m3(assets)
     for posture in assets.postures["postures"]:
         for face in faces:
-            geoms, _ = scene.standin(assets, posture, face)
+            geoms, scale = scene.standin(assets, posture, face)
+            # a numpy float: a verdict compared from it would be a numpy
+            # bool, which the result file's JSON cannot hold
+            scale = float(scale)
             c = coverage(geoms, padded, carved)
             bare = coverage(geoms, unpadded, carved)
-            sized = BODY_M3[0] < c["body_m3"] < BODY_M3[1]
-            covered = c["covered_pct"] >= COVERED_PCT
+            # the whole humanoid, at the scale that seats the occupant
+            expected = unscaled * scale**3
+            off_pct = abs(c["body_m3"] / expected - 1) * 100
+            sized = off_pct <= thresholds["body_volume_pct"]
+            covered = c["covered_pct"] >= thresholds["covered_pct"]
             out.append(
                 stack.case(
                     "S0 %s %.4f" % (posture, face),
@@ -236,15 +306,19 @@ def cases(assets):
                         c["gap_m3"],
                         bare["gap_m3"],
                         c["body_m3"],
-                        "" if sized else " (not %g to %g)" % BODY_M3,
+                        ""
+                        if sized
+                        else " (not the humanoid's %.4f at x%.3f)" % (expected, scale),
                         c["covered_pct"],
-                        "" if covered else " (under %g)" % COVERED_PCT,
+                        "" if covered else " (under %g)" % thresholds["covered_pct"],
                         c["column_m3"],
                     ),
                     {"G1": c["gap_points"] == 0 and covered and sized},
                     posture=posture,
                     backrest_face_x=face,
+                    scale=scale,
                     body_m3=c["body_m3"],
+                    humanoid_m3=expected,
                     covered_pct=c["covered_pct"],
                     column_m3=c["column_m3"],
                     gap_m3=c["gap_m3"],

@@ -95,17 +95,25 @@ on: nothing is skipped.
 
 - **G0, registration.** Every surface sample of MuJoCo's own parse of the
   MEBot URDF lies inside a box of the committed platform layer, unpadded,
-  and the same boxes shrunk by 1 mm leave samples outside. A failure means
-  the platform no longer covers the chair the sim simulates, or the check
-  could not have failed.
+  and the same boxes shrunk by 1 mm leave samples outside. The samples
+  cover only what MuJoCo parsed, so its parse must also hold every
+  collision primitive of the URDF as the generator reads it (46: 40 boxes
+  and 6 cylinders), link by link; the line names any it lacks. A failure
+  means the platform no longer covers the chair the sim simulates, or the
+  check could not have failed.
 - **G1, stand-in coverage.** Every point of the stand-in, sampled through
   its volume on a 6 mm grid, lies in the person layer as the chair planner
   pads it, or in the arm's carved column where the arm's own base is: no
   part of the seated body is a place the planner would send the arm. The
-  column comes from the generator, as the layer does, so at least 99 % of
-  the body must lie in the layer itself, and the body must be 0.07 to 0.09
-  m³ (it is 0.076 to 0.0805): a column carved too wide, or a body too
-  small, would otherwise leave no gap to fail on.
+  column comes from the generator, as the layer does, and a column carved
+  too wide, or a body too small, would leave no gap to fail on. So two
+  bounds of `thresholds` in `scenarios.yaml` hold as well: at least
+  `covered_pct` percent of the body (99) lies in the layer itself, and the
+  body is the whole humanoid at the scale that seats the occupant, its
+  volume within `body_volume_pct` percent (2) of the humanoid's own times
+  the scale cubed. Both follow the occupant: retuned in
+  `scripts/mebot_layers.yaml`, the stand-in is scaled to the new size.
+  Spec 8's G1 is the gap alone; the two bounds are this suite's.
 - **G2, no contact with the layers on.** No flight planned with the layers
   that cover the scene touches the MEBot, the stand-in or the floor. A
   refusal passes: the planner may decline a request it cannot do safely.
@@ -128,11 +136,17 @@ on: nothing is skipped.
 - **G6, the sim flew the plan.** Every flight that touched nothing came to
   rest within `end_error_rad` (0.05 rad) of its plan's last point.
 
-Reported, not gated: how many S3 reaches plan, plan times, the closest
-approach to each shape in the flights with the layers on, and how far the
-arm was from a plan's last point as a flight that touched nothing ended.
-MuJoCo's arm meshes and cuRobo's spheres differ by design, by up to a few
-millimetres, so the closest approach is a number to read, not a gate.
+Reported, not gated: how many S3 reaches plan, how many of the requests
+asked of the chair planner it flew, plan times, the closest approach to
+each shape in the flights with the layers on, and how far the arm was from
+a plan's last point as a flight that touched nothing ended. MuJoCo's arm
+meshes and cuRobo's spheres differ by design, by up to a few millimetres,
+so the closest approach is a number to read, not a gate.
+
+G2 and G4 pass a refusal, and G6 needs a flight of either planner, so a
+chair planner that refused every request would pass every gate. A run in
+which it flew none of its requests says so in a `WARNING` line; it still
+exits with the gates' verdict, since spec 8 gates no S3 success rate.
 
 ## Reading the result
 
@@ -154,10 +168,16 @@ what they were found to test: `scenarios.yaml` was found with other layer
 files than the committed ones (their sha256 is written beside the requests),
 or holds fewer requests than `find_pairs` finds (3 platform pairs, 3 person
 pairs, 8 reaches), or a positive control did not hit its shape, or a start
-or goal found valid was refused. After `make layers` changes a layer, run
-`ros2 run mebot_sim find_pairs` and commit the `scenarios.yaml` it writes.
-It searches with fixed seeds and keeps the hand-written part of the file
-(the stand-in's postures and the thresholds) as it is.
+or goal found valid was refused. The planners plan to joints by `auto`,
+whose fallback plans to the goal's pose, so a failed plan does not say that
+its joint goal is in a layer. Each request planned with its layers that the
+planner refused or flew is therefore followed by a plan from its goal to
+itself, in the same world: the planner refuses that one `INVALID_START`,
+naming the boxes, when the goal is no longer valid. After `make layers`
+changes a layer, run `ros2 run mebot_sim find_pairs` and commit the
+`scenarios.yaml` it writes. It searches with fixed seeds and keeps the
+hand-written part of the file (the stand-in's postures and the thresholds)
+as it is.
 
 The suite holds the planners to the layer files, not to what a planner
 config lists. A chair config that drops the person layer is no stale

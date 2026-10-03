@@ -2,6 +2,7 @@
 shapes, on the CPU. It needs what test_scene.py needs, and skips without it.
 """
 
+import json
 import math
 
 import numpy as np
@@ -99,6 +100,26 @@ def test_the_mebot_registers_in_the_platform_and_a_1mm_shrink_is_caught(
     assert whole["outside"] == 0
     # a check that could not fail would pass this too
     assert check_layers.registration(empty_chair, platform, shrink=0.001)["outside"]
+
+
+def test_g0_fails_when_mujocos_parse_lacks_a_primitive_of_the_urdf(assets, monkeypatch):
+    # what MuJoCo kept is still inside the platform, and the shrink still
+    # caught: only the URDF's own count sees the wheel it lost
+    parse = scene.mebot_spec
+
+    def lossy(urdf):
+        spec = parse(urdf)
+        spec.delete(spec.body("drive_wheel_l").geoms[0])
+        return spec
+
+    monkeypatch.setattr(scene, "mebot_spec", lossy)
+    case = check_layers.cases(assets)[0]
+    assert case["outside"] == 0 and case["outside_shrunk"] > 0
+    assert case["gates"] == {"G0": False} and not case["passed"]
+    assert case["outcome"].endswith(
+        "; the URDF has 46: missing drive_wheel_l (cylinder)"
+    )
+    assert case["missing"] == ["drive_wheel_l (cylinder)"] and case["geoms"] == 45
 
 
 @pytest.mark.parametrize("defect", ["drop", "shift_1mm"])
@@ -223,6 +244,8 @@ def test_s0_is_one_registration_and_six_standins_each_gated(assets):
     assert cases[0]["outside"] == 0 and cases[0]["outside_shrunk"] > 0
     assert all(c["gates"] == {"G1": True} for c in cases[1:])
     assert all(c["passed"] for c in cases)
+    # run_suite writes them to its result file as they are
+    assert json.loads(json.dumps(cases))[1]["gates"] == {"G1": True}
 
 
 def _layer_file(path, layer, obstacles):
@@ -272,7 +295,9 @@ def test_g1_fails_when_the_column_excuses_what_the_person_layer_leaves_out(
     assert all("covered (under 99)" in c["outcome"] for c in standins)
 
 
-def test_g1_fails_on_a_standin_shrunk_from_its_measured_size(assets, monkeypatch):
+def test_g1_fails_on_a_standin_thinner_than_the_humanoid_at_its_scale(
+    assets, monkeypatch
+):
     # every part of the body thinner by a fifth, where it was: the layer
     # covers it as well as ever, and it is half the body
     standin = scene.standin
@@ -284,8 +309,34 @@ def test_g1_fails_on_a_standin_shrunk_from_its_measured_size(assets, monkeypatch
     monkeypatch.setattr(scene, "standin", thinner)
     standins = check_layers.cases(assets)[1:]
     assert all(c["gap_m3"] == 0 and c["covered_pct"] >= 99 for c in standins)
-    assert all(c["body_m3"] < 0.07 and c["gates"] == {"G1": False} for c in standins)
-    assert all("m3 (not 0.07 to 0.09)" in c["outcome"] for c in standins)
+    assert all(c["gates"] == {"G1": False} for c in standins)
+    assert all(c["body_m3"] < 0.6 * c["humanoid_m3"] for c in standins)
+    assert all("m3 (not the humanoid's " in c["outcome"] for c in standins)
+
+
+def test_g1_holds_the_standin_to_the_occupant_it_is_scaled_to(assets, monkeypatch):
+    # retuned in scripts/mebot_layers.yaml, the occupant is another size and
+    # the stand-in is scaled to it: smaller than spec 6.4 measured, with its
+    # back at the front of the backrest's range it leaves no gap, and passes
+    monkeypatch.setattr(assets, "sitting_height", 36.0 * 0.0254)
+    front = "%.4f" % max(assets.data["person"]["seat"]["backrest_face_x"])
+    standins = [c for c in check_layers.cases(assets)[1:] if c["case"].endswith(front)]
+    assert len(standins) == 3
+    assert all(c["gap_m3"] == 0 and c["body_m3"] < 0.07 for c in standins)
+    assert all(c["gates"] == {"G1": True} for c in standins)
+
+
+def test_g1_bounds_are_the_scenarios_thresholds(assets, monkeypatch):
+    data = stack.scenarios()
+    strict = dict(
+        data,
+        thresholds=dict(data["thresholds"], covered_pct=99.9, body_volume_pct=0.01),
+    )
+    monkeypatch.setattr(stack, "scenarios", lambda: strict)
+    standins = check_layers.cases(assets)[1:]
+    assert all(c["gates"] == {"G1": False} for c in standins)
+    assert all("covered (under 99.9)" in c["outcome"] for c in standins)
+    assert all("m3 (not the humanoid's " in c["outcome"] for c in standins)
 
 
 def test_s0_checks_the_layer_files_whatever_the_chair_config_lists(assets, monkeypatch):
