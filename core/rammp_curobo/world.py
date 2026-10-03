@@ -87,19 +87,30 @@ def compose_cuboids(
     `ignore` leaves out props, as in v1.0.0, and whole layers, if they
     are excludable. A bare string is one name.
 
-    Refused, all before cuRobo is imported: one layer from two files; an
-    ignored layer that is not excludable, or whose name a prop shares; a
-    position or rpy_deg that is not 3 finite numbers, or dims that are
-    not 3 finite numbers above 0; two boxes of one key; a scene with no
-    content of its own; more boxes than `cache_obb`.
+    Refused, all before cuRobo is imported: a padding below 0 or not
+    finite; one layer from two files; an ignored layer that is not
+    excludable, or whose name a prop shares; a position or rpy_deg that is
+    not 3 finite numbers, or dims that are not 3 finite numbers above 0;
+    two boxes of one key; a scene with no content of its own; more boxes
+    than `cache_obb`.
     """
+    padding = float(padding)
+    # each box is checked before it is padded, so the padding is checked
+    # here: below 0 it would shrink a thin box past 0, and a NaN or an inf
+    # would spread to every box
+    if not (math.isfinite(padding) and padding >= 0):
+        raise ValueError("world_padding must be a finite number >= 0, got %r" % padding)
     if isinstance(ignore, str):
         ignore = [ignore]  # one name, not the set of its letters
     ignore = frozenset(ignore)
     layers = list(layers)
     chosen = []
     for layer in layers + list(scene.layers):
-        if any(layer.path == other.path for other in chosen):
+        # one file listed twice is one layer. A Layer built in code may have
+        # no path, or another layer's: a path alone never makes it a copy
+        if layer.path is not None and any(
+            (layer.name, layer.path) == (other.name, other.path) for other in chosen
+        ):
             continue
         for other in chosen:
             if other.name == layer.name:
@@ -121,7 +132,7 @@ def compose_cuboids(
                 "ignore=%r: layer %r is not excludable" % (layer.name, layer.name)
             )
 
-    pad = 2.0 * float(padding)
+    pad = 2.0 * padding
     cuboids, sources, owners = {}, {}, {}
 
     def add(key, source, owner, box, dims, p):
@@ -233,15 +244,30 @@ def make_world_config(
 
 def sphere_box_penetration(spheres, cuboids):
     """{key: depth_m} for each box of `cuboids` (composed, so padded) that
-    one of `spheres` ((N, 4): x, y, z and a radius that includes any
-    buffer) reaches into, by its deepest sphere. Other boxes are left out.
+    one of `spheres` ((N, 4), or (..., 4) for a batch: x, y, z and a radius
+    that includes any buffer) reaches into, by its deepest sphere. Other
+    boxes are left out.
 
     The test cuRobo's feasibility check makes at activation distance 0: a
     sphere collides when its radius exceeds its centre's signed distance
     to the box. Made here on the CPU, it names the boxes a state hits
     without touching the world loaded in cuRobo.
     """
-    spheres = np.asarray(spheres, dtype=float).reshape(-1, 4)
+    spheres = np.asarray(spheres, dtype=float)
+    # read 4 numbers at a time, any other last dimension would be other
+    # spheres; and one sphere that is not finite would hide every hit, since
+    # no maximum taken over it is above 0
+    if spheres.shape[-1:] != (4,):
+        raise ValueError(
+            "spheres must have shape (..., 4): x, y, z and radius; got %s"
+            % (spheres.shape,)
+        )
+    spheres = spheres.reshape(-1, 4)
+    finite = np.isfinite(spheres).all(axis=1)
+    if not finite.all():
+        raise ValueError(
+            "spheres must be finite, got %s" % spheres[~finite][0].tolist()
+        )
     depth = spheres[:, 3:] - _signed_distances(spheres[:, :3], cuboids)
     deepest = depth.max(axis=0, initial=-np.inf)
     return {key: float(d) for key, d in zip(cuboids, deepest) if d > 0}
