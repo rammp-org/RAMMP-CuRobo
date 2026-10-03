@@ -166,8 +166,9 @@ def test_update_world_guards_and_round_trip(planner, start):
         planner.update_world(too_many)
     # it says where the boxes come from
     assert "scene 61" in str(exc.value)
-    # a refused push leaves the world it found
+    # a refused push leaves the world it found, in the planner and in cuRobo
     assert planner.world_boxes == before
+    _check_read_back(planner)
     try:
         # a fresh world (one distant box) still plans
         planner.update_world(
@@ -710,53 +711,52 @@ def test_a_layer_box_over_the_arm_base_is_refused(chair_planner, tmp_path):
         chair_planner.update_world("world_mebot.yaml")
 
 
-def _clearance(spheres, cuboids):
-    """The least distance, in metres, from the surface of one of `spheres`
-    ((..., 4)) to a box of `cuboids`: negative if one reaches in."""
-    # grown by more than any distance here, a sphere reaches every box, by
-    # `far` less its distance
-    far = 10.0
-    grown = np.asarray(spheres, dtype=float) + [0.0, 0.0, 0.0, far]
-    return far - max(sphere_box_penetration(grown, cuboids).values(), default=0.0)
-
-
 def test_plans_keep_curobo_spheres_outside_every_padded_box(
     chair_planner, chair_states
 ):
     # the planner's own re-check of a plan (_recheck_constraints) asks the
     # world cuRobo holds, so it cannot see a box cuRobo does not honour: this
     # asks the boxes the planner composed, on the CPU. It can catch only a box
-    # the plans come near. Valid states on the chair sit against the person,
-    # so these plans test the person layer, and keep clear of the platform
-    # and the floor: test_platform_layer_pair and the platform_state tests
-    # show that cuRobo honours the platform
+    # the plans would reach into if cuRobo ignored it: on the chair, the
+    # person, which some of these requests cross when it is left out. They
+    # keep clear of the platform and the floor: test_platform_layer_pair and
+    # the platform_state tests show that cuRobo honours the platform
     start, goals = chair_states
     boxes = _cuboids(chair_planner)
     person = _cuboids(chair_planner, "person")
-    planned, deep, closest = 0, {}, math.inf
+    planned, deep = [], {}
     for i, goal in enumerate(goals):
         res = chair_planner.plan_to_joints(goal, start)
         if not res.success:
             continue
-        planned += 1
+        planned.append(goal)
         spheres = _spheres(chair_planner, _path(res, start))
         hits = sphere_box_penetration(spheres[spheres[..., 3] > 0], boxes)
         deep.update({(i, key): 1e3 * d for key, d in hits.items() if d > 0.0005})
-        # how near the person the plan takes the spheres it moves: the base
-        # and shoulder spheres, which no joint moves, sit by it in every state
-        travel = np.linalg.norm(spheres[..., :3] - spheres[0, :, :3], axis=2)
-        moved = spheres[:, (travel.max(axis=0) > 1e-6) & (spheres[0, :, 3] > 0)]
-        closest = min(closest, _clearance(moved, person))
     # a goal the chair leaves no path to is not this test's concern, but too
     # few plans would leave it nothing to check
-    if planned < 4:
-        pytest.fail("%d of the 8 seeded valid goals planned; 4 are needed" % planned)
-    # and plans that keep beyond the activation distance of the person are
-    # not pushed by it: they would be the same if cuRobo ignored it
-    if closest > chair_planner.collision_activation_distance:
+    if len(planned) < 4:
         pytest.fail(
-            "the spheres the plans move come no closer than %.1f mm to the "
-            "person, beyond the %.0f mm activation distance: they do not test it"
-            % (1e3 * closest, 1e3 * chair_planner.collision_activation_distance)
+            "%d of the 8 seeded valid goals planned; 4 are needed" % len(planned)
+        )
+    # and the person must be what keeps them out: planned without it, some of
+    # the same requests reach into it, as they would here if cuRobo ignored it
+    depths = []
+    try:
+        chair_planner.update_world("world_mebot.yaml", ignore={"person"})
+        for goal in planned:
+            res = chair_planner.plan_to_joints(goal, start)
+            if res.success:
+                spheres = _spheres(chair_planner, _path(res, start))
+                hits = sphere_box_penetration(spheres[spheres[..., 3] > 0], person)
+                depths.append(max(hits.values(), default=0.0))
+    finally:
+        chair_planner.update_world("world_mebot.yaml")
+    if max(depths, default=0.0) <= 0.0005:
+        pytest.fail(
+            "none of the %d requests that planned reaches into the person when "
+            "it is left out: %d of them planned without it, and reach at most "
+            "%.1f mm into it, so these plans would pass if cuRobo ignored it"
+            % (len(planned), len(depths), 1e3 * max(depths, default=0.0))
         )
     assert not deep, "mm into a padded box, by (goal, box): %s" % deep
