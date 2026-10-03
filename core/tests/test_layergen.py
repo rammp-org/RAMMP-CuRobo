@@ -2,6 +2,8 @@
 
 The generator's logic is exercised on synthetic URDFs and a throwaway git
 clone, so these tests need no network, no cache and no Demo-Software checkout.
+The committed layer files are checked too: against the packaged robot config
+here, and against the pinned URDF wherever it can be had (in CI, from GitHub).
 """
 
 import hashlib
@@ -15,6 +17,7 @@ import shutil
 import subprocess
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 from decimal import Decimal
 from pathlib import Path
 
@@ -23,6 +26,8 @@ import pytest
 import yaml
 
 from rammp_curobo.config import PACKAGED_CONFIG_DIR
+from rammp_curobo.scene import Scene, load_layer
+from rammp_curobo.world import compose_cuboids, point_box_distance
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -1606,3 +1611,166 @@ def test_cli_writes_only_after_every_gate_and_check_prints_a_diff(
     status = gen.main(["--offline", "--check"])
     assert status != 0
     assert gen.load_data()["source"]["path"] in capsys.readouterr().err
+
+
+# ----------------------------------------------------------- committed files
+def _pinned_urdf(source):
+    """The pinned URDF, from the cache, a Demo-Software clone or GitHub raw.
+
+    Where none of them has it the test is skipped, but not in CI (GitHub sets
+    CI=true): there a skip would leave the committed layers unchecked.
+    """
+    try:
+        urdf, _ = gen.fetch_pinned(source)
+    except FileNotFoundError as exc:
+        if os.environ.get("CI") == "true":
+            raise
+        pytest.skip("the pinned URDF is not available: %s" % exc)
+    return urdf
+
+
+def _committed(layer):
+    """Where the committed file of `layer` (platform, person, floor) is."""
+    return REPO / gen.load_data()["outputs"][layer]
+
+
+def test_committed_layers_regenerate_byte_identical():
+    # `make layers` as a test, so that CI regenerates the files on both of its
+    # architectures: a hand edit fails it, and so does an input changed without
+    # regenerating.
+    data = gen.load_data()
+    files = gen.generate(data, _pinned_urdf(data["source"]))["files"]
+    for path, text in files.items():
+        committed = (REPO / path).read_bytes().decode("utf-8", "replace")
+        assert committed == text, "%s is not what `make layers` writes" % path
+
+
+def _true_shapes(urdf, mount):
+    """Each collision solid of `urdf` with every joint at zero, in base_link
+    (the URDF's root at -`mount`): [(link, (lo, hi), points)].
+
+    Worked out apart from the generator: FK in numpy, the exact bounding box
+    (lo, hi) of the solid, and points on and in it: a 5 x 5 x 5 lattice
+    through a box, 72 angles x 2 radii x 9 heights through a cylinder.
+    """
+    robot = ET.fromstring(urdf)
+
+    def frame(origin):
+        pose = np.eye(4)
+        if origin is not None:
+            rpy = [float(v) for v in origin.get("rpy", "0 0 0").split()]
+            pose[:3, :3] = _rpy_matrix(*rpy)
+            pose[:3, 3] = [float(v) for v in origin.get("xyz", "0 0 0").split()]
+        return pose
+
+    joint_to = {j.find("child").get("link"): j for j in robot.findall("joint")}
+
+    def place(link):
+        if link not in joint_to:  # the root
+            pose = np.eye(4)
+            pose[:3, 3] = np.negative(mount)
+            return pose
+        joint = joint_to[link]
+        return place(joint.find("parent").get("link")) @ frame(joint.find("origin"))
+
+    ticks = np.linspace(-0.5, 0.5, 5)
+    lattice = np.stack(np.meshgrid(ticks, ticks, ticks), -1).reshape(-1, 3)
+    angles = np.linspace(0.0, 2.0 * math.pi, 72, endpoint=False)
+    shapes = []
+    for link in robot.findall("link"):
+        for collision in link.findall("collision"):
+            pose = place(link.get("name")) @ frame(collision.find("origin"))
+            (solid,) = collision.find("geometry")
+            if solid.tag == "box":
+                local = lattice * [float(v) for v in solid.get("size").split()]
+            else:
+                radius, length = (float(solid.get(k)) for k in ("radius", "length"))
+                heights = np.linspace(-length / 2, length / 2, 9)
+                rho, phi, z = np.meshgrid([radius, radius / 2], angles, heights)
+                local = np.stack([rho * np.cos(phi), rho * np.sin(phi), z], -1)
+            points = local.reshape(-1, 3) @ pose[:3, :3].T + pose[:3, 3]
+            if solid.tag == "box":  # the lattice holds its corners
+                bounds = points.min(axis=0), points.max(axis=0)
+            else:  # the rims' reach along each axis, from the cylinder's axis
+                axis = pose[:3, 2]
+                reach = np.abs(axis) * length / 2
+                reach += radius * np.sqrt(np.maximum(0.0, 1.0 - axis * axis))
+                bounds = pose[:3, 3] - reach, pose[:3, 3] + reach
+            shapes.append((link.get("name"), bounds, points))
+    return shapes
+
+
+def test_committed_platform_covers_every_urdf_primitive():
+    # The committed boxes, the ones that plan, against the URDF and the mount
+    # that the file itself names.
+    platform = yaml.safe_load(_committed("platform").read_text(encoding="utf-8"))
+    meta = platform["meta"]
+    mount = meta["arm_base_in_mebot"]
+    assert mount["rpy_deg"] == [0, 0, 0]
+    shapes = _true_shapes(_pinned_urdf(meta["source"]), mount["position"])
+    assert len(shapes) == meta["coverage"]["primitives"]
+    centre = np.array([o["position"] for o in platform["obstacles"]])
+    half = np.array([o["dims"] for o in platform["obstacles"]]) / 2
+    lo, hi = centre - half - 1e-9, centre + half + 1e-9
+
+    def outside(points, inset=0.0):
+        """The points no box holds, each box first moved `inset` in from
+        every face."""
+        held = (points[:, None] >= lo + inset) & (points[:, None] <= hi - inset)
+        return points[~held.all(axis=2).any(axis=1)]
+
+    points = np.concatenate([p for _, _, p in shapes])
+    assert len(outside(points)) == 0
+    # each solid's exact bounding box lies inside one box: the certificate,
+    # checked again
+    for link, (a, b), _ in shapes:
+        assert ((lo <= a) & (b <= hi)).all(axis=1).any(), link
+    # and the samples reach the faces: 1 mm in from every face, some are out
+    assert len(outside(points, inset=0.001)) > 0
+
+
+def test_committed_layers_meet_budgets_and_clear_the_arm():
+    # Neither the URDF nor the network: the committed files and the packaged
+    # robot config are all this reads, so it runs wherever the suite runs.
+    data = gen.load_data()
+    layers = {name: load_layer(_committed(name)) for name in data["outputs"]}
+    meta = {
+        name: yaml.safe_load(_committed(name).read_text(encoding="utf-8"))["meta"]
+        for name in layers
+    }
+    assert {name: (layer.name, layer.excludable) for name, layer in layers.items()} == {
+        "platform": ("platform", False),
+        "person": ("person", True),
+        "floor": ("floor", False),
+    }
+    for layer in layers.values():
+        names = [o.name for o in layer.obstacles]
+        assert len(set(names)) == len(names), layer.name
+    # the platform's budget, and more than one box: a single one is 158 % over,
+    # and padded it reaches into the arm's base sphere
+    assert 1 < len(layers["platform"].obstacles) <= 16
+    assert meta["platform"]["coverage"]["over_pct"] <= 15.0
+
+    # The arm's fixed spheres, worked out again from the packaged robot config:
+    # base_link's, and shoulder_link's placed by joint_1's origin, each radius
+    # with the buffer.
+    robot = PACKAGED_CONFIG_DIR / data["keep_out"]["robot_config"]
+    robot_cfg = yaml.safe_load(robot.read_text(encoding="utf-8"))["robot_cfg"]
+    buffer = robot_cfg["kinematics"]["collision_sphere_buffer"]
+    spheres = robot_cfg["kinematics"]["collision_spheres"]
+    joint_1 = data["keep_out"]["shoulder_link_origin"]
+    turn = _rpy_matrix(*joint_1["rpy"])
+    fixed = [(s["center"], s["radius"] + buffer) for s in spheres["base_link"]]
+    fixed += [
+        (turn @ s["center"] + joint_1["xyz"], s["radius"] + buffer)
+        for s in spheres["shoulder_link"]
+    ]
+    for name, layer in layers.items():
+        # padded as the planner pads them
+        alone = Scene("base_link", [], [], layers=[layer])
+        boxes, _ = compose_cuboids(alone, padding=meta[name]["padding_assumed_m"])
+        clear = min(min(point_box_distance(c, boxes).values()) - r for c, r in fixed)
+        assert clear >= 0.004, name
+        # and the file says how close they come
+        claimed = meta[name]["keep_out_clearance_m"]
+        assert claimed == pytest.approx(clear, abs=5e-5), name

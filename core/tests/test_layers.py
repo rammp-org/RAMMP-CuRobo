@@ -1601,3 +1601,60 @@ def test_make_world_config_hands_curobo_exactly_the_composed_boxes(monkeypatch):
             to_world_config(cuboids)
         del holds[kind]
     assert to_world_config(cuboids) is built[-1]
+
+
+def test_chair_config_composes_within_the_cache():
+    cfg, folder = load_planner_config("gen3_mebot.yaml")
+    layers = load_layers(cfg["layers"], relative_to=folder, listed_in="gen3_mebot.yaml")
+    assert [(layer.name, layer.excludable, layer.path) for layer in layers] == [
+        ("platform", False, PACKAGED_CONFIG_DIR / "layer_mebot_platform.yaml"),
+        ("person", True, PACKAGED_CONFIG_DIR / "layer_mebot_person.yaml"),
+    ]
+    p = cfg["planner"]
+    kw = dict(
+        padding=p["world_padding"],
+        no_pad_names=frozenset(p["no_pad_names"]),
+        cache_obb=p["collision_cache_obb"],
+        layers=layers,
+    )
+    names = [layer.name for layer in layers]
+
+    # the start-up world: the chair and its occupant, and the floor that its
+    # scene lists
+    start = load_scene(resolve_config(cfg["world"], relative_to=folder))
+    _, sources = compose_cuboids(start, **kw)
+    assert summarize(sources, names) == (
+        "23 boxes: scene 0 | config layers: platform 16, person 6 "
+        "| scene layers: floor 1"
+    )
+    # the largest known world, the sim kitchen, with the chair's layers added
+    # still fits the cache, which stays 60
+    kitchen = load_scene(PACKAGED_CONFIG_DIR / "world_sim_kitchen.yaml")
+    _, sources = compose_cuboids(kitchen, **kw)
+    assert summarize(sources, names) == (
+        "48 boxes: scene 26 | config layers: platform 16, person 6 "
+        "| scene layers: none"
+    )
+    assert p["collision_cache_obb"] == 60
+    # each layer was generated for the padding this config plans with
+    for layer in layers + start.layers:
+        meta = yaml.safe_load(layer.path.read_text(encoding="utf-8"))["meta"]
+        assert meta["padding_assumed_m"] == p["world_padding"], layer.name
+
+
+def test_chair_startup_world_is_empty_to_a_v100_loader():
+    path = PACKAGED_CONFIG_DIR / "world_mebot.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    # v1.0.0's load_scene turned obstacles and objects into boxes and ignored
+    # `layers:`; Obstacle, SceneObject and world_cuboids are still v1.0.0's
+    v100 = Scene(
+        data.get("base_frame", "base_link"),
+        [Obstacle(o) for o in data.get("obstacles", [])],
+        [],
+        [SceneObject(o) for o in data.get("objects", [])],
+    )
+    # nothing: a 1.0.0 planner given the chair config refuses an empty world
+    # instead of planning without the chair
+    assert world_cuboids(v100) == {}
+    # this planner's start-up world is the floor that the scene lists
+    assert [layer.name for layer in load_scene(path).layers] == ["floor"]

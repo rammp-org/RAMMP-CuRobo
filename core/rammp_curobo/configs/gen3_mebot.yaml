@@ -1,0 +1,31 @@
+# Planner config for the Gen3 on the MEBot wheelchair: the arm mounted at the
+# RAMMS model pose, with the chair's drive base and its occupant in every
+# collision world.
+#
+#   ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_mebot.yaml
+#
+# The two layers below are composed into EVERY world, set_world pushes
+# included: a push replaces the scene, never these. The scene it replaces
+# holds world_mebot.yaml's floor, so a pushed scene brings its own floor.
+# Both layers are GENERATED from the pinned MEBot URDF by
+# scripts/generate_layers.py (`make layers`); never hand-edit them.
+#
+# The bench retract (retract_config in robot_gen3_2f85.yaml, also cuRobo's IK
+# seed) reaches into the padded person layer, so it is not a valid start
+# state here: plan from the arm's measured state. A seed for the chair is #20.
+#
+# The person, and only the person, can be left out: for one world at a time,
+# and from Python only (SetWorld has no field for it).
+#
+#   planner.update_world('world_mebot.yaml', ignore={'person'})
+#
+# The next push without the ignore brings the person back. Ignoring the
+# platform is refused.
+#
+# Every unlisted knob inherits the defaults gen3.yaml spells out
+# (config.PLANNER_DEFAULTS), world_padding 0.02 among them: the layers were
+# generated for that padding, so changing it means regenerating them.
+
+robot: robot_gen3_2f85.yaml
+world: world_mebot.yaml
+layers: [layer_mebot_platform.yaml, layer_mebot_person.yaml]

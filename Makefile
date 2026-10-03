@@ -8,10 +8,11 @@
 #   make build     the Jetson container (~1 h, arm64 only)
 #   make verify    run the core suite INSIDE the built image
 #   make run       run the planner node from the image
+#   make layers    regenerate the MEBot obstacle layers (expect no diff)
 
 IMAGE ?= rammp-curobo:jp6
 
-.PHONY: lint test colcon build verify run shell bake
+.PHONY: lint test colcon build verify run shell bake layers
 
 lint:                      ## pre-commit run --all-files
 	pre-commit run --all-files
@@ -50,3 +51,14 @@ shell:                     ## Interactive shell in the image
 bake:                      ## Regenerate the robot config (expect no diff)
 	python3 scripts/bake_robot_config.py
 	git diff --exit-code core/rammp_curobo/configs/robot_gen3_2f85.yaml
+
+# Regenerating the MEBot layers must be a no-op too: scripts/mebot_layers.yaml
+# and the URDF it pins (from a Demo-Software clone, the cache or GitHub raw)
+# are their only inputs. A diff here means someone hand-edited a
+# configs/layer_mebot_*.yaml, or changed the inputs without committing the
+# layers they make.
+layers:                    ## Regenerate the MEBot layers (expect no diff)
+	python3 scripts/generate_layers.py
+	git diff --exit-code core/rammp_curobo/configs/layer_mebot_platform.yaml \
+	  core/rammp_curobo/configs/layer_mebot_person.yaml \
+	  core/rammp_curobo/configs/layer_mebot_floor.yaml

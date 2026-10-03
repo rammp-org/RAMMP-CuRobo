@@ -61,6 +61,11 @@ def test_packaged_configs_exist():
         "robot_gen3_2f85.yaml",
         "world_sim_kitchen.yaml",
         "world_real_bench.yaml",
+        "gen3_mebot.yaml",
+        "world_mebot.yaml",
+        "layer_mebot_platform.yaml",
+        "layer_mebot_person.yaml",
+        "layer_mebot_floor.yaml",
     ):
         assert (PACKAGED_CONFIG_DIR / name).is_file(), name
 
