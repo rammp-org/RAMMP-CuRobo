@@ -103,10 +103,17 @@ def load_planner_config(name_or_path):
 
     Returns (config dict, config directory) — the directory anchors
     resolution of the robot/world/layer files the config references.
+
+    Read as a layer file is: as UTF-8 whatever the locale (gen3.yaml has
+    non-ASCII comments), and with a key written twice refused. Plain PyYAML
+    keeps the last one, so an empty second `layers:` would drop the chair.
     """
+    # scene imports this module, so its loader is imported when it is used
+    from rammp_curobo.scene import _StrictLoader
+
     path = resolve_config(name_or_path)
-    with open(path, "r") as f:
-        data = yaml.safe_load(f) or {}
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.load(f, Loader=_StrictLoader) or {}
     cfg = _merge(PLANNER_DEFAULTS, data)
     for key in ("robot", "world"):
         if key not in cfg:

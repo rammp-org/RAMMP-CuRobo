@@ -144,6 +144,22 @@ def test_misplaced_layers_key_is_refused(tmp_path):
         ), extra
 
 
+def test_a_planner_config_key_written_twice_is_refused(tmp_path):
+    path = tmp_path / "planner.yaml"
+    path.write_text(
+        "robot: robot_gen3_2f85.yaml\n"
+        "world: world_mebot.yaml\n"
+        "layers: [layer_mebot_platform.yaml, layer_mebot_person.yaml]\n"
+        "layers: []\n"
+    )
+    # plain PyYAML keeps the last of the two: the chair would be gone without
+    # a word
+    assert yaml.safe_load(path.read_text())["layers"] == []
+    with pytest.raises(ValueError) as exc:
+        load_planner_config(path)
+    assert str(exc.value) == "%s: duplicate key 'layers' on line 4" % path
+
+
 def test_resolve_config_searches_cwd_unless_told_not_to(tmp_path, monkeypatch):
     cwd, beside = tmp_path / "cwd", tmp_path / "beside"
     (cwd / "sub").mkdir(parents=True)
@@ -855,6 +871,21 @@ targets:
         ), layers
 
 
+def _in_a_c_locale(code, *args):
+    """Run `code` with `args` in a child Python whose locale is C."""
+    # PYTHONUTF8=0: Python otherwise turns UTF-8 mode on for the C locale.
+    # PYTHONPATH: the child must import the tree this process is testing
+    env = dict(os.environ, PYTHONUTF8="0", LC_ALL="C")
+    tree = str(Path(rammp_curobo.__file__).resolve().parents[1])
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [tree, env.get("PYTHONPATH")]))
+    return subprocess.run(
+        [sys.executable, "-c", code, *map(str, args)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
 def test_world_files_load_as_utf8_under_a_c_locale(tmp_path):
     kitchen = PACKAGED_CONFIG_DIR / "world_sim_kitchen.yaml"
     layer = tmp_path / "layer.yaml"
@@ -876,19 +907,42 @@ for path in (kitchen, layer):
     sys.exit("premise broken: this locale reads %s as it is" % path)
 print(len(load_scene(kitchen).obstacles), load_layer(layer).name)
 """
-    # PYTHONUTF8=0: Python otherwise turns UTF-8 mode on for the C locale.
-    # PYTHONPATH: the child must import the tree this process is testing
-    env = dict(os.environ, PYTHONUTF8="0", LC_ALL="C")
-    tree = str(Path(rammp_curobo.__file__).resolve().parents[1])
-    env["PYTHONPATH"] = os.pathsep.join(filter(None, [tree, env.get("PYTHONPATH")]))
-    child = subprocess.run(
-        [sys.executable, "-c", code, str(kitchen), str(layer)],
-        env=env,
-        capture_output=True,
-        text=True,
-    )
+    child = _in_a_c_locale(code, kitchen, layer)
     assert child.returncode == 0, child.stderr
     assert child.stdout == "11 block\n"
+
+
+def test_planner_configs_load_as_utf8_under_a_c_locale():
+    # all that the planner reads before any CUDA work: the config, its world,
+    # and the layers both of them list. gen3.yaml has non-ASCII comments,
+    # which the child first proves it cannot read without an encoding
+    code = """\
+import sys
+from pathlib import Path
+
+from rammp_curobo.config import load_planner_config, resolve_config
+from rammp_curobo.scene import load_layers, load_scene
+
+try:
+    with open(sys.argv[1]) as f:
+        f.read()
+except UnicodeDecodeError:
+    pass
+else:
+    sys.exit("premise broken: this locale reads %s as it is" % sys.argv[1])
+for path in sys.argv[1:]:
+    cfg, folder = load_planner_config(path)
+    scene = load_scene(resolve_config(cfg["world"], relative_to=folder))
+    layers = load_layers(cfg["layers"], relative_to=folder, listed_in=path)
+    names = [layer.name for layer in layers + scene.layers]
+    print(Path(path).name, len(scene.obstacles), names)
+"""
+    gen3, mebot = (PACKAGED_CONFIG_DIR / n for n in ("gen3.yaml", "gen3_mebot.yaml"))
+    child = _in_a_c_locale(code, gen3, mebot)
+    assert child.returncode == 0, child.stderr
+    assert child.stdout == (
+        "gen3.yaml 11 []\ngen3_mebot.yaml 0 ['platform', 'person', 'floor']\n"
+    )
 
 
 V100_EMPTY = (
