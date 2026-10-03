@@ -3,7 +3,9 @@
 - **Status:** Design approved by the owner 2026-09-30. Revised 2026-10-02 after
   a sim spike: the sim is a ROS 2 stack (decision 1), and the spike's findings
   are folded in (§8, §13). The owner reviews this spec before the implementation
-  plan is written.
+  plan is written. Amended 2026-10-02 during implementation, not yet reviewed by
+  the owner: planner configs are read as UTF-8 and refuse a key written twice
+  (§4.3, deviation 13).
 - **Issue:** <https://github.com/rammp-org/RAMMP-CuRobo/issues/19>
 - **Branch:** `feature/19-platform-layers`, off `origin/dev` (b734928, the
   v1.0.0 content), in the worktree `~/RAMMP-CuRobo-19`. Local commits only,
@@ -243,6 +245,11 @@ extra keys, which makes it a debugging fallback only.
   `ValueError("<path>: 'layer' is not a planner-config key; did you mean the top-level 'layers:'?")`.
   v1.0.0's `_merge` accepts any key (config.py:85-108). No other unknown-key
   strictness is added.
+- It reads the file as UTF-8 with the layer files' strict loader (§4.1), so a
+  key written twice is refused, naming the file, the key and its line. Plain
+  PyYAML keeps the last one, so a second, empty `layers:` would drop the chair
+  too. A duplicate is not an unknown key. None of the 22 planner configs on this
+  Jetson (this branch's three included) is refused or loads differently.
 - `CuRoboPlanner.__init__` resolves each entry with
   `resolve_config(ref, relative_to=config_dir, search_cwd=False)` and loads it
   **before** `load_scene` and any CUDA work. It then composes once (pure) so
@@ -810,7 +817,9 @@ the real chair is a follow-up (§15).
 - `PLANNER_DEFAULTS["layers"] = []`.
 - `resolve_config(name_or_path, relative_to=None, search_cwd=True)`.
 - `load_planner_config`: `layers` type check, and refusal of a top-level `layer`
-  and of `planner.layers`.
+  and of `planner.layers`. It reads the file as UTF-8 with `scene._StrictLoader`
+  (imported inside the function, since `scene` imports `config`), so a key
+  written twice is refused.
 
 ### 7.3 `world.py` (pure except `to_world_config`)
 
@@ -1243,9 +1252,11 @@ are absent (checked with pytest 9.1.1).
 | `test_empty_scene_is_refused_even_with_config_layers`                            | `empty` with and without config layers; a scene whose only content is a scene layer is accepted                                                                                                                                                                                                                                                              |
 | `test_guards_run_without_curobo`                                                 | with `sys.modules['curobo'] = None`, empty, overflow, duplicate and malformed inputs raise ValueError, not ImportError                                                                                                                                                                                                                                       |
 | `test_misplaced_layers_key_is_refused`                                           | top-level `layer:`, `planner.layers`, and `layers` that is not a list of strings                                                                                                                                                                                                                                                                             |
-| `test_chair_config_composes_within_the_cache`                                    | `gen3_mebot.yaml` resolves platform (not excludable) and person (excludable); the start-up world is 23 boxes; kitchen + chair layers = 48 ≤ 60; `world_padding` equals the files' `padding_assumed_m`                                                                                                                                                        |
+| `test_a_planner_config_key_written_twice_is_refused`                             | `layers:` written twice in a planner config, the second empty (plain PyYAML keeps it), is refused naming the file, the key and its line                                                                                                                                                                                                                      |
+| `test_chair_config_composes_within_the_cache`                                    | `gen3_mebot.yaml` resolves platform (not excludable) and person (excludable); the start-up world is 23 boxes; kitchen + chair layers = 48 ≤ 60; `world_padding` equals the files' `padding_assumed_m`; `robot` resolves to the robot config whose fixed spheres the layers were generated against (`keep_out.robot_config` in `scripts/mebot_layers.yaml`)   |
 | `test_chair_startup_world_is_empty_to_a_v100_loader`                             | `world_mebot.yaml` has no inline obstacles or objects (the only keys v1.0.0 `load_scene` turns into collision boxes)                                                                                                                                                                                                                                         |
 | `test_world_files_load_as_utf8_under_a_c_locale`                                 | a subprocess with `PYTHONUTF8=0 LC_ALL=C` loads `world_sim_kitchen.yaml` (non-ASCII comments) and a layer file; v1.0.0's `open()` without an encoding raises UnicodeDecodeError there                                                                                                                                                                        |
+| `test_planner_configs_load_as_utf8_under_a_c_locale`                             | a subprocess in the same C locale loads `gen3.yaml` (non-ASCII comments) and `gen3_mebot.yaml`, each with its world and layers. Not the robot YAML: `robot_config.py` reads it in the locale's encoding, so the image keeps `PYTHONUTF8=1`                                                                                                                   |
 | `test_sphere_box_penetration_matches_brute_force`                                | 300 random rotated OBBs × 50 spheres against dense point sampling; the right box is named; a rotated case where AABB and OBB answers differ                                                                                                                                                                                                                  |
 | `test_world_summary_distinguishes_config_and_scene_layers`                       | format                                                                                                                                                                                                                                                                                                                                                       |
 
@@ -1310,7 +1321,7 @@ the tests that need it.
 | ----------------------------------------------------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `core/rammp_curobo/scene.py`                                                  | modify          | strict layer loader, `Layer`, `load_layer(s)`, `Scene(layers=)`, scene `layers:`, UTF-8, entry errors naming file and entry                                                         |
 | `core/rammp_curobo/world.py`                                                  | modify          | `compose_cuboids`, `to_world_config`, `make_world_config(layers=)` (cache default 60), `sphere_box_penetration`, `point_box_distance`, `summarize`; guards before the cuRobo import |
-| `core/rammp_curobo/config.py`                                                 | modify          | `layers: []`, `resolve_config(search_cwd=)`, misplaced-key and type checks                                                                                                          |
+| `core/rammp_curobo/config.py`                                                 | modify          | `layers: []`, `resolve_config(search_cwd=)`, misplaced-key and type checks; read as UTF-8, a key written twice refused                                                              |
 | `core/rammp_curobo/planner.py`                                                | modify          | config layers loaded, composed everywhere; warm-up first; fixed-sphere check; `world_boxes`, `world_summary()`; CPU attribution in `check_state_valid` and `_finish`; seed warning  |
 | `core/rammp_curobo/configs/gen3.yaml`                                         | modify          | `layers: []`                                                                                                                                                                        |
 | `core/rammp_curobo/configs/gen3_mebot.yaml`                                   | add             | chair planner config                                                                                                                                                                |
@@ -1413,7 +1424,8 @@ boxes only, and the paired cuboid tests are the Task-1 acceptance.
   and plan-failure errors carry the world summary.
 - **Fixed**: duplicate box names refused instead of collapsed; non-finite or
   non-positive boxes refused; guards run without cuRobo; malformed scene entries
-  name file and entry; world files read as UTF-8.
+  name file and entry; world files read as UTF-8; planner configs read as UTF-8,
+  and a key written twice in one refused instead of the last one kept.
 
 **Workflow.** Branch `feature/19-platform-layers` off `origin/dev` (b734928,
 equal to the v1.0.0 content) in the worktree `~/RAMMP-CuRobo-19`.
@@ -1472,6 +1484,13 @@ install follows. Local commits only, never pushed. Run tests with
    General unknown-key strictness for planner configs is not added.
 1. **The URDF is pinned at 80908b9, not 59d5aef.** 59d5aef is only on a feature
    branch. The blob and sha256 are identical.
+1. **Planner configs are read as UTF-8, and a key written twice is refused**
+   (§4.3). Plain PyYAML keeps the last of two equal keys, so a second, empty
+   `layers:` would plan without the chair. A duplicate is not an unknown key, so
+   deviation 11 stands; none of the 22 planner configs on this Jetson is
+   refused or loads differently. The robot YAML is still read in the locale's
+   encoding (`robot_config.py` is outside this issue's files), so the image
+   keeps `PYTHONUTF8=1`.
 
 ## 13. Risks
 
