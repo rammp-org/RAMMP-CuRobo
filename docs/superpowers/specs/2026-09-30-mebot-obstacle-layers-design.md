@@ -954,8 +954,10 @@ callers pass `_finish`'s result and cuRobo's to `_with_failure_note`, with
 `start` and the corrected goal `xyz` from `plan_to_pose`, and `start` and
 `q_goal` from `plan_to_joints(js)`. When cuRobo failed, the error is
 `_explain(status)` (unchanged) plus a note that **never raises**; any exception
-becomes `"(attribution unavailable: ...)"`. A success, an override's included,
-and a plan cuRobo found that post-validation refused are returned as they are.
+becomes `"(attribution unavailable: ...)"`. An override's failure with no error
+(`error=None`, which `PlanResult` allows) gets the note alone. A success, an
+override's included, and a plan cuRobo found that post-validation refused are
+returned as they are.
 `test_a_subclass_overriding_the_v100_finish_plans_and_is_explained` plans
 through a subclass that overrides `_finish` as RAMMP-generalized does. The
 note:

@@ -751,8 +751,9 @@ class CuRoboPlanner:
             # it only explains: the failure is reported all the same
             note = " (attribution unavailable: %s)" % exc
         # where the world's boxes come from needs no FK, so it is said
-        # whatever the attribution came to
-        res.error += note + " [world: %s]" % self.world_summary()
+        # whatever the attribution came to. An override's failure may have
+        # no error (PlanResult allows None): then the note is the error
+        res.error = (res.error or "") + note + " [world: %s]" % self.world_summary()
         return res
 
     def _failure_note(self, status, start, q_goal, goal_point):

@@ -2379,11 +2379,8 @@ def test_a_subclass_overriding_the_v100_finish_plans_and_is_explained(monkeypatc
     crate = "obj_crate (150 mm)"
     point = " [goal point inside obj_crate] (heuristic: tool point only)"
     reached = " [start collides with %s] [goal collides with %s]" % (crate, crate)
-    for name, status, note in (
-        ("pose", ik, point),
-        ("js", refused, reached),
-        ("fk_pose", ik, point),
-    ):
+    failures = (("pose", ik, point), ("js", refused, reached), ("fk_pose", ik, point))
+    for name, status, note in failures:
         res = through_the_override(name)
         assert (res.success, res.status, res.error) == (
             False,
@@ -2415,3 +2412,19 @@ def test_a_subclass_overriding_the_v100_finish_plans_and_is_explained(monkeypatc
     for name in plans:
         assert plans[name]() is rescued, name
     assert rescued.error is None
+
+    # and a failure it reports without an error, which PlanResult allows, is
+    # still explained: what the world has to do with it is the whole error
+    def unexplained(self, result, t0, q_goal=None):
+        return PlanResult(
+            success=False, joint_traj=None, timing=0.0, error=None, status=result.status
+        )
+
+    monkeypatch.setattr(Stationary, "_finish", unexplained)
+    for name, status, note in failures:
+        res = plans[name]()
+        assert (res.success, res.status, res.error) == (
+            False,
+            status,
+            note + world,
+        ), name
