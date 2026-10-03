@@ -913,9 +913,11 @@ print(len(load_scene(kitchen).obstacles), load_layer(layer).name)
 
 
 def test_planner_configs_load_as_utf8_under_a_c_locale():
-    # all that the planner reads before any CUDA work: the config, its world,
-    # and the layers both of them list. gen3.yaml has non-ASCII comments,
-    # which the child first proves it cannot read without an encoding
+    # the config, its world, and the layers they list. gen3.yaml has non-ASCII
+    # comments, which the child first proves it cannot read without an
+    # encoding. Not the robot YAML: robot_config reads it, before the world,
+    # in the locale's encoding, so where that is not UTF-8 the planner still
+    # stops there (the image sets PYTHONUTF8=1)
     code = """\
 import sys
 from pathlib import Path
@@ -1659,6 +1661,11 @@ def test_make_world_config_hands_curobo_exactly_the_composed_boxes(monkeypatch):
 
 def test_chair_config_composes_within_the_cache():
     cfg, folder = load_planner_config("gen3_mebot.yaml")
+    # every knob at its default, as its header says: the file sets these three
+    # keys and nothing else. Read from the file, since merged, a knob it sets
+    # looks no different from one it inherits
+    text = (PACKAGED_CONFIG_DIR / "gen3_mebot.yaml").read_text(encoding="utf-8")
+    assert set(yaml.safe_load(text)) == {"robot", "world", "layers"}
     layers = load_layers(cfg["layers"], relative_to=folder, listed_in="gen3_mebot.yaml")
     assert [(layer.name, layer.excludable, layer.path) for layer in layers] == [
         ("platform", False, PACKAGED_CONFIG_DIR / "layer_mebot_platform.yaml"),

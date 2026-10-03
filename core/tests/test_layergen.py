@@ -2,8 +2,9 @@
 
 The generator's logic is exercised on synthetic URDFs and a throwaway git
 clone, so these tests need no network, no cache and no Demo-Software checkout.
-The committed layer files are checked too: against the packaged robot config
-here, and against the pinned URDF wherever it can be had (in CI, from GitHub).
+The committed layer files are checked too: the person byte for byte (it needs
+no URDF) and every layer against the packaged robot config here, and against
+the pinned URDF wherever it can be had (in CI, from GitHub).
 """
 
 import hashlib
@@ -1645,6 +1646,19 @@ def test_committed_layers_regenerate_byte_identical():
         assert committed == text, "%s is not what `make layers` writes" % path
 
 
+def test_committed_person_regenerates_without_the_urdf():
+    # The person is made from the data file and the packaged robot config
+    # alone, so unlike the test above this runs wherever the suite does: a
+    # hand edit fails it, and so does a change to its inputs in
+    # scripts/mebot_layers.yaml without `make layers`. The URDF only has to
+    # pass the platform's gates, and a cube far from the arm does.
+    data = gen.load_data()
+    path = data["outputs"]["person"]
+    text = _generate(data, FAR_BOX)["files"][path]
+    committed = (REPO / path).read_bytes().decode("utf-8", "replace")
+    assert committed == text, "%s is not what `make layers` writes" % path
+
+
 def _true_shapes(urdf, mount):
     """Each collision solid of `urdf` with every joint at zero, in base_link
     (the URDF's root at -`mount`): [(link, (lo, hi), points)].
@@ -1701,16 +1715,20 @@ def _true_shapes(urdf, mount):
 
 
 def test_committed_platform_covers_every_urdf_primitive():
-    # The committed boxes, the ones that plan, against the URDF and the mount
-    # that the file itself names.
-    platform = yaml.safe_load(_committed("platform").read_text(encoding="utf-8"))
-    meta = platform["meta"]
+    # The committed boxes as the planner loads them, against the URDF and the
+    # mount that the file itself names.
+    path = _committed("platform")
+    meta = yaml.safe_load(path.read_text(encoding="utf-8"))["meta"]
     mount = meta["arm_base_in_mebot"]
     assert mount["rpy_deg"] == [0, 0, 0]
     shapes = _true_shapes(_pinned_urdf(meta["source"]), mount["position"])
     assert len(shapes) == meta["coverage"]["primitives"]
-    centre = np.array([o["position"] for o in platform["obstacles"]])
-    half = np.array([o["dims"] for o in platform["obstacles"]]) / 2
+    boxes = load_layer(path).obstacles
+    # the planner turns a box by its rpy_deg, and the spans lo..hi below
+    # hold only for an unturned one, as the generator writes them all
+    assert [o.name for o in boxes if any(o.rpy_deg)] == []
+    centre = np.array([o.position for o in boxes])
+    half = np.array([o.dims for o in boxes]) / 2
     lo, hi = centre - half - 1e-9, centre + half + 1e-9
 
     def outside(points, inset=0.0):
