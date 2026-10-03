@@ -24,6 +24,9 @@ setup(
         "console_scripts": [
             "sim_arm = mebot_sim.sim_arm:main",
             "try_goal = mebot_sim.try_goal:main",
+            "check_layers = mebot_sim.check_layers:main",
+            "find_pairs = mebot_sim.find_pairs:main",
+            "run_suite = mebot_sim.run_suite:main",
         ],
     },
 )

@@ -158,9 +158,10 @@ class Tester:
 
         Returns {planned, message, plan_s, world} (the planner's answers; world
         is its reply to the push) and, once flown, {executed, exec_error,
-        contacts, closest, end_error_rad}: the worst contact per group during
-        the flight, the closest approach per group, and how far the arm came
-        to rest from the plan's last point.
+        contacts, closest, tracking_rad, end_error_rad}: the worst contact per
+        group during the flight, the closest approach per group, and how far
+        the arm was from the plan's last point on any joint when the flight
+        ended, and once it came to rest.
         """
         if not 0 < speed <= 1:
             raise ValueError("speed must be in (0, 1], got %r" % speed)
@@ -215,6 +216,10 @@ class Tester:
             "exec_error": result.error_string,
             "contacts": self.sim["worst"],
             "closest": self.sim["closest"],
+            # the driver's final error: measured minus commanded as it ended
+            "tracking_rad": max(
+                (abs(v) for v in result.final_error.positions), default=None
+            ),
             "end_error_rad": max(abs(a - b) for a, b in zip(self.q, rows[-1])),
         }
 

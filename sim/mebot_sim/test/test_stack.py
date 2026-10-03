@@ -7,6 +7,7 @@ guard keeps the planners on this checkout's rammp_curobo, though this host
 has an editable install of another checkout.
 """
 
+import hashlib
 import os
 import subprocess
 import sys
@@ -182,3 +183,17 @@ def test_trajectory_rows_are_read_as_the_driver_reads_them():
         traj.joint_names = names
         with pytest.raises(ValueError, match="in order"):
             stack.trajectory_arrays(traj)
+
+
+def test_the_requests_are_tied_to_the_generated_layer_files(monkeypatch):
+    # and not to what a planner config lists: a chair config that drops a
+    # layer is a regression for the suite's gates to catch, not a reason to
+    # find the requests again
+    outputs = stack.generator().load_data()["outputs"].values()
+    expected = {
+        Path(path).name: hashlib.sha256((REPO / path).read_bytes()).hexdigest()
+        for path in outputs
+    }
+    assert len(expected) == 3
+    monkeypatch.setattr(stack, "CHAIR_CONFIG", "gen3.yaml")
+    assert stack.layer_digests() == expected

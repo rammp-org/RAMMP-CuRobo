@@ -11,13 +11,18 @@
 #   make layers    regenerate the MEBot obstacle layers (expect no diff)
 #   make sim-build build the MEBot sim stack into .sim_ws/ (Jetson)
 #   make sim-test  the sim package's own tests (Jetson; no ROS graph)
+#   make sim       build the sim stack and run its suite (Jetson; exits 0
+#                  only when every gate passes)
 
 IMAGE ?= rammp-curobo:jp6
 # The ROS workspace that provides rammp_arm_interfaces, which the sim's
 # driver stand-in serves; consumed as built.
 SIM_OVERLAY ?= ~/rammp_deps_ws/install/setup.bash
+# Arguments for the sim's launch, e.g. SIM_ARGS=port:=8766 when the live
+# view's default port is taken.
+SIM_ARGS ?=
 
-.PHONY: lint test colcon build verify run shell bake layers sim-build sim-test
+.PHONY: lint test colcon build verify run shell bake layers sim-build sim-test sim
 
 lint:                      ## pre-commit run --all-files
 	pre-commit run --all-files
@@ -94,3 +99,13 @@ sim-test:                  ## The sim package's tests (Jetson; no ROS graph)
 	. /opt/ros/humble/setup.bash && . $(SIM_OVERLAY) && \
 	  PYTHONPATH=$(CURDIR)/core:$(CURDIR)/sim/mebot_sim:$$PYTHONPATH \
 	  MEBOT_SIM_STRICT=1 python3 -m pytest sim/mebot_sim/test -q
+
+# The sim suite (sim/mebot_sim/README.md): the stack, built first, with
+# run_suite beside it; the launch ends when run_suite does, and exits with its
+# verdict. The planners run this checkout's core/, first on PYTHONPATH.
+sim: SHELL := /bin/bash
+sim: sim-build             ## Build the sim stack and run its suite (Jetson)
+	. /opt/ros/humble/setup.bash && . $(SIM_OVERLAY) && \
+	  . $(CURDIR)/.sim_ws/install/setup.bash && \
+	  PYTHONPATH=$(CURDIR)/core:$$PYTHONPATH \
+	  ros2 launch mebot_sim suite.launch.py $(SIM_ARGS)

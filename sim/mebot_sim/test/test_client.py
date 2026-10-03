@@ -55,6 +55,46 @@ def test_nothing_is_flown_unless_the_sim_alone_serves_the_driver():
             _tester(publishers).fly(traj, 1.0)
 
 
+class Done:
+    """An rclpy future that is done already."""
+
+    def __init__(self, value):
+        self.value = value
+
+    def add_done_callback(self, callback):
+        callback(self)
+
+    def result(self):
+        return self.value
+
+
+def test_a_flight_says_how_far_the_arm_was_from_its_last_point(monkeypatch):
+    # when the flight ended (the tracking error) and once at rest (G6)
+    monkeypatch.setattr(client, "SETTLE_S", 0.0)
+    traj = msgs.JointTrajectory(joint_names=list(stack.JOINTS))
+    traj.points.append(msgs.JointTrajectoryPoint(positions=[0.1] * 7))
+    sim = ("/", "mebot_sim")
+    tester = _tester({"/joint_states": [sim], STATUS: [sim]})
+    tester.q = [0.1] * 7  # at the plan's start
+    result = types.SimpleNamespace(
+        error_code=0,
+        error_string="",
+        final_error=types.SimpleNamespace(positions=[0.02, -0.03, 0, 0, 0, 0, 0]),
+    )
+
+    def finished():
+        tester.sim = {"move": 1, "worst": [], "closest": {}}
+        tester.q = [0.1] * 6 + [0.14]
+        return Done(types.SimpleNamespace(result=result))
+
+    handle = types.SimpleNamespace(accepted=True, get_result_async=finished)
+    tester.driver = types.SimpleNamespace(send_goal_async=lambda goal: Done(handle))
+    report = tester.fly(traj, 1.0)
+    assert report["executed"] and report["contacts"] == []
+    assert report["tracking_rad"] == pytest.approx(0.03)
+    assert report["end_error_rad"] == pytest.approx(0.04)
+
+
 def test_a_plan_is_flown_slower_by_dilating_time():
     traj = msgs.JointTrajectory(joint_names=list(stack.JOINTS))
     point = msgs.JointTrajectoryPoint(

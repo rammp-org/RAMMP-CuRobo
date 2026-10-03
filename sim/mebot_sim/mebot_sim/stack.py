@@ -14,6 +14,7 @@ host has an editable install of another checkout, which is what a bare
 `import rammp_curobo` finds.
 """
 
+import hashlib
 import importlib.util
 import os
 import re
@@ -33,6 +34,8 @@ JOINTS = ["joint_%d" % i for i in range(1, 8)]
 # sees: that is the same request planned without a layer.
 CHAIR = "/rammp_curobo"
 CONTROL = "/rammp_curobo_control"
+CHAIR_CONFIG = "gen3_mebot.yaml"
+CONTROL_CONFIG = "gen3.yaml"
 # The chair planner's start-up world (the floor, under its config layers);
 # pushing it again puts the planner back in it.
 CHAIR_WORLD = "world_mebot.yaml"
@@ -166,10 +169,52 @@ def config(name):
 
 
 def scenarios():
-    """config/scenarios.yaml: the sim's start state and the stand-in's
-    postures."""
+    """config/scenarios.yaml: the stand-in's postures and the suite's
+    thresholds, and what find_pairs found: the sim's start state and the
+    requests the suite flies."""
     with open(config("scenarios.yaml"), encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def chair_layers():
+    """The chair planner's layers, as rammp_curobo loads them: (the ones its
+    config lists, which every world it plans in holds, and its start-up
+    world, whose own layer is the floor)."""
+    core()
+    from rammp_curobo.config import load_planner_config, resolve_config
+    from rammp_curobo.scene import load_layers, load_scene
+
+    cfg, where = load_planner_config(CHAIR_CONFIG)
+    world = load_scene(resolve_config(cfg["world"], relative_to=where))
+    layers = load_layers(cfg["layers"], relative_to=where, listed_in=CHAIR_CONFIG)
+    return layers, world
+
+
+def layer_files():
+    """The layer files the generator writes, in this checkout: {layer: path}."""
+    outputs = generator().load_data()["outputs"]
+    return {name: checkout() / path for name, path in outputs.items()}
+
+
+def generated_layers():
+    """The layer files the generator writes, as the planner loads them:
+    {name: Layer}. What the suite holds the planners to, whatever a planner
+    config lists: a chair config that drops a layer is a regression for the
+    suite to catch."""
+    core()
+    from rammp_curobo.scene import load_layer
+
+    loaded = [load_layer(path) for path in layer_files().values()]
+    return {layer.name: layer for layer in loaded}
+
+
+def layer_digests():
+    """sha256 of each layer file the generator writes, by file name: what the
+    suite's requests are found with."""
+    return {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in layer_files().values()
+    }
 
 
 def worlds():
@@ -184,6 +229,31 @@ def worlds():
         ),
         "floor_only": (CONTROL, str(config("control_floor.yaml")), "floor"),
     }
+
+
+def case(name, where, outcome, gates, **details):
+    """One case of the sim suite: what was run, where (the planner and the
+    world it planned in, or what was checked against what), what came of it,
+    and its verdict on each gate it bears on, {gate: passed}. It passes when
+    every verdict does; `details` are its numbers, for the result file."""
+    return dict(
+        case=name,
+        where=where,
+        outcome=outcome,
+        gates=gates,
+        passed=all(gates.values()),
+        **details,
+    )
+
+
+def case_line(case):
+    """A case as a line of the suite's report."""
+    return "%-26s %-40s %-64s %s" % (
+        case["case"],
+        case["where"],
+        case["outcome"],
+        "PASS" if case["passed"] else "FAIL",
+    )
 
 
 def trajectory_arrays(traj):
