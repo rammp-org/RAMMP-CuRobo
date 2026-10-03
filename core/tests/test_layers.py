@@ -1,21 +1,37 @@
 """Obstacle layers, offline: no torch, no cuRobo, no ROS, so they run in CI."""
 
+import math
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 
+import numpy as np
 import pytest
 import yaml
 
 import rammp_curobo
 from rammp_curobo.config import PACKAGED_CONFIG_DIR, load_planner_config, resolve_config
+from rammp_curobo.geometry import euler_deg_to_quat_xyzw
 from rammp_curobo.scene import (
+    Layer,
     Obstacle,
+    Scene,
+    SceneObject,
     load_layer,
     load_layers,
     load_scene,
     scene_from_obstacles,
+)
+from rammp_curobo.world import (
+    compose_cuboids,
+    make_world_config,
+    point_box_distance,
+    sphere_box_penetration,
+    summarize,
+    to_world_config,
+    world_cuboids,
 )
 
 # a layer file that uses every allowed key. Each malformed case below is this
@@ -39,13 +55,16 @@ def _edited(old, new):
     return LAYER.replace(old, new)
 
 
-def _layer(path, name):
-    """Write a one-box layer file that declares `name`: the name tells one
-    copy of a file from another."""
+def _layer(path, name, boxes=("box",), excludable=False):
+    """Write a layer file that declares `name`, with a small box for each name
+    in `boxes`: the name tells one copy of a file from another."""
     path.write_text(
-        "layer: %s\n"
-        "obstacles:\n"
-        "  - {name: box, position: [0.5, 0, 0.2], dims: [0.1, 0.2, 0.3]}\n" % name
+        "layer: %s\nexcludable: %s\nobstacles:\n" % (name, str(excludable).lower())
+        + "".join(
+            "  - {name: %s, position: [0.5, %d, 0.2], dims: [0.1, 0.2, 0.3]}\n"
+            % (box, i)
+            for i, box in enumerate(boxes)
+        )
     )
     return path
 
@@ -54,6 +73,19 @@ def _scene(path, *refs):
     """Write a scene whose only content is the layers it lists."""
     path.write_text("layers: [%s]\n" % ", ".join(str(ref) for ref in refs))
     return path
+
+
+def _config(folder, *refs):
+    """The layers a planner config in `folder` lists."""
+    return load_layers(
+        list(refs), relative_to=folder, listed_in="planner config in %s" % folder
+    )
+
+
+def _box(name, **changes):
+    """A box entry, as Obstacle and scene_from_obstacles take it."""
+    box = {"name": name, "position": [0.5, 0.0, 0.2], "dims": [0.1, 0.2, 0.3]}
+    return dict(box, **changes)
 
 
 def test_misplaced_layers_key_is_refused(tmp_path):
@@ -693,6 +725,24 @@ def test_one_layer_name_from_two_files_is_refused_and_one_file_twice_composes_on
         "%s: layer 'person' is defined by two files: %s and %s" % (scene, other, person)
     )
 
+    # in a world, a file that both the config and the scene list is one layer,
+    # in the config's place, and another file that claims one of the config's
+    # layers is refused like a second file in one list
+    config = _config(tmp_path, "platform.yaml", "person.yaml")
+    scene = load_scene(_scene(tmp_path / "scene.yaml", "link.yaml", "platform.yaml"))
+    for layers in (config, config + config):
+        _, sources = compose_cuboids(scene, layers=layers)
+        assert list(sources.items()) == [
+            ("platform/box", "platform"),
+            ("person/box", "person"),
+        ]
+    scene = load_scene(_scene(tmp_path / "scene.yaml", "other.yaml"))
+    with pytest.raises(ValueError) as exc:
+        compose_cuboids(scene, layers=config)
+    assert str(exc.value) == (
+        "layer 'person' is defined by two files: %s and %s" % (person, other)
+    )
+
 
 def test_malformed_scene_entry_names_file_and_entry(tmp_path):
     path = tmp_path / "world.yaml"
@@ -806,3 +856,638 @@ print(len(load_scene(kitchen).obstacles), load_layer(layer).name)
     )
     assert child.returncode == 0, child.stderr
     assert child.stdout == "11 block\n"
+
+
+V100_EMPTY = (
+    "collision world is empty; refusing to build it — cuRobo would "
+    "silently keep the previous world on update"
+)
+CHAIR_ONLY = (
+    "collision world is empty apart from the configured layers (platform, "
+    "person): the pushed scene has no obstacles, objects or layers — refusing it"
+)
+TWICE = (
+    "two collision boxes are named %r: %s and %s; rename one — a world holds "
+    "one box per name"
+)
+
+
+def test_layer_boxes_are_namespaced_padded_and_attributed(tmp_path):
+    # a layer box may share a scene obstacle's name, the pedestal's too: its
+    # key is its layer's, and no_pad_names exempts scene obstacles only
+    _layer(tmp_path / "platform.yaml", "platform", boxes=("pedestal", "wheel"))
+    _layer(tmp_path / "person.yaml", "person", boxes=("lap",), excludable=True)
+    (tmp_path / "floor.yaml").write_text(
+        "layer: floor\n"
+        "obstacles:\n"
+        "  - {name: slab, position: [0, 0, -0.5], rpy_deg: [0, 0, 30], "
+        "dims: [3, 3, 0.1]}\n"
+    )
+    world = tmp_path / "world.yaml"
+    world.write_text(
+        "obstacles:\n"
+        "  - {name: pedestal, position: [0, 0, -0.05], dims: [0.14, 0.14, 0.04]}\n"
+        "  - {name: table, position: [0.15, 0, -0.1], rpy_deg: [0, 0, 10], "
+        "dims: [1.3, 1.4, 0.06]}\n"
+        "objects:\n"
+        "  - {name: bottle, type: cylinder, radius: 0.033, height: 0.22, "
+        "position: [0.45, 0.12, 0.04]}\n"
+        "layers: [floor.yaml]\n"
+    )
+    scene = load_scene(world)
+    config = _config(tmp_path, "platform.yaml", "person.yaml")
+    pedestal = {"pedestal"}
+    cuboids, sources = compose_cuboids(scene, no_pad_names=pedestal, layers=config)
+
+    # scene obstacles, props, the config's layers in its order, the scene's
+    assert list(sources.items()) == [
+        ("pedestal", "scene"),
+        ("table", "scene"),
+        ("obj_bottle", "scene"),
+        ("platform/pedestal", "platform"),
+        ("platform/wheel", "platform"),
+        ("person/lap", "person"),
+        ("floor/slab", "floor"),
+    ]
+    assert list(cuboids) == list(sources)
+    # the scene's own boxes are v1.0.0's, the pedestal unpadded
+    v100 = world_cuboids(scene, padding=0.02, no_pad_names=pedestal)
+    assert list(cuboids.items())[:3] == list(v100.items())
+    assert cuboids["pedestal"]["dims"] == [0.14, 0.14, 0.04]
+    # every layer box grows by the padding on each side, posed as written
+    for padding in (0.02, 0.05):
+        cuboids, _ = compose_cuboids(
+            scene, padding=padding, no_pad_names=pedestal, layers=config
+        )
+        for layer in config + scene.layers:
+            for o in layer.obstacles:
+                x, y, z, w = euler_deg_to_quat_xyzw(o.rpy_deg)
+                assert cuboids["%s/%s" % (layer.name, o.name)] == {
+                    "dims": [d + 2 * padding for d in o.dims],
+                    "pose": o.position + [w, x, y, z],
+                }
+
+
+@pytest.mark.parametrize(
+    "config", ["gen3.yaml", "gen3_real.yaml"], ids=["kitchen", "bench"]
+)
+def test_layer_free_worlds_compose_exactly_as_v100(config):
+    cfg, cfg_dir = load_planner_config(config)
+    assert cfg["layers"] == []
+    scene = load_scene(resolve_config(cfg["world"], relative_to=cfg_dir))
+    p = cfg["planner"]
+    # ignore holds props a task reaches for, and an obstacle's name, which
+    # v1.0.0 never left out
+    for ignore in (frozenset(), {"bottle", "mug", "table"}):
+        kw = dict(
+            padding=p["world_padding"],
+            ignore=ignore,
+            no_pad_names=frozenset(p["no_pad_names"]),
+        )
+        cuboids, sources = compose_cuboids(
+            scene, cache_obb=p["collision_cache_obb"], **kw
+        )
+        v100 = world_cuboids(scene, **kw)
+        assert list(cuboids.items()) == list(v100.items())
+        assert sources == dict.fromkeys(v100, "scene")
+
+
+def test_duplicate_names_are_refused_not_collapsed(tmp_path):
+    platform = _layer(tmp_path / "platform.yaml", "platform", boxes=("deck", "x"))
+    config = _config(tmp_path, "platform.yaml")
+    table, wall, mug = _box("table"), _box("wall"), _box("mug")
+
+    def refusal(scene, layers=config):
+        with pytest.raises(ValueError) as exc:
+            compose_cuboids(scene, layers=layers)
+        return str(exc.value)
+
+    # v1.0.0 kept one of two boxes of a name, without a word
+    twice = Scene("base_link", [Obstacle(table), Obstacle(wall), Obstacle(table)], [])
+    assert list(world_cuboids(twice)) == ["table", "wall"]
+    assert refusal(twice) == TWICE % (
+        "table",
+        "scene obstacles[0]",
+        "scene obstacles[2]",
+    )
+    # a scene obstacle that takes a layer box's key
+    posing = Scene("base_link", [Obstacle(table), Obstacle(_box("platform/x"))], [])
+    assert refusal(posing) == TWICE % (
+        "platform/x",
+        "scene obstacles[1]",
+        "layer 'platform' obstacles[1] in %s" % platform,
+    )
+    # two props of a name, and an obstacle that takes a prop's key
+    assert refusal(scene_from_obstacles([mug, table, mug])) == TWICE % (
+        "obj_mug",
+        "scene objects[0]",
+        "scene objects[2]",
+    )
+    shadow = Scene("base_link", [Obstacle(_box("obj_mug"))], [], [SceneObject(mug)])
+    assert refusal(shadow) == TWICE % (
+        "obj_mug",
+        "scene obstacles[0]",
+        "scene objects[0]",
+    )
+    # two boxes of a name in one layer: possible in a Layer built in code
+    path = Path("/nowhere/block.yaml")
+    block = Layer("block", False, [Obstacle(_box("box")), Obstacle(_box("box"))], path)
+    assert refusal(scene_from_obstacles([mug]), layers=[block]) == TWICE % (
+        "block/box",
+        "layer 'block' obstacles[0] in %s" % path,
+        "layer 'block' obstacles[1] in %s" % path,
+    )
+    # an ignored prop is not in the world, so it takes no key
+    cuboids, _ = compose_cuboids(
+        scene_from_obstacles([mug, table, mug]), ignore={"mug"}, layers=config
+    )
+    assert list(cuboids) == ["obj_table", "platform/deck", "platform/x"]
+
+
+def test_boxes_curobo_would_silently_ignore_are_refused():
+    nan, inf = float("nan"), float("inf")
+    path = Path("/nowhere/block.yaml")
+
+    def obstacle(**changes):
+        return Scene(
+            "base_link",
+            [Obstacle(_box("crate")), Obstacle(_box("table", **changes))],
+            [],
+        )
+
+    def prop(**changes):
+        return scene_from_obstacles([_box("mug"), _box("can", **changes)])
+
+    def layer(**changes):
+        boxes = [Obstacle(_box("box")), Obstacle(_box("slab", **changes))]
+        return Layer("block", True, boxes, path)
+
+    # v1.0.0 passed them on; cuRobo loads each as an enabled box that never
+    # collides
+    assert math.isnan(
+        world_cuboids(obstacle(position=[nan, 0, 0.2]))["table"]["pose"][0]
+    )
+
+    finite = "'%s' must be 3 finite numbers, got %s"
+    positive = "'dims' must be 3 finite numbers greater than 0, got %s"
+    table = "collision box 'table' (scene obstacles[1]): "
+    can = "collision box 'obj_can' (scene objects[1]): "
+    slab = "collision box 'block/slab' (layer 'block' obstacles[1] in %s): " % path
+    for scene, layers, refused in (
+        (
+            obstacle(position=[nan, 0, 0.2]),
+            (),
+            table + finite % ("position", "[nan, 0.0, 0.2]"),
+        ),
+        (
+            obstacle(position=[0.5, -inf, 0.2]),
+            (),
+            table + finite % ("position", "[0.5, -inf, 0.2]"),
+        ),
+        (
+            obstacle(rpy_deg=[0, inf, 0]),
+            (),
+            table + finite % ("rpy_deg", "[0.0, inf, 0.0]"),
+        ),
+        (
+            obstacle(rpy_deg=[nan, 0, 0]),
+            (),
+            table + finite % ("rpy_deg", "[nan, 0.0, 0.0]"),
+        ),
+        (obstacle(dims=[0.1, 0, 0.3]), (), table + positive % "[0.1, 0.0, 0.3]"),
+        # before padding: padded, a dim of -0.01 would be a box 3 cm wide
+        (obstacle(dims=[0.1, -0.01, 0.3]), (), table + positive % "[0.1, -0.01, 0.3]"),
+        (obstacle(dims=[0.1, nan, 0.3]), (), table + positive % "[0.1, nan, 0.3]"),
+        (obstacle(position=[0.5, 0]), (), table + finite % ("position", "[0.5, 0.0]")),
+        # a prop as the box cuRobo would get: a radius of 0 is a dim of 0
+        (
+            prop(type="cylinder", radius=0, height=0.12),
+            (),
+            can + positive % "[0.0, 0.0, 0.12]",
+        ),
+        (
+            prop(type="cylinder", radius=0.03, height=-0.1),
+            (),
+            can + positive % "[0.06, 0.06, -0.1]",
+        ),
+        (
+            prop(type="sphere", radius=-0.03),
+            (),
+            can + positive % "[-0.06, -0.06, -0.06]",
+        ),
+        (
+            prop(position=[0.5, nan, 0.2]),
+            (),
+            can + finite % ("position", "[0.5, nan, 0.2]"),
+        ),
+        # a layer's boxes, whether the config lists it or the scene does
+        (
+            prop(),
+            [layer(position=[inf, 0, 0.2])],
+            slab + finite % ("position", "[inf, 0.0, 0.2]"),
+        ),
+        (
+            Scene(
+                "base_link",
+                [Obstacle(_box("crate"))],
+                [],
+                layers=[layer(dims=[0.1, 0.2, -0.3])],
+            ),
+            (),
+            slab + positive % "[0.1, 0.2, -0.3]",
+        ),
+    ):
+        with pytest.raises(ValueError) as exc:
+            compose_cuboids(scene, layers=layers)
+        assert str(exc.value) == refused
+
+
+def test_cache_overflow_names_every_source(tmp_path):
+    _layer(tmp_path / "platform.yaml", "platform", boxes=["b%d" % i for i in range(16)])
+    _layer(
+        tmp_path / "person.yaml",
+        "person",
+        boxes=["b%d" % i for i in range(6)],
+        excludable=True,
+    )
+    _layer(tmp_path / "floor.yaml", "floor")
+    config = _config(tmp_path, "platform.yaml", "person.yaml")
+    (floor,) = load_layers(["floor.yaml"], relative_to=tmp_path, listed_in="a scene")
+
+    def scene(n):
+        obstacles = [Obstacle(_box("o%d" % i)) for i in range(n)]
+        return Scene("base_link", obstacles, [], layers=[floor])
+
+    # a world of exactly the cache's size keeps every box
+    cuboids, _ = compose_cuboids(scene(37), layers=config)
+    assert len(cuboids) == 60
+    # one more is refused, never truncated
+    with pytest.raises(ValueError) as exc:
+        compose_cuboids(scene(41), layers=config)
+    assert str(exc.value) == (
+        "64 collision boxes > collision_cache_obb=60 (scene 41, platform 16, "
+        "person 6, floor 1); raise the cache setting in the planner config or "
+        "shrink a layer"
+    )
+    # a layer left out takes no room
+    cuboids, _ = compose_cuboids(scene(41), ignore={"person"}, layers=config)
+    assert len(cuboids) == 58
+    # the limit is the planner config's; a scene with no box of its own fills
+    # none of it
+    with pytest.raises(ValueError) as exc:
+        compose_cuboids(scene(0), cache_obb=22, layers=config)
+    assert str(exc.value) == (
+        "23 collision boxes > collision_cache_obb=22 (platform 16, person 6, "
+        "floor 1); raise the cache setting in the planner config or shrink a layer"
+    )
+    # v1.0.0's overflow, which test_smoke pushes
+    with pytest.raises(ValueError) as exc:
+        compose_cuboids(scene_from_obstacles([_box("b%d" % i) for i in range(61)]))
+    assert str(exc.value) == (
+        "61 collision boxes > collision_cache_obb=60 (scene 61); raise the cache "
+        "setting in the planner config or shrink a layer"
+    )
+
+
+def test_empty_scene_is_refused_even_with_config_layers(tmp_path):
+    _layer(tmp_path / "platform.yaml", "platform")
+    _layer(tmp_path / "person.yaml", "person", excludable=True)
+    _layer(tmp_path / "floor.yaml", "floor")
+    _layer(tmp_path / "block.yaml", "block", excludable=True)
+    config = _config(tmp_path, "platform.yaml", "person.yaml")
+
+    def refusal(scene, layers=config, ignore=()):
+        with pytest.raises(ValueError) as exc:
+            compose_cuboids(scene, ignore=ignore, layers=layers)
+        return str(exc.value)
+
+    nothing = Scene("base_link", [], [])
+    # without config layers, v1.0.0's words: test_smoke matches 'empty'
+    assert refusal(nothing, layers=()) == V100_EMPTY
+    # the config's layers are not the scene's content: a push cut short must
+    # not plan as the chair alone
+    assert refusal(nothing) == CHAIR_ONLY
+    # what ignore leaves out is not content
+    mug = scene_from_obstacles([_box("mug")])
+    assert refusal(mug, layers=(), ignore={"mug"}) == V100_EMPTY
+    assert refusal(mug, ignore={"mug"}) == CHAIR_ONLY
+    block = load_scene(_scene(tmp_path / "block_only.yaml", "block.yaml"))
+    assert refusal(block, ignore={"block"}) == CHAIR_ONLY
+
+    # a scene whose only content is a layer it lists is a world: the chair's
+    # start-up scene lists only the floor
+    start = load_scene(_scene(tmp_path / "start.yaml", "floor.yaml"))
+    for scene in (start, block):
+        for layers in ((), config):
+            _, sources = compose_cuboids(scene, layers=layers)
+            assert list(sources.values()) == [
+                layer.name for layer in [*layers, *scene.layers]
+            ]
+    # so is one that lists a file the config lists too: the scene asked for it
+    platform = load_scene(_scene(tmp_path / "platform_only.yaml", "platform.yaml"))
+    _, sources = compose_cuboids(platform, layers=config)
+    assert list(sources.values()) == ["platform", "person"]
+
+
+def test_guards_run_without_curobo(tmp_path, monkeypatch):
+    # every module of cuRobo, loaded or not, fails to import
+    for name in [n for n in sys.modules if n.partition(".")[0] == "curobo"]:
+        monkeypatch.setitem(sys.modules, name, None)
+    monkeypatch.setitem(sys.modules, "curobo", None)
+    _layer(tmp_path / "platform.yaml", "platform")
+    _layer(tmp_path / "person.yaml", "person", excludable=True)
+    _layer(tmp_path / "other.yaml", "person", excludable=True)
+    config = _config(tmp_path, "platform.yaml", "person.yaml")
+    crate = _box("crate")
+
+    # the premise: a world that every guard lets through gets as far as
+    # importing cuRobo
+    with pytest.raises(ImportError):
+        make_world_config(scene_from_obstacles([crate]), layers=config)
+    for scene, ignore, refusal in (
+        (Scene("base_link", [], []), (), "empty"),
+        (
+            scene_from_obstacles([_box("b%d" % i) for i in range(59)]),
+            (),
+            "61 collision boxes > collision_cache_obb=60",
+        ),
+        (scene_from_obstacles([crate, crate]), (), "named 'obj_crate'"),
+        (
+            scene_from_obstacles([_box("crate", dims=[0.1, 0, 0.3])]),
+            (),
+            "'dims' must be 3 finite numbers",
+        ),
+        (scene_from_obstacles([crate]), {"platform"}, "not excludable"),
+        (
+            load_scene(_scene(tmp_path / "scene.yaml", "other.yaml")),
+            (),
+            "defined by two files",
+        ),
+    ):
+        with pytest.raises(ValueError, match=refusal):
+            make_world_config(scene, ignore=ignore, layers=config)
+
+
+def test_ignore_drops_only_an_excludable_layer(tmp_path):
+    _layer(tmp_path / "platform.yaml", "platform", boxes=("deck", "wheel"))
+    _layer(tmp_path / "person.yaml", "person", boxes=("lap", "torso"), excludable=True)
+    _layer(tmp_path / "floor.yaml", "floor")
+    _layer(tmp_path / "block.yaml", "block", excludable=True)
+    config = _config(tmp_path, "platform.yaml", "person.yaml")
+    world = tmp_path / "world.yaml"
+    # props named after pieces of 'person': ignore='person' must reach neither
+    world.write_text(
+        "obstacles:\n"
+        "  - {name: table, position: [0.5, 0, -0.1], dims: [1, 1, 0.06]}\n"
+        "objects:\n"
+        "  - {name: son, position: [0.4, 0.1, 0.1], dims: [0.05, 0.05, 0.05]}\n"
+        "  - {name: p, position: [0.4, -0.1, 0.1], dims: [0.05, 0.05, 0.05]}\n"
+        "layers: [floor.yaml, block.yaml]\n"
+    )
+    scene = load_scene(world)
+    whole, sources = compose_cuboids(scene, layers=config)
+
+    # the person's boxes go, and every other box stays byte for byte, however
+    # the name is given: a bare string is one name, not its letters
+    for ignore in ({"person"}, ["person"], frozenset({"person"}), "person"):
+        cuboids, kept = compose_cuboids(scene, ignore=ignore, layers=config)
+        assert list(kept.items()) == [
+            (key, source) for key, source in sources.items() if source != "person"
+        ]
+        assert cuboids == {key: whole[key] for key in kept}
+    # for that world only: the next one without the ignore has the person
+    assert compose_cuboids(scene, layers=config) == (whole, sources)
+    # an excludable scene layer goes the same way, and props as in v1.0.0
+    cuboids, kept = compose_cuboids(scene, ignore={"block", "son"}, layers=config)
+    assert list(kept) == [
+        key for key, source in sources.items() if source != "block" and key != "obj_son"
+    ]
+    # a name that is no layer and no prop changes nothing, though it is an
+    # obstacle's or a layer box's: the obstacle stays, the safe direction
+    unknown = {"nothing", "table", "deck", "person/lap"}
+    assert compose_cuboids(scene, ignore=unknown, layers=config) == (whole, sources)
+
+    # a layer that is not excludable is never left out, config or scene
+    for name in ("platform", "floor"):
+        with pytest.raises(ValueError) as exc:
+            compose_cuboids(scene, ignore={name}, layers=config)
+        assert str(exc.value) == "ignore=%r: layer %r is not excludable" % (name, name)
+    # nor is anything, when a prop has the layer's name: which one is meant?
+    for name in ("person", "platform", "block"):
+        props = scene.objects + [SceneObject(_box(name))]
+        clash = Scene("base_link", scene.obstacles, [], props, layers=scene.layers)
+        with pytest.raises(ValueError) as exc:
+            compose_cuboids(clash, ignore={name}, layers=config)
+        assert str(exc.value) == (
+            "ignore=%r names both a prop and a layer; rename the prop" % name
+        )
+        # without the ignore the prop and the layer are both in the world
+        _, both = compose_cuboids(clash, layers=config)
+        assert "obj_" + name in both and name in both.values()
+
+
+def _rotation(axis, angle):
+    """Rodrigues' formula: a rotation matrix made without a quaternion."""
+    k = np.array(
+        [[0.0, -axis[2], axis[1]], [axis[2], 0.0, -axis[0]], [-axis[1], axis[0], 0.0]]
+    )
+    return np.eye(3) + math.sin(angle) * k + (1.0 - math.cos(angle)) * (k @ k)
+
+
+def test_sphere_box_penetration_matches_brute_force():
+    rng = np.random.default_rng(19)
+    boxes, frames = {}, []
+    for i in range(300):
+        axis = rng.normal(size=3)
+        axis /= np.linalg.norm(axis)
+        angle = rng.uniform(-math.pi, math.pi)
+        centre = rng.uniform(-1.0, 1.0, 3)
+        dims = rng.uniform(0.02, 0.2, 3)
+        wxyz = [math.cos(angle / 2), *(axis * math.sin(angle / 2))]
+        boxes["box%d" % i] = {"dims": dims.tolist(), "pose": centre.tolist() + wxyz}
+        frames.append((centre, _rotation(axis, angle), dims / 2))
+    # each sphere placed in the frame of one box: inside it, or off a face,
+    # an edge or a corner, near enough to reach it or not
+    spheres = []
+    for i in rng.integers(0, 300, 50):
+        centre, rot, half = frames[i]
+        offset = rot @ (rng.uniform(-1.6, 1.6, 3) * half)
+        spheres.append([*(centre + offset), rng.uniform(0.005, 0.08)])
+    spheres = np.array(spheres)
+
+    # the brute force: each box's surface, 31 x 31 points a face, edges
+    # included, so no point of it is further from a sample than half the
+    # diagonal of a grid cell
+    g = np.linspace(-1.0, 1.0, 31)
+    u, v = (a.ravel() for a in np.meshgrid(g, g))
+    cube = np.concatenate(
+        [
+            np.insert(np.stack([u, v], 1), a, sign, axis=1)
+            for a in range(3)
+            for sign in (-1.0, 1.0)
+        ]
+    )
+    signed, tol = np.empty((len(spheres), len(boxes))), np.empty(len(boxes))
+    for j, (centre, rot, half) in enumerate(frames):
+        surface = centre + (cube * half) @ rot.T
+        # a coordinate at a time: an (N, P, 3) array is several times slower
+        square = sum((spheres[:, None, k] - surface[:, k]) ** 2 for k in range(3))
+        nearest = np.sqrt(square.min(axis=1))
+        inside = (np.abs((spheres[:, :3] - centre) @ rot) < half).all(axis=1)
+        signed[:, j] = np.where(inside, -nearest, nearest)
+        tol[j] = np.linalg.norm(np.sort(half)[1:]) / 30 + 1e-9
+    depth = spheres[:, 3:] - signed
+    # the premise: centres inside boxes, spheres that reach a box from
+    # outside, and spheres that just fall short
+    assert (signed < -tol).sum() >= 10
+    assert ((signed > tol) & (depth > tol)).sum() >= 10
+    assert ((depth < -tol) & (depth > -0.05)).sum() >= 10
+
+    names = list(boxes)
+    each = []
+    for j, sphere in enumerate(spheres):
+        distance = point_box_distance(sphere[:3], boxes)
+        assert list(distance) == names
+        assert (np.abs(np.array(list(distance.values())) - signed[j]) <= tol).all()
+        hits = sphere_box_penetration(sphere[None], boxes)
+        # every box the sampling finds reached is named, and no box it
+        # finds out of reach
+        assert {names[i] for i in np.flatnonzero(depth[j] > tol)} <= set(hits)
+        assert set(hits) <= {names[i] for i in np.flatnonzero(depth[j] > -tol)}
+        for key, d in hits.items():
+            i = names.index(key)
+            assert abs(d - depth[j, i]) <= tol[i], key
+        each.append(hits)
+    # all spheres at once: each box reached, by its deepest sphere
+    deepest = sphere_box_penetration(spheres, boxes)
+    reached = set().union(*each)
+    assert set(deepest) == reached
+    for key in reached:
+        assert deepest[key] == pytest.approx(
+            max(hits[key] for hits in each if key in hits), abs=1e-12
+        )
+    assert sphere_box_penetration(np.empty((0, 4)), boxes) == {}
+    assert sphere_box_penetration(spheres, {}) == {}
+    assert point_box_distance([0.0, 0.0, 0.0], {}) == {}
+
+    # a 0.40 x 0.02 x 0.40 slab yawed 45 degrees, composed from rpy, and a
+    # point 0.15 m from its centre along its normal: inside the slab's
+    # axis-aligned bounding box, and 0.14 m from the slab
+    slab = _box("slab", position=[0, 0, 0], rpy_deg=[0, 0, 45], dims=[0.4, 0.02, 0.4])
+    cuboids, _ = compose_cuboids(Scene("base_link", [Obstacle(slab)], []), padding=0)
+    c = s = math.sqrt(0.5)
+    normal = np.array([-s, c, 0.0])
+    reach = 0.2 * c + 0.01 * s  # the half width of the bounding box in x and y
+    aabb = {
+        "aabb": {"dims": [2 * reach, 2 * reach, 0.4], "pose": [0, 0, 0, 1, 0, 0, 0]}
+    }
+    point = 0.15 * normal
+    assert point_box_distance(point, cuboids) == {"slab": pytest.approx(0.14)}
+    assert point_box_distance(point, aabb) == {"aabb": pytest.approx(0.15 * s - reach)}
+    assert sphere_box_penetration([[*point, 0.05]], cuboids) == {}
+    assert sphere_box_penetration([[*point, 0.05]], aabb) == {
+        "aabb": pytest.approx(0.05 + reach - 0.15 * s)
+    }
+    # and 0.03 m off its face, a sphere of 0.05 m reaches it by 0.02 m; one
+    # 0.1 mm short of the face reaches nothing
+    assert sphere_box_penetration([[*(0.04 * normal), 0.05]], cuboids) == {
+        "slab": pytest.approx(0.02)
+    }
+    for gap, hits in ((1e-4, {}), (-1e-4, {"slab": pytest.approx(1e-4)})):
+        centre = (0.01 + 0.05 + gap) * normal
+        assert sphere_box_penetration([[*centre, 0.05]], cuboids) == hits, gap
+
+
+def test_world_summary_distinguishes_config_and_scene_layers(tmp_path):
+    _layer(tmp_path / "platform.yaml", "platform", boxes=["b%d" % i for i in range(16)])
+    _layer(
+        tmp_path / "person.yaml",
+        "person",
+        boxes=["b%d" % i for i in range(6)],
+        excludable=True,
+    )
+    _layer(tmp_path / "floor.yaml", "floor")
+    config = _config(tmp_path, "platform.yaml", "person.yaml")
+
+    def summary(scene, layers=config, **kw):
+        _, sources = compose_cuboids(scene, layers=layers, **kw)
+        return summarize(sources, [layer.name for layer in layers])
+
+    # the chair: the config's two layers, and the floor its start-up scene lists
+    start = load_scene(_scene(tmp_path / "start.yaml", "floor.yaml"))
+    assert summary(start) == (
+        "23 boxes: scene 0 | config layers: platform 16, person 6 "
+        "| scene layers: floor 1"
+    )
+    # the same files listed by a scene, on a planner whose config lists none
+    control = load_scene(
+        _scene(tmp_path / "control.yaml", "floor.yaml", "platform.yaml")
+    )
+    assert summary(control, layers=[]) == (
+        "17 boxes: scene 0 | config layers: none | scene layers: floor 1, platform 16"
+    )
+    # listed by both, the platform is a config layer
+    assert summary(control) == summary(start)
+    # a configured layer this world leaves out is still named
+    assert summary(start, ignore={"person"}) == (
+        "17 boxes: scene 0 | config layers: platform 16, person 0 "
+        "| scene layers: floor 1"
+    )
+    kitchen = load_scene(PACKAGED_CONFIG_DIR / "world_sim_kitchen.yaml")
+    assert summary(kitchen, layers=[]) == (
+        "26 boxes: scene 26 | config layers: none | scene layers: none"
+    )
+    assert summary(scene_from_obstacles([_box("crate")]), layers=[]) == (
+        "1 box: scene 1 | config layers: none | scene layers: none"
+    )
+
+
+def test_make_world_config_hands_curobo_exactly_the_composed_boxes(monkeypatch):
+    sent, built, holds = [], [], {}
+
+    def from_dict(data):
+        # like cuRobo's, it builds an entry for each box it is given, unless
+        # `holds` says it builds something else
+        kinds = dict(sphere=[], cylinder=[], capsule=[], mesh=[])
+        kinds.update(cuboid=list(data["cuboid"]))
+        kinds.update(holds)
+        sent.append(data)
+        built.append(types.SimpleNamespace(**kinds))
+        return built[-1]
+
+    stand_in = types.ModuleType("curobo.geom.types")
+    stand_in.WorldConfig = types.SimpleNamespace(from_dict=from_dict)
+    monkeypatch.setitem(sys.modules, "curobo.geom.types", stand_in)
+
+    scene = scene_from_obstacles([_box("crate"), _box("mug")])
+    cuboids, _ = compose_cuboids(scene)
+    assert make_world_config(scene) is built[-1]
+    assert sent[-1] == {"cuboid": cuboids}
+    # a v1.0.0 positional call means what it meant: the padding
+    make_world_config(scene, 0.03)
+    assert sent[-1]["cuboid"]["obj_crate"]["dims"] == [
+        d + 0.06 for d in _box("crate")["dims"]
+    ]
+    # the cache is the planner config's 60 by default
+    sixty = scene_from_obstacles([_box("b%d" % i) for i in range(60)])
+    assert len(make_world_config(sixty).cuboid) == 60
+    with pytest.raises(ValueError, match="61 collision boxes > collision_cache_obb=60"):
+        make_world_config(scene_from_obstacles([_box("b%d" % i) for i in range(61)]))
+
+    # a box short, as from a key it does not know, or anything but boxes, is
+    # not the world composed
+    holds["cuboid"] = ["obj_crate"]
+    with pytest.raises(ValueError) as exc:
+        to_world_config(cuboids)
+    assert str(exc.value) == (
+        "cuRobo's WorldConfig holds {'cuboid': 1, 'sphere': 0, 'cylinder': 0, "
+        "'capsule': 0, 'mesh': 0} for 2 composed boxes; only those boxes may "
+        "reach its collision checkers"
+    )
+    del holds["cuboid"]
+    for kind in ("sphere", "cylinder", "capsule", "mesh"):
+        holds[kind] = ["stray"]
+        with pytest.raises(ValueError, match="'%s': 1" % kind):
+            to_world_config(cuboids)
+        del holds[kind]
+    assert to_world_config(cuboids) is built[-1]
