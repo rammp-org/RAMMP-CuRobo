@@ -1,6 +1,6 @@
-"""sim.launch.py, loaded but not launched: the domain rule it applies to
-everything it starts, and what it starts. The node names and their
-parameters resolve only at launch, so those are left to running it.
+"""sim.launch.py, loaded but not launched: the domain every process it starts
+runs on, what it starts, and that the stack ends whole. The node names and
+their parameters resolve only at launch, so those are left to running it.
 """
 
 import importlib.util
@@ -11,7 +11,7 @@ import pytest
 
 pytest.importorskip("launch_ros")
 from launch import LaunchContext  # noqa: E402
-from launch.actions import LogInfo, SetEnvironmentVariable  # noqa: E402
+from launch.actions import ExecuteProcess, LogInfo, Shutdown  # noqa: E402
 from launch.utilities import perform_substitutions  # noqa: E402
 from launch_ros.actions import Node  # noqa: E402
 
@@ -23,6 +23,7 @@ def _description(monkeypatch, domain):
         monkeypatch.delenv("ROS_DOMAIN_ID", raising=False)
     else:
         monkeypatch.setenv("ROS_DOMAIN_ID", domain)
+    monkeypatch.delenv("RMW_IMPLEMENTATION", raising=False)
     # the planners' own package from this checkout, as .sim_ws provides it
     path = os.pathsep.join(
         [str(REPO / "rammp_curobo_ros"), os.environ.get("PYTHONPATH", "")]
@@ -36,40 +37,68 @@ def _description(monkeypatch, domain):
     return module.generate_launch_description().entities
 
 
-def _environment(entities):
+def _processes(entities):
+    """Each process the launch starts, with the environment it adds to the
+    launch's own. A process gets the launch's environment as it stands when
+    the launch reaches it, so only what is added here reaches every process
+    whatever the order of the actions."""
     context = LaunchContext()
-    return {
-        perform_substitutions(context, a.name): perform_substitutions(context, a.value)
+    return [
+        (
+            action,
+            {
+                perform_substitutions(context, key): perform_substitutions(
+                    context, value
+                )
+                for key, value in action.additional_env or ()
+            },
+        )
+        for action in entities
+        if isinstance(action, ExecuteProcess)
+    ]
+
+
+def _said(entities):
+    context = LaunchContext()
+    return [
+        perform_substitutions(context, a.msg)
         for a in entities
-        if isinstance(a, SetEnvironmentVariable)
-    }
+        if isinstance(a, LogInfo)
+    ]
 
 
 @pytest.mark.parametrize("domain", [None, "0"])
 def test_the_bench_domain_is_left_for_88_and_said(monkeypatch, domain):
     entities = _description(monkeypatch, domain)
-    assert _environment(entities)["ROS_DOMAIN_ID"] == "88"
-    context = LaunchContext()
-    said = [
-        perform_substitutions(context, a.msg)
-        for a in entities
-        if isinstance(a, LogInfo)
-    ]
-    assert any("ROS_DOMAIN_ID" in s and "88" in s for s in said)
+    processes = _processes(entities)
+    assert len(processes) == 3
+    for _process, env in processes:
+        assert env["ROS_DOMAIN_ID"] == "88"
+        assert env["RMW_IMPLEMENTATION"] == "rmw_cyclonedds_cpp"
+    assert any("ROS_DOMAIN_ID=88" in s for s in _said(entities))
 
 
 def test_another_domain_is_kept(monkeypatch):
-    assert "ROS_DOMAIN_ID" not in _environment(_description(monkeypatch, "89"))
+    entities = _description(monkeypatch, "89")
+    for _process, env in _processes(entities):
+        assert env["ROS_DOMAIN_ID"] == "89"
+    assert not any("ROS_DOMAIN_ID" in s for s in _said(entities))
 
 
 def test_the_sim_arm_and_this_checkouts_planner_twice(monkeypatch):
-    nodes = [a for a in _description(monkeypatch, "89") if isinstance(a, Node)]
-    assert [(n.node_package, n.node_executable) for n in nodes] == [
+    processes = _processes(_description(monkeypatch, "89"))
+    assert all(isinstance(process, Node) for process, _env in processes)
+    assert [(p.node_package, p.node_executable) for p, _env in processes] == [
         ("mebot_sim", "sim_arm"),
         ("rammp_curobo_ros", "planner_node"),
         ("rammp_curobo_ros", "planner_node"),
     ]
-    for planner in nodes[1:]:
-        path = planner.additional_env[0][1]
-        first = perform_substitutions(LaunchContext(), path).split(os.pathsep)[0]
-        assert first == str(REPO / "core")
+    for _planner, env in processes[1:]:
+        assert env["PYTHONPATH"].split(os.pathsep)[0] == str(REPO / "core")
+
+
+def test_the_stack_ends_when_any_of_its_nodes_ends(monkeypatch):
+    # /mebot_sim refusing to start beside another driver included: the
+    # planners must not stay up beside whatever serves the driver's names
+    for process, _env in _processes(_description(monkeypatch, "89")):
+        assert any(isinstance(a, Shutdown) for a in process.get_sub_entities())

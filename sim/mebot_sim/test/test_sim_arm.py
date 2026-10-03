@@ -1,9 +1,16 @@
-"""The simulated arm (mebot_sim/sim_arm.py): physics, flights and contacts.
+"""The simulated arm (mebot_sim/sim_arm.py): physics, flights and contacts,
+and the driver's ROS side.
 
 CPU MuJoCo only, stepped by the test instead of the real-time loop: no ROS
-graph and no rendering. It needs what test_scene.py needs, and skips
-without it.
+graph and no rendering. The driver's side runs on a stub node, with the
+messages of ROS and of the interfaces overlay. It needs what test_scene.py
+needs, and skips without it.
 """
+
+import math
+import threading
+import time
+import types
 
 import numpy as np
 import pytest
@@ -12,11 +19,6 @@ mujoco = pytest.importorskip("mujoco")
 
 from mebot_sim import scene, sim_arm, stack  # noqa: E402
 
-try:
-    ASSETS = scene.Assets()
-except (FileNotFoundError, OSError) as exc:  # pragma: no cover
-    pytest.skip("scene inputs unavailable: %s" % exc, allow_module_level=True)
-
 START = np.array(stack.scenarios()["start"])
 # A state inside the upright stand-in, found by a seeded search: its gripper
 # is 25 mm inside the left hand, and nothing else is touched.
@@ -24,8 +26,8 @@ IN_STANDIN = [-0.472, 0.15, 2.264, -2.502, -0.712, 0.39, 2.172]
 
 
 @pytest.fixture
-def sim():
-    return sim_arm.Sim(ASSETS, "upright_lap", START)
+def sim(assets):
+    return sim_arm.Sim(assets, "upright_lap", START)
 
 
 def run(sim, seconds):
@@ -40,6 +42,18 @@ def straight(to, seconds, dt=0.02):
     times = [(k + 1) * dt for k in range(n)]
     rows = [START + np.asarray(to) * (k + 1) / n for k in range(n)]
     return times, rows
+
+
+def trajectory(times, rows, names=stack.JOINTS):
+    """A trajectory_msgs/JointTrajectory: `rows` of positions at `times`."""
+    msgs = pytest.importorskip("trajectory_msgs.msg")
+    traj = msgs.JointTrajectory(joint_names=list(names))
+    for t, row in zip(times, rows):
+        point = msgs.JointTrajectoryPoint(positions=[float(v) for v in row])
+        point.time_from_start.sec = int(t)
+        point.time_from_start.nanosec = int(round((t - int(t)) * 1e9))
+        traj.points.append(point)
+    return traj
 
 
 AWAY = [0.3, -0.2, 0.2, 0.2, 0.3, -0.2, 0.3]
@@ -125,7 +139,8 @@ def test_contacts_over_a_newton_are_reported_by_group(sim):
     assert worst["group"] == "standin" and worst["force_n"] > 1.0
     arm = {sim.model.body(sim.model.geom_bodyid[g]).name for g in sim.arm}
     assert worst["link"] in arm
-    assert worst["part"] in {g["name"] for g in scene.standin(ASSETS, "upright_lap")[0]}
+    standin = scene.standin(sim.assets, "upright_lap")[0]
+    assert worst["part"] in {g["name"] for g in standin}
     # pressed into it, the closest approach is a real penetration: below zero
     assert state["closest"]["standin"]["mm"] < 0
 
@@ -181,25 +196,14 @@ def test_a_distance_at_or_below_zero_counts_only_for_a_real_touch(sim, monkeypat
 
 
 def test_the_driver_interface_refuses_a_malformed_trajectory():
-    msgs = pytest.importorskip("trajectory_msgs.msg")
-
-    def trajectory(rows, times, names=stack.JOINTS):
-        traj = msgs.JointTrajectory(joint_names=list(names))
-        for row, t in zip(rows, times):
-            point = msgs.JointTrajectoryPoint(positions=list(row))
-            point.time_from_start.sec = int(t)
-            point.time_from_start.nanosec = int(round((t - int(t)) * 1e9))
-            traj.points.append(point)
-        return traj
-
     good = [[0.0] * 7, [0.1] * 7]
-    assert sim_arm.trajectory_problem(trajectory(good, [0.02, 0.04])) is None
+    assert sim_arm.trajectory_problem(trajectory([0.02, 0.04], good)) is None
     for traj, why in (
         (trajectory([], []), "no points"),
-        (trajectory(good, [0.02, 0.04], names=stack.JOINTS[:6] + ["x"]), "joint_7"),
-        (trajectory([[0.0] * 6, [0.1] * 7], [0.02, 0.04]), "point 0"),
-        (trajectory([[0.0] * 7, [float("nan")] * 7], [0.02, 0.04]), "point 1"),
-        (trajectory(good, [0.04, 0.04]), "point 1"),
+        (trajectory([0.02, 0.04], good, names=stack.JOINTS[:6] + ["x"]), "joint_7"),
+        (trajectory([0.02, 0.04], [[0.0] * 6, [0.1] * 7]), "point 0"),
+        (trajectory([0.02, 0.04], [[0.0] * 7, [float("nan")] * 7]), "point 1"),
+        (trajectory([0.04, 0.04], good), "point 1"),
     ):
         assert why in sim_arm.trajectory_problem(traj)
 
@@ -217,3 +221,208 @@ def test_the_posture_switch_rebuilds_the_standin_and_keeps_the_arm(sim):
     sim.post("posture", "lean_lap")
     run(sim, 0.0)
     assert len(sim.groups["standin"]) > 0 and sim.snapshot()["posture"] == "lean_lap"
+
+
+# ------------------------------------------------------ the driver's ROS side
+
+
+class Node:
+    """What Driver and _refuse_a_second_driver ask of an rclpy node, answered
+    without a ROS graph. What the driver makes is kept: `made` by topic or
+    service name, `timers` as (period, callback). The graph holds
+    `publishers` of /joint_states and the services `served`."""
+
+    def __init__(self, publishers=0, served=()):
+        self.publishers, self.served = publishers, served
+        self.made, self.timers, self.logged = {}, [], []
+
+    def create_publisher(self, kind, topic, qos):
+        publisher = types.SimpleNamespace(qos=qos, sent=[])
+        publisher.publish = publisher.sent.append
+        self.made[topic] = publisher
+        return publisher
+
+    def create_timer(self, period, callback, callback_group=None):
+        self.timers.append((period, callback))
+
+    def create_subscription(self, kind, topic, callback, qos, callback_group=None):
+        self.made[topic] = callback
+
+    def create_service(self, kind, name, callback, callback_group=None):
+        self.made[name] = callback
+
+    def get_logger(self):
+        return types.SimpleNamespace(
+            warning=self.logged.append, error=self.logged.append
+        )
+
+    def get_clock(self):
+        from rclpy.clock import Clock
+
+        return Clock()
+
+    def count_publishers(self, topic):
+        return self.publishers if topic == "/joint_states" else 0
+
+    def get_service_names_and_types(self):
+        return [(name, []) for name in self.served]
+
+
+@pytest.fixture
+def driver(sim, monkeypatch):
+    """A Driver of `sim` on a stub Node. The action server it would serve is
+    kept in `served`: its name, execute callback and keyword arguments."""
+    action = pytest.importorskip("rclpy.action")
+    pytest.importorskip("rammp_arm_interfaces.action")
+    served = {}
+
+    def server(node, kind, name, execute, **options):
+        served.update(options, name=name, execute=execute)
+
+    monkeypatch.setattr(action, "ActionServer", server)
+    node = Node()
+    return types.SimpleNamespace(
+        driver=sim_arm.Driver(node, sim), node=node, served=served, sim=sim
+    )
+
+
+class Goal:
+    """A goal being executed, as Driver._execute sees rclpy's goal handle:
+    its request, a cancel its client may ask for, and the state and the
+    feedback the driver gives it."""
+
+    def __init__(self, times, rows):
+        self.request = types.SimpleNamespace(trajectory=trajectory(times, rows))
+        self.cancel = threading.Event()
+        self.state, self.feedback, self.result = "executing", [], None
+
+    @property
+    def is_cancel_requested(self):
+        return self.cancel.is_set()
+
+    def publish_feedback(self, feedback):
+        self.feedback.append(feedback)
+
+    def succeed(self):
+        self.state = "succeeded"
+
+    def abort(self):
+        self.state = "aborted"
+
+    def canceled(self):
+        self.state = "canceled"
+
+
+def execute(driver, goal):
+    """Driver._execute(goal) on a thread of its own, as rclpy's executor runs
+    it; the result lands in goal.result."""
+
+    def run():
+        goal.result = driver._execute(goal)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread
+
+
+def step_until(sim, done, timeout=30.0):
+    """Step the sim, carrying out what is posted, until done(): the real-time
+    loop's part, at about real time, since a goal looks at its flight every
+    50 ms."""
+    deadline = time.monotonic() + timeout
+    while not done():
+        assert time.monotonic() < deadline, "not done after %.0f s" % timeout
+        sim.poll()
+        sim.step(sim_arm.SAMPLE_STEPS)
+        time.sleep(0.005)
+
+
+def progress(sim):
+    return sim.snapshot()["progress"] or 0.0
+
+
+def test_joint_states_are_published_as_the_driver_publishes_them(driver):
+    from rclpy.qos import ReliabilityPolicy
+
+    node = driver.node
+    (publish,) = [cb for period, cb in node.timers if period == pytest.approx(0.02)]
+    publish()  # at 50 Hz
+    joint_states = node.made["/joint_states"]
+    assert joint_states.qos.reliability == ReliabilityPolicy.BEST_EFFORT
+    (msg,) = joint_states.sent
+    assert list(msg.name) == stack.JOINTS + [sim_arm.KNUCKLE]
+    assert list(msg.position[:7]) == pytest.approx(driver.sim.q)
+    # the gripper's speed and effort are not measured: NaN, as the driver
+    # publishes them
+    assert all(math.isfinite(v) for v in list(msg.velocity[:7]) + list(msg.effort[:7]))
+    assert math.isnan(msg.velocity[7]) and math.isnan(msg.effort[7])
+
+
+def test_a_malformed_goal_is_rejected_and_a_cancel_always_taken(driver):
+    from rclpy.action import CancelResponse, GoalResponse
+
+    served = driver.served
+    assert served["name"] == "/execute_joint_trajectory"
+    good = types.SimpleNamespace(trajectory=trajectory(*straight(AWAY, 1.0)))
+    bad = types.SimpleNamespace(trajectory=trajectory([0.02], [[0.0] * 6]))
+    assert served["goal_callback"](good) == GoalResponse.ACCEPT
+    assert served["goal_callback"](bad) == GoalResponse.REJECT
+    assert "point 0" in driver.node.logged[-1]
+    assert served["cancel_callback"](None) == CancelResponse.ACCEPT
+
+
+def test_a_goal_flown_to_its_end_succeeds(driver):
+    goal = Goal(*straight(AWAY, 1.0))
+    thread = execute(driver.driver, goal)
+    step_until(driver.sim, lambda: not thread.is_alive())
+    assert goal.state == "succeeded"
+    assert goal.result.error_code == sim_arm.SUCCESSFUL
+    assert np.abs(goal.result.final_error.positions).max() < 0.1
+
+
+def test_a_cancelled_goal_is_preempted_and_the_arm_holds(driver):
+    sim = driver.sim
+    goal = Goal(*straight(AWAY, 4.0))
+    thread = execute(driver.driver, goal)
+    step_until(sim, lambda: progress(sim) > 0.2)
+    goal.cancel.set()
+    step_until(sim, lambda: not thread.is_alive())
+    assert goal.state == "canceled"
+    assert goal.result.error_code == sim_arm.PREEMPTED
+    assert "PREEMPTED" in goal.result.error_string
+    # feedback while it flew: the joints, where they are told to be and are
+    last = goal.feedback[-1]
+    assert list(last.joint_names) == stack.JOINTS
+    assert len(last.desired.positions) == len(last.actual.positions) == 7
+    assert 0 < last.fraction_complete < 1
+    held = sim.ref.copy()
+    run(sim, 0.5)
+    assert np.array_equal(sim.ref, held)
+    assert np.abs(sim.q - held).max() < 0.02
+    assert np.abs(sim.q - (START + AWAY)).max() > 0.1
+
+
+def test_the_latest_goal_preempts_the_one_flying(driver):
+    sim = driver.sim
+    first, second = Goal(*straight(AWAY, 4.0)), Goal(*straight([0.1] * 7, 0.5))
+    one = execute(driver.driver, first)
+    step_until(sim, lambda: progress(sim) > 0.1)
+    two = execute(driver.driver, second)
+    step_until(sim, lambda: not one.is_alive() and not two.is_alive())
+    assert first.state == "aborted"
+    assert first.result.error_code == sim_arm.PREEMPTED
+    assert "newer" in first.result.error_string
+    assert second.state == "succeeded"
+    assert second.result.error_code == sim_arm.SUCCESSFUL
+
+
+def test_the_sim_arm_will_not_start_beside_another_driver(monkeypatch):
+    # the second it gives discovery is not needed: this graph is a stub's
+    monkeypatch.setattr(sim_arm.time, "sleep", lambda seconds: None)
+    sim_arm._refuse_a_second_driver(Node())
+    for node in (
+        Node(publishers=1),
+        Node(served=["/execute_joint_trajectory/_action/send_goal"]),
+    ):
+        with pytest.raises(SystemExit, match="already serves"):
+            sim_arm._refuse_a_second_driver(node)

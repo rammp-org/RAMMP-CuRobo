@@ -2,7 +2,7 @@
 
 It needs MuJoCo, the menagerie Gen3 and 2F-85, the humanoid of ROS's
 mujoco_vendor and the pinned MEBot URDF (from the cache, a Demo-Software
-clone or GitHub); without them it skips.
+clone or GitHub); without them it skips (conftest.py's assets).
 """
 
 import numpy as np
@@ -12,12 +12,7 @@ mujoco = pytest.importorskip("mujoco")
 
 from mebot_sim import scene, stack  # noqa: E402
 
-try:
-    ASSETS = scene.Assets()
-except (FileNotFoundError, OSError) as exc:  # pragma: no cover
-    pytest.skip("scene inputs unavailable: %s" % exc, allow_module_level=True)
-
-DATA = ASSETS.data
+DATA = stack.generator().load_data()
 MOUNT = np.array(DATA["mount"]["arm_base_in_mebot"]["position"])
 SEAT = DATA["person"]["seat"]
 SITTING = DATA["person"]["ansur_p95_in"]["sitting_height"]["inches"] * 0.0254
@@ -25,8 +20,8 @@ POSTURES = ("upright_lap", "lean_lap", "forearms_forward")
 
 
 @pytest.fixture(scope="module")
-def model():
-    return scene.build(ASSETS, "upright_lap")
+def model(assets):
+    return scene.build(assets, "upright_lap")
 
 
 def _geoms(m, prefix):
@@ -68,19 +63,19 @@ def test_the_mebot_is_its_urdf_with_every_joint_deleted(model):
     assert d.xpos[m.body("mebot/mebot").id] == pytest.approx(-MOUNT)
 
 
-def test_the_floor_is_the_floor_layers_top(model):
-    floor = ASSETS.layers["floor"].obstacles[0]
+def test_the_floor_is_the_floor_layers_top(assets, model):
+    floor = assets.layers["floor"].obstacles[0]
     top = floor.position[2] + floor.dims[2] / 2
     assert model.geom("floor").type == mujoco.mjtGeom.mjGEOM_PLANE
     assert model.geom("floor").pos[2] == pytest.approx(top)
     assert top == pytest.approx(-0.4593)
 
 
-def test_the_overlays_are_the_padded_layers_and_touch_nothing(model):
+def test_the_overlays_are_the_padded_layers_and_touch_nothing(assets, model):
     m = model
     overlays = _geoms(m, "overlay/")
     assert len(overlays) == 23  # floor 1, platform 16, person 6
-    for layer in ASSETS.layers.values():
+    for layer in assets.layers.values():
         for box in layer.obstacles:
             g = m.geom("overlay/%s/%s" % (layer.name, box.name))
             # padded by the chair config's 0.02 per side, as the planner pads
@@ -98,8 +93,8 @@ def test_the_overlays_are_the_padded_layers_and_touch_nothing(model):
 
 
 @pytest.mark.parametrize("posture", POSTURES)
-def test_the_standin_sits_in_the_seat(posture):
-    geoms, scale = scene.standin(ASSETS, posture)
+def test_the_standin_sits_in_the_seat(assets, posture):
+    geoms, scale = scene.standin(assets, posture)
 
     def extent(g, axis, side):
         """The geom's bound along `axis` in base_link: side -1 low, +1 high."""
@@ -125,15 +120,15 @@ def test_the_standin_sits_in_the_seat(posture):
     assert scale == pytest.approx(1.254 if posture == "lean_lap" else 1.229, abs=5e-4)
 
 
-def test_the_standin_can_sit_at_the_front_of_the_backrest_range():
+def test_the_standin_can_sit_at_the_front_of_the_backrest_range(assets):
     front = max(SEAT["backrest_face_x"])
-    rear, _ = scene.standin(ASSETS, "upright_lap")
-    forward, _ = scene.standin(ASSETS, "upright_lap", backrest_face_x=front)
+    rear, _ = scene.standin(assets, "upright_lap")
+    forward, _ = scene.standin(assets, "upright_lap", backrest_face_x=front)
     shift = [f["pos"] - r["pos"] for f, r in zip(forward, rear)]
     assert np.allclose(shift, [front - min(SEAT["backrest_face_x"]), 0, 0])
 
 
-def test_contacts_are_counted_against_three_groups(model):
+def test_contacts_are_counted_against_three_groups(assets, model):
     arm, groups = scene.contact_groups(model)
     m = model
 
@@ -149,11 +144,11 @@ def test_contacts_are_counted_against_three_groups(model):
     # the gripper's included
     assert any(m.body(m.geom_bodyid[g]).name.startswith("g_") for g in arm)
     assert len(groups["mebot"]) == 46 and len(groups["floor"]) == 1
-    assert len(groups["standin"]) == len(scene.standin(ASSETS, "upright_lap")[0])
+    assert len(groups["standin"]) == len(scene.standin(assets, "upright_lap")[0])
     # visual geoms and the overlays are in no group
     every = set(arm).union(*map(set, groups.values()))
     assert every.isdisjoint(_geoms(m, "overlay/"))
     assert all(m.geom_contype[g] or m.geom_conaffinity[g] for g in every)
 
     # an empty chair
-    assert len(scene.contact_groups(scene.build(ASSETS, None))[1]["standin"]) == 0
+    assert len(scene.contact_groups(scene.build(assets, None))[1]["standin"]) == 0

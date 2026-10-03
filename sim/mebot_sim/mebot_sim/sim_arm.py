@@ -39,6 +39,7 @@ import json
 import math
 import os
 import queue
+import signal
 import threading
 import time
 
@@ -614,10 +615,16 @@ def main(args=None):
     import rclpy
     from rclpy.executors import MultiThreadedExecutor
     from rclpy.node import Node
+    from rclpy.signals import SignalHandlerOptions
 
     from mebot_sim import view
 
-    rclpy.init(args=args)
+    # Not rclpy's signal handlers: they shut the context down at Ctrl-C, under
+    # a goal being flown, which could then neither end nor tell its client.
+    # SIGINT is a KeyboardInterrupt in the sim's loop instead, even where the
+    # sim was started with it ignored, as a script's background jobs are.
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
+    signal.signal(signal.SIGINT, signal.default_int_handler)
     node = Node("mebot_sim")
     log = node.get_logger()
     posture = node.declare_parameter("posture", "upright_lap").value
@@ -649,23 +656,38 @@ def main(args=None):
         name: stack.Planner(node, name) for name in (stack.CHAIR, stack.CONTROL)
     }
     live = view.View(sim, planners)
+    # the ports are taken before the executor spins: an exit while a thread
+    # is inside rcl aborts the process
+    urls = []
+    for host in hosts:
+        try:
+            urls += live.serve([host], port)
+        except OSError as exc:
+            raise SystemExit(
+                "the live view cannot listen on %s:%d (%s): pass another port:= "
+                "or host:=" % (host, port, exc.strerror or exc)
+            )
     executor = MultiThreadedExecutor()
     executor.add_node(node)
     spin = threading.Thread(target=executor.spin, daemon=True)
     spin.start()
-    for url in live.serve(hosts, port):
-        log.info("live view: %s" % url)
-    log.info(
-        "sim arm up on ROS_DOMAIN_ID=%s, the stand-in %s"
-        % (os.environ["ROS_DOMAIN_ID"], posture)
-    )
     try:
+        for url in urls:
+            log.info("live view: %s" % url)
+        log.info(
+            "sim arm up on ROS_DOMAIN_ID=%s, the stand-in %s"
+            % (os.environ["ROS_DOMAIN_ID"], posture)
+        )
         sim.run(live, rclpy.ok)
     except KeyboardInterrupt:
         pass
     finally:
-        # a goal being flown waits on its flight, and the executor on the goal
+        # The flight under way ends first: the goal flying it sees that within
+        # 50 ms and ends PREEMPTED, and rclpy sends its client the result
+        # from the executor, so both get half a second before the executor
+        # and the context go.
         sim.close()
+        time.sleep(0.5)
         live.close()
         executor.shutdown()
         # out of rcl before the node and the context go

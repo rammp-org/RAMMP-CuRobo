@@ -15,7 +15,9 @@
 /mebot_sim serves the driver's names, so the stack never runs on the bench's
 ROS domain: when ROS_DOMAIN_ID is 0 or unset, everything launched here runs
 on 88 instead, and the launch says so. Another non-zero domain is kept. The
-planner nodes run this checkout's rammp_curobo, its core/ first on their
+stack runs whole or not at all: when any of its nodes ends, /mebot_sim
+refusing to start beside another driver included, the launch ends the rest.
+The planner nodes run this checkout's rammp_curobo, its core/ first on their
 PYTHONPATH (this host has an editable install of another checkout); the
 launch refuses to start them if they would import any other.
 """
@@ -23,7 +25,7 @@ launch refuses to start them if they would import any other.
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, LogInfo, SetEnvironmentVariable
+from launch.actions import DeclareLaunchArgument, LogInfo, Shutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -60,17 +62,24 @@ def generate_launch_description():
         ),
     ]
     if stack.on_bench_domain(os.environ):
-        actions += [
-            SetEnvironmentVariable("ROS_DOMAIN_ID", stack.SIM_DOMAIN),
+        domain = stack.SIM_DOMAIN
+        actions.append(
             LogInfo(
                 msg="ROS_DOMAIN_ID is 0 or unset, the bench's domain: the sim "
-                "stack runs on ROS_DOMAIN_ID=%s instead" % stack.SIM_DOMAIN
-            ),
-        ]
-    if "RMW_IMPLEMENTATION" not in os.environ:
-        actions.append(
-            SetEnvironmentVariable("RMW_IMPLEMENTATION", "rmw_cyclonedds_cpp")
+                "stack runs on ROS_DOMAIN_ID=%s instead" % domain
+            )
         )
+    else:
+        domain = os.environ["ROS_DOMAIN_ID"]
+    # Each node is given its domain and middleware itself: a process starts
+    # with the launch's environment as it stands when the launch reaches it,
+    # so an action that changed that would miss the nodes listed before it.
+    ros = {
+        "ROS_DOMAIN_ID": domain,
+        "RMW_IMPLEMENTATION": os.environ.get(
+            "RMW_IMPLEMENTATION", "rmw_cyclonedds_cpp"
+        ),
+    }
 
     environment = stack.planner_environment(os.environ)
     stack.check_planner_imports(environment)
@@ -86,6 +95,8 @@ def generate_launch_description():
                     for name in ("posture", "port", "host", "menagerie", "humanoid")
                 }
             ],
+            additional_env=ros,
+            on_exit=[Shutdown(reason="/mebot_sim ended, and the sim stack with it")],
         )
     )
     for name, config in PLANNERS:
@@ -97,7 +108,10 @@ def generate_launch_description():
                 output="screen",
                 emulate_tty=True,
                 parameters=[{"config": config}],
-                additional_env=environment,
+                additional_env=dict(ros, **environment),
+                on_exit=[
+                    Shutdown(reason="/%s ended, and the sim stack with it" % name)
+                ],
             )
         )
     return LaunchDescription(actions)

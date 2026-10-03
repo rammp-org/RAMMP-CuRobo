@@ -8,8 +8,10 @@ nodes plan, the driver interface flies, and the sim's own topics report.
         stack.CHAIR, stack.CHAIR_WORLD, start, pos=[0.5, -0.4, 0.3], rpy_deg=[90, 0, 90]
     )
 
-It flies nothing until connect() has heard /mebot_sim on the domain: the
-driver interface it sends to is the sim's, never a real arm's.
+Before each flight it reads the ROS graph, and flies nothing unless
+/mebot_sim alone publishes /joint_states and serves /execute_joint_trajectory
+on the domain. The sim looks for another driver only when it starts, and an
+action goal reaches every server of its name.
 """
 
 import json
@@ -198,6 +200,7 @@ class Tester:
         before = self.sim["move"]
         dilate(traj, speed)
         goal = self._Goal(trajectory=traj, sender_id=self.node.get_name())
+        self._only_the_sim()
         handle = stack.wait(self.driver.send_goal_async(goal), 30.0, "flying")
         if not handle.accepted:
             return {"executed": False, "exec_error": "the driver interface rejected it"}
@@ -214,6 +217,21 @@ class Tester:
             "closest": self.sim["closest"],
             "end_error_rad": max(abs(a - b) for a, b in zip(self.q, rows[-1])),
         }
+
+    def _only_the_sim(self):
+        """Refuse to fly unless /mebot_sim is the one publisher of
+        /joint_states and of the driver action's status, which every server
+        of /execute_joint_trajectory publishes."""
+        for topic in ("/joint_states", "/execute_joint_trajectory/_action/status"):
+            nodes = [
+                "%s/%s" % (p.node_namespace.rstrip("/"), p.node_name)
+                for p in self.node.get_publishers_info_by_topic(topic)
+            ]
+            if nodes != ["/mebot_sim"]:
+                raise RuntimeError(
+                    "%s is published by %s, not by the sim arm alone: nothing is "
+                    "flown" % (topic, ", ".join(nodes) or "nothing")
+                )
 
     def close(self):
         # the spinning thread must be out of rcl before the node and the

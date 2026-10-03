@@ -1,10 +1,58 @@
 """The test client's own logic (mebot_sim/client.py), without a ROS graph."""
 
+import types
+
 import pytest
 
 msgs = pytest.importorskip("trajectory_msgs.msg")
 
 from mebot_sim import client, stack  # noqa: E402
+
+STATUS = "/execute_joint_trajectory/_action/status"
+
+
+class Sent(Exception):
+    """A goal reached the driver interface."""
+
+
+def _tester(publishers):
+    """A Tester, made without a ROS graph, whose node sees `publishers`
+    ({topic: [(namespace, node)]}) and whose driver client raises Sent."""
+    tester = object.__new__(client.Tester)
+    tester.node = types.SimpleNamespace(
+        get_name=lambda: "test",
+        get_publishers_info_by_topic=lambda topic: [
+            types.SimpleNamespace(node_namespace=ns, node_name=name)
+            for ns, name in publishers.get(topic, [])
+        ],
+    )
+    tester.q, tester.sim = [0.0] * 7, {"move": 0}
+    tester._Goal = lambda **fields: fields
+
+    def send_goal_async(goal):
+        raise Sent()
+
+    tester.driver = types.SimpleNamespace(send_goal_async=send_goal_async)
+    return tester
+
+
+def test_nothing_is_flown_unless_the_sim_alone_serves_the_driver():
+    # an action goal reaches every server of its name, and the sim looked
+    # for another driver only when it started
+    traj = msgs.JointTrajectory(joint_names=list(stack.JOINTS))
+    traj.points.append(msgs.JointTrajectoryPoint(positions=[0.0] * 7))
+    sim, driver = ("/", "mebot_sim"), ("/", "kortex_driver")
+    with pytest.raises(Sent):
+        _tester({"/joint_states": [sim], STATUS: [sim]}).fly(traj, 1.0)
+    for publishers in (
+        {"/joint_states": [sim, driver], STATUS: [sim]},
+        {"/joint_states": [sim], STATUS: [sim, driver]},
+        {"/joint_states": [driver], STATUS: [driver]},
+        {"/joint_states": [sim]},
+        {"/joint_states": [("/bench", "mebot_sim")], STATUS: [sim]},
+    ):
+        with pytest.raises(RuntimeError, match="nothing is flown"):
+            _tester(publishers).fly(traj, 1.0)
 
 
 def test_a_plan_is_flown_slower_by_dilating_time():

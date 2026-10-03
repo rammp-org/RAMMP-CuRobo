@@ -18,12 +18,7 @@ import pytest
 mujoco = pytest.importorskip("mujoco")
 msgs = pytest.importorskip("trajectory_msgs.msg")
 
-from mebot_sim import scene, sim_arm, stack, view  # noqa: E402
-
-try:
-    ASSETS = scene.Assets()
-except (FileNotFoundError, OSError) as exc:  # pragma: no cover
-    pytest.skip("scene inputs unavailable: %s" % exc, allow_module_level=True)
+from mebot_sim import sim_arm, stack, view  # noqa: E402
 
 
 class Planner:
@@ -55,19 +50,31 @@ def _plan(rows, dt=0.02):
     )
 
 
+@pytest.fixture(scope="module")
+def egl():
+    """Skip where nothing renders offscreen. The probe is a one-geom model,
+    not the view, so that a fault of the view's own fails its tests."""
+    m = mujoco.MjModel.from_xml_string(
+        '<mujoco><worldbody><geom size="0.1"/></worldbody></mujoco>'
+    )
+    try:
+        renderer = mujoco.Renderer(m, 32, 32)
+        renderer.render()
+    except Exception as exc:  # pragma: no cover
+        pytest.skip("no EGL rendering here: %r" % exc)
+    renderer.close()
+
+
 @pytest.fixture
-def live():
-    sim = sim_arm.Sim(ASSETS, "upright_lap", stack.scenarios()["start"], view.SIZE)
+def live(assets, egl):
+    sim = sim_arm.Sim(assets, "upright_lap", stack.scenarios()["start"], view.SIZE)
     start = sim.q
     planners = {
         stack.CHAIR: Planner(stack.CHAIR, _plan([start + 0.01 * k for k in (1, 2, 3)])),
         stack.CONTROL: Planner(stack.CONTROL, None),
     }
     page = view.View(sim, planners)
-    try:
-        page.render(sim)
-    except Exception as exc:  # pragma: no cover
-        pytest.skip("no EGL rendering here: %r" % exc)
+    page.render(sim)
     (url,) = page.serve(["127.0.0.1"], 0)
     yield sim, page, url, planners
     page.close()
@@ -82,7 +89,7 @@ def _post(url, body):
         return exc.code
 
 
-def test_the_sim_renders_however_it_is_started():
+def test_the_sim_renders_however_it_is_started(egl):
     # as `ros2 run` and the launch start it: no MUJOCO_GL, and the sim's
     # modules imported before anything renders
     env = {k: v for k, v in os.environ.items() if k != "MUJOCO_GL"}

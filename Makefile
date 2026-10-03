@@ -10,13 +10,14 @@
 #   make run       run the planner node from the image
 #   make layers    regenerate the MEBot obstacle layers (expect no diff)
 #   make sim-build build the MEBot sim stack into .sim_ws/ (Jetson)
+#   make sim-test  the sim package's own tests (Jetson; no ROS graph)
 
 IMAGE ?= rammp-curobo:jp6
 # The ROS workspace that provides rammp_arm_interfaces, which the sim's
 # driver stand-in serves; consumed as built.
 SIM_OVERLAY ?= ~/rammp_deps_ws/install/setup.bash
 
-.PHONY: lint test colcon build verify run shell bake layers sim-build
+.PHONY: lint test colcon build verify run shell bake layers sim-build sim-test
 
 lint:                      ## pre-commit run --all-files
 	pre-commit run --all-files
@@ -79,3 +80,14 @@ sim-build:                 ## Build the sim stack into .sim_ws/ (Jetson)
 	  colcon --log-base .sim_ws/log build --symlink-install \
 	    --base-paths rammp_curobo_interfaces rammp_curobo_ros sim/mebot_sim \
 	    --build-base .sim_ws/build --install-base .sim_ws/install
+
+# The sim package's own tests: the domain rule, the scene, flights, contacts,
+# the driver's ROS side on a stub node, the page and the launch description,
+# with MuJoCo on the CPU and EGL and no ROS graph. pytest.ini's testpaths
+# leaves them out of `make test`: they need ROS and the overlay's messages,
+# and this checkout's core/ and sim/mebot_sim first on the path.
+sim-test: SHELL := /bin/bash
+sim-test:                  ## The sim package's tests (Jetson; no ROS graph)
+	. /opt/ros/humble/setup.bash && . $(SIM_OVERLAY) && \
+	  PYTHONPATH=$(CURDIR)/core:$(CURDIR)/sim/mebot_sim:$$PYTHONPATH \
+	    python3 -m pytest sim/mebot_sim/test -q
