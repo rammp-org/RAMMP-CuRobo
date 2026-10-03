@@ -634,15 +634,17 @@ def _person_segments(data):
     seat, m = person["seat"], person["margin_m"]
     # A size that is not positive, or a negative margin, shrinks a segment and
     # may leave it with volume, which is all the gate on the boxes looks at.
-    # "not >": a NaN is refused too, which a max() below would pass over.
+    # An infinite one cannot be snapped to the grid, and float's OverflowError
+    # would name no key. "not 0 < x < inf": a NaN is refused too, which a
+    # max() below would pass over.
     for key, row in person["ansur_p95_in"].items():
-        if not row["inches"] > 0:
+        if not 0 < row["inches"] < math.inf:
             raise ValueError(
-                "person ansur_p95_in %s: size must be positive, got %s inches"
-                % (key, row["inches"])
+                "person ansur_p95_in %s: size must be a finite number above 0,"
+                " got %s inches" % (key, row["inches"])
             )
-    if not m >= 0:
-        raise ValueError("person margin_m must not be negative, got %s" % m)
+    if not 0 <= m < math.inf:
+        raise ValueError("person margin_m must be a finite number >= 0, got %s" % m)
     pan, centre = seat["pan_top_z"], seat["centreline_y"]
     # The backrest face is somewhere in this range. The chest, the knees and
     # the feet take its front end and the back of the knees its rear end, so
@@ -912,10 +914,19 @@ def generate(data, urdf_bytes, perturb=0.0):
             " grid" % (data["grid_m"], TICK)
         )
     # Below zero it would shrink every box before its clearance is measured,
-    # and the column carved out of the person. "not >=": a NaN is refused too.
-    if not data["padding_assumed_m"] >= 0:
+    # and the column carved out of the person; infinite, it overflows the
+    # grid. "not 0 <= x < inf": a NaN is refused too.
+    if not 0 <= data["padding_assumed_m"] < math.inf:
         raise ValueError(
-            "padding_assumed_m must not be negative, got %s" % data["padding_assumed_m"]
+            "padding_assumed_m must be a finite number >= 0, got %s"
+            % data["padding_assumed_m"]
+        )
+    # Below zero the keep-out gate passes a padded box inside the arm's fixed
+    # spheres: data would switch it off. "not >=": a NaN is refused too.
+    if not data["keep_out"]["min_clearance_m"] >= 0:
+        raise ValueError(
+            "keep_out min_clearance_m must not be negative, got %s"
+            % data["keep_out"]["min_clearance_m"]
         )
     mount = data["mount"]["arm_base_in_mebot"]
     if any(mount["rpy_deg"]):

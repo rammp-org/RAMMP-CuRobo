@@ -492,20 +492,22 @@ def test_unsupported_input_is_refused(data, tmp_path, monkeypatch):
     # front face 0.59 m back) or not a number (a hand breadth drops out of a
     # max(), and the lap's top by 0.18 m) or a margin below zero under-sizes
     # the person, and a padding below zero measures every clearance from a
-    # shrunken box.
+    # shrunken box. An infinite one cannot be put on the grid at all, and
+    # float's OverflowError would name no key.
     sizes = [(key, -inches) for key, inches in OCCUPANT_IN.items()]
+    sizes += [(key, math.inf) for key in OCCUPANT_IN]
     for key, inches in sizes + [("hand_breadth", 0.0), ("hand_breadth", math.nan)]:
         shrunk = _inputs()
         shrunk["person"]["ansur_p95_in"][key]["inches"] = inches
         with pytest.raises(ValueError, match="ansur_p95_in %s: " % key):
             _generate(shrunk, FAR_BOX)
-    for below in (-0.01, math.nan):
+    for bad in (-0.01, math.nan, math.inf):
         thin = _inputs()
-        thin["person"]["margin_m"] = below
+        thin["person"]["margin_m"] = bad
         with pytest.raises(ValueError, match="person margin_m"):
             _generate(thin, FAR_BOX)
         shrinking = _inputs()
-        shrinking["padding_assumed_m"] = below
+        shrinking["padding_assumed_m"] = bad
         with pytest.raises(ValueError, match="padding_assumed_m"):
             _generate(shrinking, FAR_BOX)
     # Zero is a choice, though: the occupant as tabulated, under a planner
@@ -524,6 +526,15 @@ def test_unsupported_input_is_refused(data, tmp_path, monkeypatch):
         unset[block][key] = math.nan
         with pytest.raises(ValueError, match="nan"):
             _generate(unset, FAR_BOX)
+    # Nor does a gate below zero: it passes a padded box inside the arm's fixed
+    # spheres, so data would switch the keep-out off. A cube at the arm's base
+    # is 85 mm inside them.
+    at_the_arm = _urdf(_link("chassis", _box("0.1 0.1 0.1", "0.505 -0.265 0.376")))
+    for gate in (-0.001, -1.0):
+        lax = _inputs()
+        lax["keep_out"]["min_clearance_m"] = gate
+        with pytest.raises(ValueError, match="keep_out min_clearance_m"):
+            _generate(lax, at_the_arm)
 
     # Bytes that are not the pinned ones (the data file pins the real URDF).
     with pytest.raises(ValueError, match="sha256"):
