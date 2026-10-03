@@ -17,7 +17,10 @@ and the layer files the generator writes, as the planner loads them.
     the chair planner pads it, or in the arm's carved column, where the
     arm's own base is: any other point is a gap, a part of the body the
     planner does not keep the arm out of. The gap of the unpadded layer is
-    reported beside it.
+    reported beside it. The column is the generator's, and a column carved
+    too wide, or a body too small, leaves no gap either: so at least 99 % of
+    the body must lie in the layer, and the body must be the size spec 6.4
+    measured, 0.07 to 0.09 m3.
 
 Exit status 1 if a gate fails.
 """
@@ -35,6 +38,10 @@ LATTICE = 9  # samples along a box's edge, or a cylinder's height
 ANGLES = 72  # samples around a cylinder's rim
 SHRINK_M = 0.001
 GRID_M = 0.006
+# G1's bounds on what it cannot fail on by a gap: of the 0.076 to 0.0805 m3
+# body, spec 6.4 found 99.11 to 99.86 % in the padded person layer
+COVERED_PCT = 99.0
+BODY_M3 = (0.07, 0.09)
 
 
 def surface_samples(m, d, geoms):
@@ -217,20 +224,24 @@ def cases(assets):
             geoms, _ = scene.standin(assets, posture, face)
             c = coverage(geoms, padded, carved)
             bare = coverage(geoms, unpadded, carved)
+            sized = BODY_M3[0] < c["body_m3"] < BODY_M3[1]
+            covered = c["covered_pct"] >= COVERED_PCT
             out.append(
                 stack.case(
                     "S0 %s %.4f" % (posture, face),
                     "stand-in | person, padded",
-                    "gap %.6f m3 (unpadded %.6f); of %.4f m3, %.2f %% covered, "
+                    "gap %.6f m3 (unpadded %.6f); of %.4f m3%s, %.2f %% covered%s, "
                     "%.5f in the column"
                     % (
                         c["gap_m3"],
                         bare["gap_m3"],
                         c["body_m3"],
+                        "" if sized else " (not %g to %g)" % BODY_M3,
                         c["covered_pct"],
+                        "" if covered else " (under %g)" % COVERED_PCT,
                         c["column_m3"],
                     ),
-                    {"G1": c["gap_points"] == 0},
+                    {"G1": c["gap_points"] == 0 and covered and sized},
                     posture=posture,
                     backrest_face_x=face,
                     body_m3=c["body_m3"],

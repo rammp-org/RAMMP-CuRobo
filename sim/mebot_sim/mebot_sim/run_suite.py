@@ -7,10 +7,12 @@ stack's planner nodes and flown on the sim arm, as a consumer would.
 
 The requests are the ones find_pairs wrote to config/scenarios.yaml, each
 flown from its start, the sim arm put there first. One line per case: what
-was run, the planner and its world, what came of it, PASS or FAIL; then each
-gate's verdict and what is reported without a gate. The same goes, as JSON,
-to ${XDG_CACHE_HOME:-~/.cache}/rammp_curobo/sim/<UTC>-<git sha>.json. Exit
-status 1 if anything failed.
+was run, the planner and its world as the planner summed it up when it took
+it, what came of it, PASS or FAIL; then each gate's verdict and what is
+reported without a gate. The same goes, as JSON, to
+${XDG_CACHE_HOME:-~/.cache}/rammp_curobo/sim/<UTC>-<git sha>.json. Exit
+status 1 if anything failed, or if a run of every scenario left a gate with
+no case to judge.
 
   S0  The layers against the true shapes (check_layers): G0 and G1.
   S1  Platform pairs, the chair empty. The control planner, with the floor
@@ -30,9 +32,16 @@ status 1 if anything failed.
       person box the start is in and how deep (G5).
 
 G6: every flight that touched nothing came to rest within end_error_rad of
-its plan's last point, so the sim flew the plan. A positive control that
-does not hit, and requests that find_pairs found with other layer files than
-the committed ones, fail with "premise broken; re-run find_pairs".
+its plan's last point, so the sim flew the plan.
+
+A refusal is the planner's answer to a request it judged and found no safe
+plan for: cuRobo's IK, graph or trajectory optimisation failed, or the
+planner's re-check flagged states of the plan cuRobo found. Any other
+failure (a busy planner, an exception, a re-check that could not run, no
+answer) judged nothing and fails. A positive control that does not hit, a
+start or goal the planner refuses that find_pairs found valid, and requests
+that find_pairs found with other layer files than the committed ones, or
+fewer than it finds, fail with "premise broken; re-run find_pairs".
 """
 
 import argparse
@@ -45,13 +54,14 @@ import sys
 import time
 from pathlib import Path
 
-from mebot_sim import check_layers, scene, stack
+from mebot_sim import check_layers, find_pairs, scene, stack
 from mebot_sim.client import WHO, Tester, contact_text
 
 SCENARIOS = ("S0", "S1", "S2", "S3", "S4", "S5")
 GATES = {
     "G0": "MuJoCo's MEBot is inside the platform, and not when it shrinks 1 mm",
-    "G1": "the stand-in is inside the padded person layer or the arm's column",
+    "G1": "the stand-in, of its measured size, is in the padded person layer, "
+    "but for at most 1 % in the arm's column",
     "G2": "no flight planned with the layers touches anything",
     "G3": "every positive control is planned, flown, and hits what its layer covers",
     "G4": "the layers survive a consumer's push",
@@ -62,11 +72,33 @@ PREMISE = "premise broken; re-run find_pairs"
 # The layers the chair config composes into every world, by the layer files
 # they are held to: a config that drops one is the regression S4 is for.
 CHAIR_LAYERS = ("platform", "person")
+# How cuRobo fails a valid request it finds no plan for.
+REFUSALS = ("IK_FAIL", "GRAPH_FAIL", "TRAJOPT_FAIL", "FINETUNE_TRAJOPT_FAIL")
 
 
 def _status(message):
     """The planner's status, at the head of a failed plan's message."""
     return message.split(":", 1)[0].replace("MotionGenStatus.", "")
+
+
+def refusal(message):
+    """Whether a failed plan's `message` is the planner's refusal: cuRobo
+    found no plan, or the planner's re-check flagged states of the plan it
+    found. A re-check that could not run flagged nothing."""
+    status = _status(message)
+    return status in REFUSALS or (
+        status == "LIBRARY_VALIDATION_FAILED"
+        and "constraint re-check flagged" in message
+    )
+
+
+def planned_in(planner, reply, world):
+    """A case's planner and the world it planned in, as the planner summed
+    it up in its `reply` to the push of `world`: "/rammp_curobo (23 boxes:
+    scene 0 | config layers: platform 16, person 6 | scene layers: floor 1)".
+    A world it did not take is named as it was pushed."""
+    taken = re.fullmatch(r"world set to .* \(([^()]*)\)", reply or "")
+    return "%s (%s)" % (planner, taken.group(1) if taken else Path(world).name)
 
 
 def with_layers(name, where, report, limit, gates=("G2",)):
@@ -82,15 +114,16 @@ def with_layers(name, where, report, limit, gates=("G2",)):
 
     if not report["planned"]:
         message = report["message"]
-        if "INVALID_START" in message:
-            # find_pairs found every start valid here: a refusal of the start
-            # says nothing about the path
+        status = _status(message)
+        # find_pairs found the start and the goal valid, and inside the
+        # limits: refusing either says nothing about the path
+        if status.startswith("INVALID_START") or status == "START_OUTSIDE_LIMITS":
             return verdict(False, "%s: the start is refused: %s" % (PREMISE, message))
-        if message.startswith("set_world refused") or message.endswith(
-            "rejected the goal"
-        ):
-            return verdict(False, message)
-        return verdict(True, "refused: %s" % _status(message))
+        if status == "GOAL_OUTSIDE_LIMITS" or "[goal collides with" in message:
+            return verdict(False, "%s: the goal is refused: %s" % (PREMISE, message))
+        if refusal(message):
+            return verdict(True, "refused: %s" % status)
+        return verdict(False, "not a refusal: %s" % (message or "no message"))
     if not report["executed"]:
         return verdict(False, "not flown to its end: %s" % report["exec_error"])
     if report["contacts"]:
@@ -211,7 +244,9 @@ def bench_retract():
 
 class Suite:
     """A run of the suite: the cases so far, the Tester flying them, and what
-    ended the run early, if anything did. `assets` makes S0's scene.Assets."""
+    failed the run beyond its cases, if anything did: what ended it early, or
+    a gate that a run of every scenario gave no case to judge. `assets` makes
+    S0's scene.Assets."""
 
     def __init__(self, speed, assets):
         self.speed, self.assets = speed, assets
@@ -244,6 +279,25 @@ class Suite:
                     "layer files than the committed ones (%s)"
                     % (PREMISE, ", ".join(changed))
                 )
+            # ... and all it found: a request fewer is a case left out unseen
+            reaches = find_pairs.REACHES
+            wanted = {
+                "platform pairs": (data["platform_pairs"]["pairs"], find_pairs.PAIRS),
+                "person pairs": (data["person_pairs"]["pairs"], find_pairs.PAIRS),
+                "reaches": (
+                    data["reaches"]["goals"],
+                    reaches["per_region"] * len(reaches["regions"]),
+                ),
+            }
+            short = [
+                "%d %s, not %d" % (len(listed or []), what, n)
+                for what, (listed, n) in wanted.items()
+                if len(listed or []) != n
+            ]
+            if short:
+                raise RuntimeError(
+                    "%s: config/scenarios.yaml holds %s" % (PREMISE, "; ".join(short))
+                )
         if "S0" in selected:
             for case in check_layers.cases(self.assets()):
                 self.add(case)
@@ -263,12 +317,12 @@ class Suite:
         for k, pair in enumerate(pairs):
             name = "%s%s" % (scenario, chr(ord("a") + k))
             for key in (on, off):
-                planner, world, sees = worlds[key]
+                planner, world, _ = worlds[key]
                 self.tester.teleport(pair["start"])
                 report = self.tester.move(
                     planner, world, pair["start"], joints=pair["goal"], speed=self.speed
                 )
-                where = "%s (%s)" % (planner, sees)
+                where = planned_in(planner, report["world"], world)
                 if key == on:
                     self.add(with_layers(name + " on", where, report, self.limit))
                 else:
@@ -286,13 +340,13 @@ class Suite:
 
     def _s3(self, data):
         self.tester.posture(data["person_pairs"]["posture"])
-        planner, world, sees = stack.worlds()["all"]
+        planner, world, _ = stack.worlds()["all"]
         for k, goal in enumerate(data["reaches"]["goals"]):
             self.tester.teleport(data["start"])
             report = self.tester.move(
                 planner, world, data["start"], joints=goal, speed=self.speed
             )
-            where = "%s (%s)" % (planner, sees)
+            where = planned_in(planner, report["world"], world)
             self.add(with_layers("S3 reach %d" % (k + 1), where, report, self.limit))
 
     def _s4(self, data):
@@ -304,7 +358,7 @@ class Suite:
         expected = {name: len(layers[name].obstacles) for name in CHAIR_LAYERS}
         self.add(pushed("%s (%s)" % (stack.CHAIR, world.name), ok, reply, expected))
         # asked in the world pushed, with no push of their own
-        where = "%s (the push; %s)" % (stack.CHAIR, ", ".join(expected))
+        where = planned_in(stack.CHAIR, reply, world)
         for k, pair in enumerate(pairs["pairs"]):
             name = "S4%s" % chr(ord("a") + k)
             if not ok:
@@ -317,11 +371,11 @@ class Suite:
             self.add(with_layers(name, where, report, self.limit, ("G4", "G2")))
 
     def _s5(self, data):
-        planner, world, sees = stack.worlds()["all"]
+        planner, world, _ = stack.worlds()["all"]
         report = self.tester.move(
             planner, world, bench_retract(), joints=data["start"], execute=False
         )
-        self.add(from_retract("%s (%s)" % (planner, sees), report))
+        self.add(from_retract(planned_in(planner, report["world"], world), report))
 
     def reported(self):
         """What the suite reports without a gate."""
@@ -359,6 +413,15 @@ class Suite:
     def finish(self, only):
         """Print the summary, write the result file, and return its path."""
         verdicts = gates(self.cases)
+        idle = [gate for gate, v in verdicts.items() if v is None]
+        if idle and only is None and self.error is None:
+            # nothing is skipped: a gate that every scenario gave no case to
+            # judge is not shown to hold
+            self.error = (
+                "no case bore on %s, which a run of every scenario must judge"
+                % ", ".join(idle)
+            )
+            verdicts.update(dict.fromkeys(idle, False))
         failed = sum(not case["passed"] for case in self.cases)
         reported = self.reported()
         sha, dirty = _git()

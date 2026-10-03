@@ -254,9 +254,41 @@ def test_s0_fails_its_gates_on_broken_layer_files(assets, monkeypatch, tmp_path)
     assert all(c["gates"] == {"G1": False} for c in cases[1:])
 
 
-def test_s0_checks_the_layer_files_whatever_the_chair_config_lists(
-    assets, monkeypatch
+def test_g1_fails_when_the_column_excuses_what_the_person_layer_leaves_out(
+    assets, monkeypatch, tmp_path
 ):
+    # the column is the generator's, as the person layer is: carved too wide,
+    # the layer leaves out a part of the body that the column then excuses,
+    # and no gap is left to fail on
+    files = stack.layer_files()
+    person = load_layer(files["person"])
+    lapless = [o for o in person.obstacles if o.name != "lap"]
+    carved = dict(files, person=_layer_file(tmp_path / "q.yaml", person, lapless))
+    monkeypatch.setattr(stack, "layer_files", lambda: carved)
+    monkeypatch.setattr(check_layers, "column", lambda assets: ([-5.0] * 3, [5.0] * 3))
+    standins = check_layers.cases(assets)[1:]
+    assert all(c["gap_m3"] == 0 and c["covered_pct"] < 99 for c in standins)
+    assert all(c["gates"] == {"G1": False} for c in standins)
+    assert all("covered (under 99)" in c["outcome"] for c in standins)
+
+
+def test_g1_fails_on_a_standin_shrunk_from_its_measured_size(assets, monkeypatch):
+    # every part of the body thinner by a fifth, where it was: the layer
+    # covers it as well as ever, and it is half the body
+    standin = scene.standin
+
+    def thinner(*args):
+        geoms, scale = standin(*args)
+        return [dict(g, size=0.8 * g["size"]) for g in geoms], scale
+
+    monkeypatch.setattr(scene, "standin", thinner)
+    standins = check_layers.cases(assets)[1:]
+    assert all(c["gap_m3"] == 0 and c["covered_pct"] >= 99 for c in standins)
+    assert all(c["body_m3"] < 0.07 and c["gates"] == {"G1": False} for c in standins)
+    assert all("m3 (not 0.07 to 0.09)" in c["outcome"] for c in standins)
+
+
+def test_s0_checks_the_layer_files_whatever_the_chair_config_lists(assets, monkeypatch):
     # a chair config that drops the person is for the flying scenarios to
     # catch; S0 is about the files
     monkeypatch.delitem(assets.layers, "person")

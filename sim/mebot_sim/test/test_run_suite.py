@@ -78,6 +78,53 @@ def test_a_request_with_its_layers_on_is_refused_or_flown_clear():
     assert case["gates"] == {"G4": True, "G2": True, "G6": True}
 
 
+RECHECK = "LIBRARY_VALIDATION_FAILED: plan rejected by post-validation: "
+
+
+@pytest.mark.parametrize("gates", [("G2",), ("G4", "G2")])
+def test_only_a_planner_that_judged_a_request_and_found_no_plan_refuses_it(gates):
+    # cuRobo found no plan, or the planner's re-check flagged the plan it found
+    for message in (
+        IK_FAIL,
+        "MotionGenStatus.GRAPH_FAIL: planning failed (MotionGenStatus.GRAPH_FAIL)",
+        "MotionGenStatus.TRAJOPT_FAIL: the goal is reachable but no collision-free "
+        "PATH was found",
+        "MotionGenStatus.FINETUNE_TRAJOPT_FAIL: a collision-free path WAS found but "
+        "retiming failed",
+        RECHECK + "constraint re-check flagged 3/120 states infeasible",
+    ):
+        case = run_suite.with_layers("S2a on", "here", refused(message), LIMIT, gates)
+        assert case["gates"] == dict.fromkeys(gates, True), message
+        assert case["outcome"].startswith("refused: ")
+    # a planner that did not judge it refused nothing: busy with another
+    # client's plan, raising, its re-check unable to run, its action ended
+    # with no answer, or ended with a status no plan of a valid request has
+    for message in (
+        "planner busy — one plan at a time",
+        "",
+        "EXCEPTION: cuRobo plan_single_js raised: CUDA error",
+        RECHECK + "constraint re-check unavailable: CUDA error",
+        "MotionGenStatus.DT_EXCEPTION: planning failed (MotionGenStatus.DT_EXCEPTION)",
+        "no result: planning failed (no result)",
+    ):
+        case = run_suite.with_layers("S2a on", "here", refused(message), LIMIT, gates)
+        assert case["gates"] == dict.fromkeys(gates, False), message
+        assert case["outcome"] == "not a refusal: %s" % (message or "no message")
+    # find_pairs found the start and the goal valid, inside the limits: a
+    # planner that refuses either was not asked what was found
+    for message in (
+        "START_OUTSIDE_LIMITS: start: joint_2 is 0.120 rad outside the model "
+        "position limits [-2.250, 2.250] (max clamp 0.050)",
+        "GOAL_OUTSIDE_LIMITS: goal: joint_4 is 0.120 rad outside the model "
+        "position limits [-2.580, 2.580] (max clamp 0.050)",
+        "MotionGenStatus.TRAJOPT_FAIL: the goal is reachable but no collision-free "
+        "PATH was found [goal collides with person/lap (12 mm)] [world: 23 boxes]",
+    ):
+        case = run_suite.with_layers("S2a on", "here", refused(message), LIMIT, gates)
+        assert case["gates"] == dict.fromkeys(gates, False), message
+        assert case["outcome"].startswith(run_suite.PREMISE)
+
+
 def test_a_positive_control_passes_only_when_it_hits_what_its_layer_covers():
     case = run_suite.without_layer("S1a off", "here", flown(WHEEL), "mebot")
     assert case["gates"] == {"G3": True} and "the wheelchair" in case["outcome"]
@@ -271,6 +318,72 @@ def test_each_scenario_plans_in_its_world_with_the_standin_as_found(scripted, ca
     assert result["reported"]["s3_planned"] == "8 of 8"
     # how well the sim tracks, from the flights that touched nothing
     assert result["reported"]["tracking_rad_max"] == 0.012
+
+
+def test_each_line_names_the_world_its_planner_said_it_planned_in(
+    scripted, monkeypatch
+):
+    # what the planner replied to the push, and not what the suite pushed: a
+    # chair config that drops the person is shown as the planner holds it
+    taken = (
+        "world set to world_mebot.yaml (17 boxes: scene 0 | config layers: "
+        "platform 16 | scene layers: floor 1)"
+    )
+    consumer = (
+        "world set to /c/consumer_world.yaml (24 boxes: scene 8 | config layers: "
+        "platform 16 | scene layers: none)"
+    )
+    floor = stack.worlds()["floor_only"][1]
+
+    def answers(planner, world, joints, execute):
+        if (planner, world) == (stack.CONTROL, floor):
+            # a world the planner did not take is named as it was pushed
+            return dict(refused("set_world refused: no such file"), world="no such")
+        report = _answers(planner, world, joints, execute)
+        return dict(report, world=taken) if planner == stack.CHAIR else report
+
+    monkeypatch.setattr(Scripted, "set_world", lambda self, world: (True, consumer))
+    _, _, result = scripted([], script=answers)
+    where = {case["case"]: case["where"] for case in result["cases"]}
+    chair = "/rammp_curobo (%s)" % taken[taken.index("(") + 1 : -1]
+    assert where["S2a on"] == where["S3 reach 8"] == where["S5 retract"] == chair
+    assert where["S4a"] == "/rammp_curobo (%s)" % consumer[consumer.index("(") + 1 : -1]
+    assert where["S1a on"] == "/rammp_curobo_control (23 boxes: scene 0 | ...)"
+    assert where["S1a off"] == "/rammp_curobo_control (control_floor.yaml)"
+
+
+def test_a_whole_run_fails_a_gate_that_no_case_bore_on(scripted, capsys):
+    # every request planned with its layers refused, every positive control a
+    # hit: no flight clear of contact shows that the sim flies a plan (G6)
+    def refusing(planner, world, joints, execute):
+        report = _answers(planner, world, joints, execute)
+        return refused() if execute and not report.get("contacts") else report
+
+    status, _, result = scripted([], script=refusing)
+    err = capsys.readouterr().err
+    assert status == 1 and not result["passed"]
+    assert result["gates"]["G2"] == "PASS" and result["gates"]["G6"] == "FAIL"
+    assert "G6" in result["error"] and "G6" in err
+    # a run of one scenario judges its own gates alone
+    status, _, result = scripted(["--only", "S3"], script=refusing)
+    assert status == 0 and result["gates"]["G6"] == "not run"
+
+
+@pytest.mark.parametrize(
+    "key, listed",
+    [("platform_pairs", "pairs"), ("person_pairs", "pairs"), ("reaches", "goals")],
+)
+def test_fewer_requests_than_find_pairs_finds_fail_loudly_before_anything_runs(
+    scripted, monkeypatch, key, listed
+):
+    # each would leave its cases out, and the gates they bear on unjudged
+    for short in (DATA[key][listed][:-1], [], None):
+        data = dict(DATA, **{key: dict(DATA[key], **{listed: short})})
+        monkeypatch.setattr(stack, "scenarios", lambda: data)
+        status, tester, result = scripted([])
+        assert status == 1 and tester is None and result["cases"] == []
+        assert run_suite.PREMISE in result["error"], short
+        assert "%d %s" % (len(short or []), key.split("_")[0]) in result["error"]
 
 
 def test_a_positive_control_that_misses_fails_the_suite(scripted, capsys):

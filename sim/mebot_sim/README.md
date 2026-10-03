@@ -89,7 +89,9 @@ speed (`--speed`), time dilated by the client as consumers do.
 
 ## The gates
 
-`run_suite` exits 1 if any gate fails, or if the run ends early.
+`run_suite` exits 1 if any gate fails, or if the run ends early. A run of
+every scenario (no `--only`) also fails a gate that none of its cases bore
+on: nothing is skipped.
 
 - **G0, registration.** Every surface sample of MuJoCo's own parse of the
   MEBot URDF lies inside a box of the committed platform layer, unpadded,
@@ -99,10 +101,19 @@ speed (`--speed`), time dilated by the client as consumers do.
 - **G1, stand-in coverage.** Every point of the stand-in, sampled through
   its volume on a 6 mm grid, lies in the person layer as the chair planner
   pads it, or in the arm's carved column where the arm's own base is: no
-  part of the seated body is a place the planner would send the arm.
+  part of the seated body is a place the planner would send the arm. The
+  column comes from the generator, as the layer does, so at least 99 % of
+  the body must lie in the layer itself, and the body must be 0.07 to 0.09
+  m³ (it is 0.076 to 0.0805): a column carved too wide, or a body too
+  small, would otherwise leave no gap to fail on.
 - **G2, no contact with the layers on.** No flight planned with the layers
   that cover the scene touches the MEBot, the stand-in or the floor. A
   refusal passes: the planner may decline a request it cannot do safely.
+  A refusal is cuRobo finding no plan (`IK_FAIL`, `GRAPH_FAIL`,
+  `TRAJOPT_FAIL`, `FINETUNE_TRAJOPT_FAIL`), or the planner's re-check
+  flagging states of the plan it found (`LIBRARY_VALIDATION_FAILED`). Any
+  other failure judged nothing and fails: a busy planner, an exception, a
+  re-check that could not run, an answer with no message.
 - **G3, the positive controls.** Every request planned without the layer
   that covers a shape is planned, flown, and hits that shape. This is the
   sim showing that it sees the chair and the body, and that leaving the
@@ -126,16 +137,24 @@ millimetres, so the closest approach is a number to read, not a gate.
 ## Reading the result
 
 One line per case: the case, the planner and the world it planned in (or
-what was checked against what), what came of it, PASS or FAIL. Then each
-gate's verdict, the reported numbers, and the result file:
+what was checked against what), what came of it, PASS or FAIL. The world is
+as the planner summed it up in its reply to the push, its boxes by the
+layers they come from:
+
+```text
+/rammp_curobo (23 boxes: scene 0 | config layers: platform 16, person 6 | scene layers: floor 1)
+```
+
+Then each gate's verdict, the reported numbers, and the result file:
 `${XDG_CACHE_HOME:-~/.cache}/rammp_curobo/sim/<UTC>-<git sha>.json`, the
 same cases with their numbers, outside the repo.
 
 **`premise broken; re-run find_pairs`** means the requests no longer test
 what they were found to test: `scenarios.yaml` was found with other layer
 files than the committed ones (their sha256 is written beside the requests),
-or a positive control did not hit its shape, or a start found valid was
-refused. After `make layers` changes a layer, run
+or holds fewer requests than `find_pairs` finds (3 platform pairs, 3 person
+pairs, 8 reaches), or a positive control did not hit its shape, or a start
+or goal found valid was refused. After `make layers` changes a layer, run
 `ros2 run mebot_sim find_pairs` and commit the `scenarios.yaml` it writes.
 It searches with fixed seeds and keeps the hand-written part of the file
 (the stand-in's postures and the thresholds) as it is.
