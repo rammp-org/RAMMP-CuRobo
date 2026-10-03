@@ -87,6 +87,10 @@ def test_gen3_yaml_matches_planner_defaults():
         assert cfg[section] == PLANNER_DEFAULTS[section], section
     assert cfg["joint_names"] == PLANNER_DEFAULTS["joint_names"]
     assert cfg["layers"] == PLANNER_DEFAULTS["layers"]
+    # merged, a line deleted from the file reads as its default: `layers` is
+    # also read from the file itself, where its comment explains the key
+    text = (PACKAGED_CONFIG_DIR / "gen3.yaml").read_text(encoding="utf-8")
+    assert yaml.safe_load(text)["layers"] == []
 
 
 def test_baked_robot_config_carries_the_patches():
