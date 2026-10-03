@@ -92,18 +92,19 @@ def test_the_overlays_are_the_padded_layers_and_touch_nothing(assets, model):
                 assert r == gr == b
 
 
+def extent(g, axis, side):
+    """A stand-in geom's bound along `axis` in base_link: side -1 low, +1
+    high."""
+    if g["type"] == mujoco.mjtGeom.mjGEOM_SPHERE:
+        return g["pos"][axis] + side * g["size"][0]
+    half = np.asarray(g["mat"]).reshape(3, 3)[:, 2] * g["size"][1]
+    ends = (g["pos"][axis] - half[axis], g["pos"][axis] + half[axis])
+    return (max if side > 0 else min)(ends) + side * g["size"][0]
+
+
 @pytest.mark.parametrize("posture", POSTURES)
 def test_the_standin_sits_in_the_seat(assets, posture):
     geoms, scale = scene.standin(assets, posture)
-
-    def extent(g, axis, side):
-        """The geom's bound along `axis` in base_link: side -1 low, +1 high."""
-        if g["type"] == mujoco.mjtGeom.mjGEOM_SPHERE:
-            return g["pos"][axis] + side * g["size"][0]
-        half = np.asarray(g["mat"]).reshape(3, 3)[:, 2] * g["size"][1]
-        ends = (g["pos"][axis] - half[axis], g["pos"][axis] + half[axis])
-        return (max if side > 0 else min)(ends) + side * g["size"][0]
-
     named = {g["name"]: g for g in geoms}
     butt, head = named["butt"], named["head"]
     pan = SEAT["pan_top_z"] - MOUNT[2]
@@ -126,6 +127,24 @@ def test_the_standin_can_sit_at_the_front_of_the_backrest_range(assets):
     forward, _ = scene.standin(assets, "upright_lap", backrest_face_x=front)
     shift = [f["pos"] - r["pos"] for f, r in zip(forward, rear)]
     assert np.allclose(shift, [front - min(SEAT["backrest_face_x"]), 0, 0])
+
+
+def test_the_standin_is_seated_at_the_sitting_height_it_is_given(assets):
+    # G1 seats it at each size of config/scenarios.yaml, here the
+    # 5th-percentile woman's (ANSUR II row 8): on the pan, against the
+    # backrest, its head that much higher, the whole of it scaled with it
+    height = 31.61 * 0.0254
+    _, occupant = scene.standin(assets, "upright_lap")
+    geoms, scale = scene.standin(assets, "upright_lap", sitting_height=height)
+    named = {g["name"]: g for g in geoms}
+    pan = SEAT["pan_top_z"] - MOUNT[2]
+    assert extent(named["butt"], 2, -1) == pytest.approx(pan)
+    assert extent(named["head"], 2, +1) - pan == pytest.approx(height)
+    back = min(
+        extent(named[n], 0, -1) for n in ("butt", "torso", "waist_upper", "waist_lower")
+    )
+    assert back == pytest.approx(min(SEAT["backrest_face_x"]) - MOUNT[0])
+    assert scale == pytest.approx(occupant * height / SITTING)
 
 
 def test_contacts_are_counted_against_three_groups(assets, model):

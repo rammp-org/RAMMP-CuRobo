@@ -66,8 +66,9 @@ from mebot_sim.client import WHO, Tester, contact_text
 SCENARIOS = ("S0", "S1", "S2", "S3", "S4", "S5")
 GATES = {
     "G0": "MuJoCo's MEBot is inside the platform, and not when it shrinks 1 mm",
-    "G1": "the stand-in, the humanoid at its scale, is in the padded person "
-    "layer (covered_pct of it) or the arm's column",
+    "G1": "the stand-in, the humanoid at each size from the 5th-percentile woman "
+    "to the 95th-percentile man, is in the padded person layer (covered_pct of "
+    "it) or the arm's column",
     "G2": "no flight planned with the layers touches anything",
     "G3": "every positive control is planned, flown, and hits what its layer covers",
     "G4": "the layers survive a consumer's push",

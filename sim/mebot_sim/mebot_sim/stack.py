@@ -248,7 +248,7 @@ def case(name, where, outcome, gates, **details):
 
 def case_line(case):
     """A case as a line of the suite's report."""
-    return "%-26s %-40s %-64s %s" % (
+    return "%-36s %-40s %-64s %s" % (
         case["case"],
         case["where"],
         case["outcome"],

@@ -74,7 +74,7 @@ Demo-Software clone or GitHub; cuRobo v0.7.8 on the GPU for the planners.
 
 | Scenario | What runs                                                                                                                                                                                                                       | Gates  |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| S0       | `check_layers`, no planning: MuJoCo's parse of the URDF against the committed platform boxes, and the stand-in, in three postures with its back at either end of the backrest face's CAD range, against the padded person layer | G0, G1 |
+| S0       | `check_layers`, no planning: MuJoCo's parse of the URDF against the committed platform boxes, and the stand-in at three sizes, in three postures, its back at each end of the backrest's range, against the padded person layer | G0, G1 |
 | S1       | 3 platform pairs, the chair empty. With the floor and the platform, the control planner refuses each or flies it clear; with the floor alone it plans it, and the flight hits the MEBot                                         | G2, G3 |
 | S2       | 3 person pairs, the stand-in seated: the chair planner refuses each or flies it clear; the control planner, with the floor and the platform, plans it, and the flight hits the stand-in                                         | G2, G3 |
 | S3       | 8 joint goals from one start on the chair planner; how many plan is reported                                                                                                                                                    | G2     |
@@ -101,7 +101,11 @@ on: nothing is skipped.
   and 6 cylinders), link by link; the line names any it lacks. A failure
   means the platform no longer covers the chair the sim simulates, or the
   check could not have failed.
-- **G1, stand-in coverage.** Every point of the stand-in, sampled through
+- **G1, stand-in coverage.** The stand-in is seated at each size of
+  `standin.sizes` in `scenarios.yaml`, the sitting heights of the
+  5th-percentile woman, the 50th-percentile man and the 95th-percentile man
+  (ANSUR II row 8), in each posture, with its back at either end of the
+  backrest face's range: 18 bodies. Every point of each, sampled through
   its volume on a 6 mm grid, lies in the person layer as the chair planner
   pads it, or in the arm's carved column where the arm's own base is: no
   part of the seated body is a place the planner would send the arm. The
@@ -109,11 +113,14 @@ on: nothing is skipped.
   too wide, or a body too small, would leave no gap to fail on. So two
   bounds of `thresholds` in `scenarios.yaml` hold as well: at least
   `covered_pct` percent of the body (99) lies in the layer itself, and the
-  body is the whole humanoid at the scale that seats the occupant, its
+  body is the whole humanoid at the scale that seats it at its size, its
   volume within `body_volume_pct` percent (2) of the humanoid's own times
-  the scale cubed. Both follow the occupant: retuned in
-  `scripts/mebot_layers.yaml`, the stand-in is scaled to the new size.
-  Spec 8's G1 is the gap alone; the two bounds are this suite's.
+  the scale cubed. The sizes are this suite's data, not the occupant
+  `scripts/mebot_layers.yaml` sizes the layer for, so a layer that holds
+  fewer bodies than they span fails: with the legs sized by the
+  95th-percentile thigh alone, the shins and feet of the two smaller bodies
+  hang behind them, and 6 of the 18 fail. Spec 8's G1 is the gap alone;
+  the two bounds are this suite's.
 - **G2, no contact with the layers on.** No flight planned with the layers
   that cover the scene touches the MEBot, the stand-in or the floor. A
   refusal passes: the planner may decline a request it cannot do safely.

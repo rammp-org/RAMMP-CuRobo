@@ -322,7 +322,7 @@ def scripted(monkeypatch, tmp_path):
         "cases",
         lambda assets: [
             stack.case("S0 registration", "x", "y", {"G0": True}),
-            stack.case("S0 upright_lap 0.1587", "x", "y", {"G1": True}),
+            stack.case("S0 man_95th upright_lap 0.1587", "x", "y", {"G1": True}),
         ],
     )
     monkeypatch.setattr(run_suite.scene, "Assets", lambda *args: None)
@@ -389,7 +389,7 @@ def test_each_scenario_plans_in_its_world_with_the_standin_as_found(scripted, ca
     assert len(lines) == n and all(line.endswith("PASS") for line in lines)
     assert [c["case"] for c in result["cases"]][:4] == [
         "S0 registration",
-        "S0 upright_lap 0.1587",
+        "S0 man_95th upright_lap 0.1587",
         "S1a on",
         "S1a off",
     ]

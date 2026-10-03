@@ -124,16 +124,18 @@ def _bounds(geom):
     return np.minimum(*ends) - radius, np.maximum(*ends) + radius
 
 
-def standin(assets, posture, backrest_face_x=None):
+def standin(assets, posture, backrest_face_x=None, sitting_height=None):
     """The seated stand-in's geoms in base_link, and its scale.
 
     The humanoid is posed (seated, then the posture's joints and pitch),
-    scaled uniformly so that butt bottom to head top is the occupant's
-    95th-percentile sitting height, and placed with the butt on the seat
-    pan and on the occupant's centreline and the back against the backrest
-    face. That face lies somewhere in a CAD range (mebot frame); the
-    default is the rear of it, since at the front a 95th-percentile body
-    and the arm's bench retract interpenetrate (spec 6.4).
+    scaled uniformly so that butt bottom to head top is `sitting_height`
+    (metres; by default the occupant's, the sitting height
+    scripts/mebot_layers.yaml sizes the person layer's top for), and placed
+    with the butt on the seat pan and on the occupant's centreline and the
+    back against the backrest face. That face lies somewhere in a CAD range
+    (mebot frame); the default is the rear of it, since at the front a
+    95th-percentile body and the arm's bench retract interpenetrate (spec
+    6.4).
 
     Returns ([{name, type, size, pos, mat}], scale), `mat` being the geom's
     orientation as a flattened 3x3 matrix.
@@ -141,6 +143,8 @@ def standin(assets, posture, backrest_face_x=None):
     seat = assets.data["person"]["seat"]
     if backrest_face_x is None:
         backrest_face_x = min(seat["backrest_face_x"])
+    if sitting_height is None:
+        sitting_height = assets.sitting_height
     pose = assets.postures["postures"][posture]
     m = mujoco.MjModel.from_xml_path(assets.humanoid)
     d = mujoco.MjData(m)
@@ -165,7 +169,7 @@ def standin(assets, posture, backrest_face_x=None):
     ]
     named = {g["name"]: g for g in geoms}
     butt = _bounds(named["butt"])[0][2]
-    scale = assets.sitting_height / (_bounds(named["head"])[1][2] - butt)
+    scale = sitting_height / (_bounds(named["head"])[1][2] - butt)
     back = min(
         _bounds(named[n])[0][0] for n in ("butt", "torso", "waist_upper", "waist_lower")
     )

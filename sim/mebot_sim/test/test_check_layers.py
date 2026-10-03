@@ -17,6 +17,14 @@ stack.core()
 from rammp_curobo.scene import Layer, Obstacle, load_layer  # noqa: E402
 
 POSTURES = ("upright_lap", "lean_lap", "forearms_forward")
+# G1's bodies, config/scenarios.yaml's standin.sizes (spec 6.4)
+SIZES = ("woman_5th", "man_50th", "man_95th")
+# the humanoid's lower legs and feet
+SHINS_AND_FEET = {
+    "%s_%s" % (part, side)
+    for part in ("shin", "foot1", "foot2")
+    for side in ("right", "left")
+}
 
 
 def _model(*geoms):
@@ -211,17 +219,24 @@ def person(assets):
 
 @pytest.mark.parametrize("posture", POSTURES)
 @pytest.mark.parametrize("back", ["front", "rear"])
-def test_the_standin_is_inside_the_padded_person_layer(assets, person, posture, back):
-    # spec 6.4: wherever the backrest face is in its CAD range, the body is in
-    # the padded person layer, or in the arm's column where the arm's base is
+@pytest.mark.parametrize("size", SIZES)
+def test_the_standin_is_inside_the_padded_person_layer(
+    assets, person, size, posture, back
+):
+    # spec 6.4: from the 5th-percentile woman to the 95th-percentile man, and
+    # wherever the backrest face is in its CAD range, the body is in the
+    # padded person layer, or in the arm's column where the arm's base is
     seat = assets.data["person"]["seat"]
     face = (max if back == "front" else min)(seat["backrest_face_x"])
+    height = stack.scenarios()["standin"]["sizes"][size]["inches"] * 0.0254
     padded, column = person
-    geoms, _ = scene.standin(assets, posture, face)
+    geoms, scale = scene.standin(assets, posture, face, height)
     c = check_layers.coverage(geoms, padded, column)
     assert c["gap_points"] == 0, c["gap_where"]
     assert c["covered_pct"] > 99.0
-    assert 0.07 < c["body_m3"] < 0.09
+    # the whole humanoid, at the scale that seats it at that size
+    whole = check_layers.humanoid_m3(assets) * scale**3
+    assert c["body_m3"] == pytest.approx(whole, rel=0.02)
 
 
 def test_a_person_layer_without_its_lap_leaves_a_gap(assets, person):
@@ -234,12 +249,24 @@ def test_a_person_layer_without_its_lap_leaves_a_gap(assets, person):
     assert {"thigh_right", "thigh_left"} <= set(c["gap_where"])
 
 
-def test_s0_is_one_registration_and_six_standins_each_gated(assets):
+def test_s0_is_one_registration_and_eighteen_standins_each_gated(assets):
     cases = check_layers.cases(assets)
     faces = sorted(assets.data["person"]["seat"]["backrest_face_x"])
+    sizes = stack.scenarios()["standin"]["sizes"]
+    assert list(sizes) == list(SIZES)
     assert [c["case"] for c in cases] == ["S0 registration"] + [
-        "S0 %s %.4f" % (posture, face) for posture in POSTURES for face in faces
+        "S0 %s %s %.4f" % (size, posture, face)
+        for size in SIZES
+        for posture in POSTURES
+        for face in faces
     ]
+    # each stand-in seated at its size's sitting height: the scale grows with
+    # it, posture by posture
+    heights = [c["sitting_height_in"] for c in cases[1:]]
+    assert heights == [sizes[size]["inches"] for size in SIZES for _ in range(6)]
+    scales = np.reshape([c["scale"] for c in cases[1:]], (3, 6))
+    heights = np.reshape(heights, (3, 6))
+    assert scales / scales[-1] == pytest.approx(heights / heights[-1])
     assert cases[0]["gates"] == {"G0": True}
     assert cases[0]["outside"] == 0 and cases[0]["outside_shrunk"] > 0
     assert all(c["gates"] == {"G1": True} for c in cases[1:])
@@ -314,16 +341,53 @@ def test_g1_fails_on_a_standin_thinner_than_the_humanoid_at_its_scale(
     assert all("m3 (not the humanoid's " in c["outcome"] for c in standins)
 
 
-def test_g1_holds_the_standin_to_the_occupant_it_is_scaled_to(assets, monkeypatch):
-    # retuned in scripts/mebot_layers.yaml, the occupant is another size and
-    # the stand-in is scaled to it: smaller than spec 6.4 measured, with its
-    # back at the front of the backrest's range it leaves no gap, and passes
-    monkeypatch.setattr(assets, "sitting_height", 36.0 * 0.0254)
-    front = "%.4f" % max(assets.data["person"]["seat"]["backrest_face_x"])
-    standins = [c for c in check_layers.cases(assets)[1:] if c["case"].endswith(front)]
-    assert len(standins) == 3
-    assert all(c["gap_m3"] == 0 and c["body_m3"] < 0.07 for c in standins)
+def test_g1_seats_the_standin_at_the_scenarios_sizes(assets, monkeypatch):
+    # the bodies are config/scenarios.yaml's, whatever occupant the person
+    # layer was sized for: one size of 36.0 in, at which the feet hung out of
+    # the legs sized by the 95th-percentile thigh, is six stand-ins at its
+    # scale, and the layer holds them
+    data = stack.scenarios()
+    one = {"mid": {"row": 8, "sex": "men", "percentile": 50, "inches": 36.0}}
+    sized = dict(data, standin=dict(data["standin"], sizes=one))
+    monkeypatch.setattr(stack, "scenarios", lambda: sized)
+    monkeypatch.setattr(assets, "sitting_height", 2.0)
+    standins = check_layers.cases(assets)[1:]
+    assert [c["case"].split()[1] for c in standins] == ["mid"] * 6
+    assert all(c["sitting_height_in"] == 36.0 for c in standins)
+    assert all(c["gap_m3"] == 0 and 0.05 < c["body_m3"] < 0.07 for c in standins)
     assert all(c["gates"] == {"G1": True} for c in standins)
+
+
+def test_g1_fails_legs_sized_by_the_95th_percentile_thigh_alone(
+    assets, monkeypatch, tmp_path
+):
+    # The person layer as it was generated for the 95th-percentile man alone,
+    # its legs' back face at his thigh (21.57 in). With their back at the rear
+    # of the backrest's range, the smaller bodies' shins and feet hang behind
+    # it, under the lap: G1 fails them, and only them.
+    generator = stack.generator()
+    data = generator.load_data()
+    thigh = data["person"]["ansur_in"]["buttock_popliteal_length"]
+    thigh.update(sex="men", percentile=95, inches=21.57)
+    old = tmp_path / "layer_mebot_person.yaml"
+    old.write_text(
+        generator.generate(data, assets.urdf)["files"][data["outputs"]["person"]]
+    )
+    files = dict(stack.layer_files(), person=old)
+    monkeypatch.setattr(stack, "layer_files", lambda: files)
+    standins = check_layers.cases(assets)[1:]
+    rear = "%.4f" % min(assets.data["person"]["seat"]["backrest_face_x"])
+    failed = [c for c in standins if not c["passed"]]
+    assert [c["case"] for c in failed] == [
+        "S0 %s %s %s" % (size, posture, rear)
+        for size in ("woman_5th", "man_50th")
+        for posture in POSTURES
+    ]
+    for c in failed:
+        assert c["gates"] == {"G1": False} and c["gap_m3"] > 0
+        assert set(c["gap_where"]) <= SHINS_AND_FEET, c["gap_where"]
+    # (the committed layer, its legs' back face at the shortest thigh, holds
+    # every one of them: test_s0_is_one_registration_and_eighteen_standins_...)
 
 
 def test_g1_bounds_are_the_scenarios_thresholds(assets, monkeypatch):
@@ -335,7 +399,8 @@ def test_g1_bounds_are_the_scenarios_thresholds(assets, monkeypatch):
     monkeypatch.setattr(stack, "scenarios", lambda: strict)
     standins = check_layers.cases(assets)[1:]
     assert all(c["gates"] == {"G1": False} for c in standins)
-    assert all("covered (under 99.9)" in c["outcome"] for c in standins)
+    under = [c for c in standins if c["covered_pct"] < 99.9]
+    assert under and all("covered (under 99.9)" in c["outcome"] for c in under)
     assert all("m3 (not the humanoid's " in c["outcome"] for c in standins)
 
 
@@ -350,4 +415,4 @@ def test_check_layers_prints_a_line_per_case_and_exits_with_the_verdict(assets, 
     assert check_layers.main([]) == 0
     lines = capsys.readouterr().out.splitlines()
     cases = [line for line in lines if line.startswith("S0 ")]
-    assert len(cases) == 7 and all(line.endswith("PASS") for line in cases)
+    assert len(cases) == 19 and all(line.endswith("PASS") for line in cases)

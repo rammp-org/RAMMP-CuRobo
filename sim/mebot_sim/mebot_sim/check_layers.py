@@ -13,25 +13,30 @@ and the layer files the generator writes, as the planner loads them.
     could not fail. The samples cover only what MuJoCo parsed, so its parse
     must hold every primitive of the URDF as the generator reads it, link
     by link, box or cylinder.
-  * G1, stand-in coverage. The seated stand-in, in each posture and with its
-    back at either end of the backrest face's CAD range, is sampled through
-    its volume on a 6 mm grid. Every point must lie in the person layer as
-    the chair planner pads it, or in the arm's carved column, where the
-    arm's own base is: any other point is a gap, a part of the body the
-    planner does not keep the arm out of. The gap of the unpadded layer is
-    reported beside it. The column is the generator's, and a column carved
-    too wide, or a body too small, leaves no gap either. So, with bounds
-    from config/scenarios.yaml's thresholds, covered_pct of the body or more
-    must lie in the layer itself, and the body must be the whole humanoid at
-    the scale that seats the occupant: its volume within body_volume_pct of
-    the humanoid's own times the scale cubed. Both follow the occupant that
-    scripts/mebot_layers.yaml sizes. Spec 8's G1 is the gap alone.
+  * G1, stand-in coverage. The seated stand-in, at each size of
+    config/scenarios.yaml (standin.sizes: from the 5th-percentile woman to
+    the 95th-percentile man), in each posture and with its back at either
+    end of the backrest face's CAD range, is sampled through its volume on
+    a 6 mm grid. Every point must lie in the person layer as the chair
+    planner pads it, or in the arm's carved column, where the arm's own
+    base is: any other point is a gap, a part of the body the planner does
+    not keep the arm out of. The gap of the unpadded layer is reported
+    beside it. The column is the generator's, and a column carved too wide,
+    or a body too small, leaves no gap either. So, with bounds from
+    config/scenarios.yaml's thresholds, covered_pct of the body or more must
+    lie in the layer itself, and the body must be the whole humanoid at the
+    scale that seats it at its size: its volume within body_volume_pct of
+    the humanoid's own times the scale cubed. The sizes are the scenarios',
+    not the occupant scripts/mebot_layers.yaml sizes the layer for, so a
+    layer that holds a smaller range of bodies than they span fails. Spec
+    8's G1 is the gap alone.
 
 Exit status 1 if a gate fails.
 """
 
 import argparse
 import collections
+import itertools
 import math
 import sys
 
@@ -237,10 +242,10 @@ def _named(primitives):
 
 
 def cases(assets):
-    """S0's cases, as stack.case: the registration (G0), then the stand-in in
-    each posture with its back at each end of the backrest face's range
-    (G1). They check the layer files the generator writes, whatever the
-    chair's config lists."""
+    """S0's cases, as stack.case: the registration (G0), then the stand-in at
+    each size, in each posture, with its back at each end of the backrest
+    face's range (G1). They check the layer files the generator writes,
+    whatever the chair's config lists."""
     m = scene.build(assets, None)
     layers = stack.generated_layers()
     platform = layers["platform"]
@@ -281,51 +286,57 @@ def cases(assets):
     padded, unpadded = bounds(person, chair_padding()), bounds(person)
     carved = column(assets)
     faces = sorted(assets.data["person"]["seat"]["backrest_face_x"])
-    thresholds = stack.scenarios()["thresholds"]
+    scenarios = stack.scenarios()
+    thresholds = scenarios["thresholds"]
+    inch = stack.generator().INCH
     unscaled = humanoid_m3(assets)
-    for posture in assets.postures["postures"]:
-        for face in faces:
-            geoms, scale = scene.standin(assets, posture, face)
-            # a numpy float: a verdict compared from it would be a numpy
-            # bool, which the result file's JSON cannot hold
-            scale = float(scale)
-            c = coverage(geoms, padded, carved)
-            bare = coverage(geoms, unpadded, carved)
-            # the whole humanoid, at the scale that seats the occupant
-            expected = unscaled * scale**3
-            off_pct = abs(c["body_m3"] / expected - 1) * 100
-            sized = off_pct <= thresholds["body_volume_pct"]
-            covered = c["covered_pct"] >= thresholds["covered_pct"]
-            out.append(
-                stack.case(
-                    "S0 %s %.4f" % (posture, face),
-                    "stand-in | person, padded",
-                    "gap %.6f m3 (unpadded %.6f); of %.4f m3%s, %.2f %% covered%s, "
-                    "%.5f in the column"
-                    % (
-                        c["gap_m3"],
-                        bare["gap_m3"],
-                        c["body_m3"],
-                        ""
-                        if sized
-                        else " (not the humanoid's %.4f at x%.3f)" % (expected, scale),
-                        c["covered_pct"],
-                        "" if covered else " (under %g)" % thresholds["covered_pct"],
-                        c["column_m3"],
-                    ),
-                    {"G1": c["gap_points"] == 0 and covered and sized},
-                    posture=posture,
-                    backrest_face_x=face,
-                    scale=scale,
-                    body_m3=c["body_m3"],
-                    humanoid_m3=expected,
-                    covered_pct=c["covered_pct"],
-                    column_m3=c["column_m3"],
-                    gap_m3=c["gap_m3"],
-                    gap_where=c["gap_where"],
-                    unpadded_gap_m3=bare["gap_m3"],
-                )
+    sizes = scenarios["standin"]["sizes"].items()
+    for (size, row), posture, face in itertools.product(
+        sizes, assets.postures["postures"], faces
+    ):
+        geoms, scale = scene.standin(assets, posture, face, row["inches"] * inch)
+        # a numpy float: a verdict compared from it would be a numpy bool,
+        # which the result file's JSON cannot hold
+        scale = float(scale)
+        c = coverage(geoms, padded, carved)
+        bare = coverage(geoms, unpadded, carved)
+        # the whole humanoid, at the scale that seats it at its size
+        expected = unscaled * scale**3
+        off_pct = abs(c["body_m3"] / expected - 1) * 100
+        sized = off_pct <= thresholds["body_volume_pct"]
+        covered = c["covered_pct"] >= thresholds["covered_pct"]
+        out.append(
+            stack.case(
+                "S0 %s %s %.4f" % (size, posture, face),
+                "stand-in | person, padded",
+                "gap %.6f m3 (unpadded %.6f); of %.4f m3%s, %.2f %% covered%s, "
+                "%.5f in the column"
+                % (
+                    c["gap_m3"],
+                    bare["gap_m3"],
+                    c["body_m3"],
+                    ""
+                    if sized
+                    else " (not the humanoid's %.4f at x%.3f)" % (expected, scale),
+                    c["covered_pct"],
+                    "" if covered else " (under %g)" % thresholds["covered_pct"],
+                    c["column_m3"],
+                ),
+                {"G1": c["gap_points"] == 0 and covered and sized},
+                size=size,
+                sitting_height_in=row["inches"],
+                posture=posture,
+                backrest_face_x=face,
+                scale=scale,
+                body_m3=c["body_m3"],
+                humanoid_m3=expected,
+                covered_pct=c["covered_pct"],
+                column_m3=c["column_m3"],
+                gap_m3=c["gap_m3"],
+                gap_where=c["gap_where"],
+                unpadded_gap_m3=bare["gap_m3"],
             )
+        )
     return out
 
 
