@@ -318,7 +318,8 @@ class CuRoboPlanner:
                 "cuRobo plan_single raised: %s" % exc,
                 timing=time.monotonic() - t0,
             )
-        return self._finish(result, t0, start=start, goal_point=xyz)
+        res = self._finish(result, t0)
+        return self._with_failure_note(res, result, start, goal_point=xyz)
 
     def plan_to_joints(self, q_goal, start, method=None):
         """Plan a collision-free trajectory to a joint configuration.
@@ -376,7 +377,8 @@ class CuRoboPlanner:
                     "cuRobo plan_single_js raised: %s" % exc,
                     timing=time.monotonic() - t0,
                 )
-            return self._finish(result, t0, q_goal=q_goal, start=start)
+            res = self._finish(result, t0, q_goal=q_goal)
+            return self._with_failure_note(res, result, start, q_goal=q_goal)
         if method == "fk_pose":
             pos, wxyz = self.fk(q_goal, quat_order="wxyz")
             res = self.plan_to_pose(
@@ -649,28 +651,22 @@ class CuRoboPlanner:
             **kw,
         )
 
-    def _finish(self, result, t0, q_goal=None, start=None, goal_point=None):
-        """cuRobo MotionGenResult -> validated PlanResult. A failure's error
-        is _explain(status) plus what the world has to do with it: the boxes
-        the `start` state or the joint goal `q_goal` reach into, the boxes
-        around the tool point `goal_point` of a pose goal, and where the
-        world's boxes come from."""
+    def _finish(self, result, t0, q_goal=None):
+        """cuRobo MotionGenResult -> validated PlanResult.
+
+        Subclasses override it with this signature, v1.0.0's, and call
+        super()._finish(result, t0, q_goal=q_goal) (RAMMP-generalized's
+        StationaryPlanner), so it takes no new argument: what a failure's
+        error says about the world is added after it, by
+        _with_failure_note."""
         if result is None or not bool(result.success.item()):
             status = (
                 "no result"
                 if result is None
                 else str(getattr(result, "status", None) or "unknown")
             )
-            try:
-                note = self._failure_note(status, start, q_goal, goal_point)
-            except Exception as exc:
-                # it only explains: the failure is reported all the same
-                note = " (attribution unavailable: %s)" % exc
-            # where the world's boxes come from needs no FK, so it is said
-            # whatever the attribution came to
-            note += " [world: %s]" % self.world_summary()
             return PlanResult.failure(
-                status, self._explain(status) + note, timing=time.monotonic() - t0
+                status, self._explain(status), timing=time.monotonic() - t0
             )
 
         # ONLY the trimmed interpolated plan: result buffers are padded and
@@ -737,6 +733,27 @@ class CuRoboPlanner:
             ]
         except Exception as exc:
             return ["constraint re-check unavailable: %s" % exc]
+
+    def _with_failure_note(self, res, result, start, q_goal=None, goal_point=None):
+        """`res`, which _finish made of cuRobo's `result`, with a failure's
+        error, _explain(status), followed by what the world has to do with
+        it: the boxes the `start` state or the joint goal `q_goal` reach
+        into, the boxes around the tool point `goal_point` of a pose goal,
+        and where the world's boxes come from. Added after _finish, so an
+        override of _finish cannot leave it out."""
+        if res.success or (result is not None and bool(result.success.item())):
+            # nothing failed, or post-validation refused a plan cuRobo found
+            # and its error says why
+            return res
+        try:
+            note = self._failure_note(res.status, start, q_goal, goal_point)
+        except Exception as exc:
+            # it only explains: the failure is reported all the same
+            note = " (attribution unavailable: %s)" % exc
+        # where the world's boxes come from needs no FK, so it is said
+        # whatever the attribution came to
+        res.error += note + " [world: %s]" % self.world_summary()
+        return res
 
     def _failure_note(self, status, start, q_goal, goal_point):
         """Which boxes of the installed world a failed plan's start or joint

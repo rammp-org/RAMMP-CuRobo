@@ -28,6 +28,7 @@ from rammp_curobo.scene import (
     load_scene,
     scene_from_obstacles,
 )
+from rammp_curobo.types import PlanResult
 from rammp_curobo.world import (
     compose_cuboids,
     make_world_config,
@@ -211,6 +212,21 @@ def _curobo_stand_in(monkeypatch):
 def _failed(status):
     """A cuRobo plan result that failed with `status`."""
     return types.SimpleNamespace(success=np.array(False), status=status)
+
+
+def _planned(positions):
+    """A cuRobo plan result that succeeded with the plan `positions`, in
+    controller order, 20 ms apart. Its tensors, as far as _finish reads
+    them, only need to reach numpy."""
+    position = types.SimpleNamespace(numpy=lambda: np.asarray(positions, dtype=float))
+    position.cpu = position.detach = lambda: position
+    state = types.SimpleNamespace(position=position, velocity=None, acceleration=None)
+    plan = types.SimpleNamespace(get_ordered_joint_state=lambda names: state)
+    return types.SimpleNamespace(
+        success=np.array(True),
+        interpolation_dt=0.02,
+        get_interpolated_plan=lambda: plan,
+    )
 
 
 def test_misplaced_layers_key_is_refused(tmp_path):
@@ -2155,7 +2171,8 @@ def test_attribution_explains_an_answer_and_never_changes_or_hides_it(
 
     def note(status, **kw):
         """What a failed plan's error says after cuRobo's status explained."""
-        res = planner._finish(_failed(status), 0.0, **kw)
+        result = _failed(status)
+        res = planner._with_failure_note(planner._finish(result, 0.0), result, **kw)
         explained = planner._explain(status)
         assert (res.success, res.status) == (False, status)
         assert res.error.startswith(explained), res.error
@@ -2188,7 +2205,9 @@ def test_attribution_explains_an_answer_and_never_changes_or_hides_it(
     # it never raises: a failure is reported, whatever its explanation, and
     # where the world's boxes come from, which needs no FK, is said all the same
     stand_in.spheres = lambda q: lost
-    res = planner._finish(None, 0.0, start=q, q_goal=q)
+    res = planner._with_failure_note(
+        planner._finish(None, 0.0), None, start=q, q_goal=q
+    )
     assert (res.success, res.status, res.error) == (
         False,
         "no result",
@@ -2274,3 +2293,98 @@ def test_auto_logs_the_joint_space_failure_it_falls_back_from(monkeypatch, caplo
         refused,
         planner._explain(refused) + start + world,
     )
+
+
+def test_a_subclass_overriding_the_v100_finish_plans_and_is_explained(monkeypatch):
+    stand_in = _curobo_stand_in(monkeypatch)
+    calls = []
+
+    # RAMMP-generalized subclasses the planner and overrides _finish with its
+    # v1.0.0 signature, calling super() (rammp_adl/motion/curobo_stationary.py)
+    class Stationary(CuRoboPlanner):
+        def _finish(self, result, t0, q_goal=None):
+            res = super()._finish(result, t0, q_goal=q_goal)
+            calls.append((q_goal, res))
+            return res
+
+    planner = Stationary.from_config("gen3_mebot.yaml")
+    planner.update_world([_box("crate", position=[1, 0, 0.5], dims=[0.2, 0.2, 0.2])])
+    start, goal = [0.0] * 7, [0.1] * 7
+    # the joint goal's tool point is the crate's centre
+    planner.fk = lambda q, quat_order: ([1, 0, 0.5], [1, 0, 0, 0])
+    plans = {
+        "pose": lambda: planner.plan_to_pose([1, 0, 0.5], [0, 0, 0, 1], start=start),
+        "js": lambda: planner.plan_to_joints(goal, start=start, method="js"),
+        "fk_pose": lambda: planner.plan_to_joints(goal, start=start, method="fk_pose"),
+    }
+
+    def through_the_override(name):
+        """Plan `name`, which must call the override once, as v1.0.0 did (a
+        joint goal only from plan_single_js), and return what it returns."""
+        calls.clear()
+        res = plans[name]()
+        handed = goal if name == "js" else None
+        assert [(q, r is res) for q, r in calls] == [(handed, True)], name
+        return res
+
+    # cuRobo plans: the plan comes back, and a joint goal is measured against
+    # where it ends
+    planned = _planned(np.linspace(start, goal, 5))
+    planner._motion_gen.plan_single = lambda *_: planned
+    planner._motion_gen.plan_single_js = lambda *_: planned
+    for name in plans:
+        res = through_the_override(name)
+        assert (res.success, res.status, res.error) == (True, "OK", None), name
+        assert res.final_joints.tolist() == goal, name
+        assert res.goal_mismatch_rad == (None if name == "pose" else 0.0), name
+
+    # cuRobo fails, and every state puts a 3 cm sphere at the crate's centre,
+    # 150 mm into it: each error still says what the world has to do with it
+    stand_in.spheres = lambda q: np.array([[1, 0, 0.5, 0.03]])
+    refused = "MotionGenStatus.INVALID_START_STATE_WORLD_COLLISION"
+    ik = "MotionGenStatus.IK_FAIL"
+    planner._motion_gen.plan_single = lambda *_: _failed(ik)
+    planner._motion_gen.plan_single_js = lambda *_: _failed(refused)
+    world = (
+        " [world: 23 boxes: scene 1 | config layers: platform 16, person 6 "
+        "| scene layers: none]"
+    )
+    crate = "obj_crate (150 mm)"
+    point = " [goal point inside obj_crate] (heuristic: tool point only)"
+    reached = " [start collides with %s] [goal collides with %s]" % (crate, crate)
+    for name, status, note in (
+        ("pose", ik, point),
+        ("js", refused, reached),
+        ("fk_pose", ik, point),
+    ):
+        res = through_the_override(name)
+        assert (res.success, res.status, res.error) == (
+            False,
+            status,
+            planner._explain(status) + note + world,
+        ), name
+
+    # cuRobo plans, and post-validation refuses the plan, which jumps: that
+    # error says why, and the world has nothing to add to it
+    jump = _planned([start, goal])
+    planner._motion_gen.plan_single = lambda *_: jump
+    planner._motion_gen.plan_single_js = lambda *_: jump
+    for name in plans:
+        res = through_the_override(name)
+        assert (res.success, res.status, res.error) == (
+            False,
+            "LIBRARY_VALIDATION_FAILED",
+            "plan rejected by post-validation: discontinuity: joint_1 jumps 0.100 "
+            "rad between points 0->1 (allowed 0.060 at dt=0.020s) — refusing; this "
+            "is the padded-tail failure mode",
+        ), name
+
+    # an override may make what it likes of cuRobo's failure, a plan of its
+    # own too: that is the plan's result, and there is nothing to explain
+    planner._motion_gen.plan_single = lambda *_: _failed(ik)
+    planner._motion_gen.plan_single_js = lambda *_: _failed(refused)
+    rescued = PlanResult(success=True, joint_traj=None, timing=0.0, error=None)
+    monkeypatch.setattr(Stationary, "_finish", lambda *_, **__: rescued)
+    for name in plans:
+        assert plans[name]() is rescued, name
+    assert rescued.error is None

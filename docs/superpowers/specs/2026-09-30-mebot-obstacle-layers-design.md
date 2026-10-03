@@ -5,7 +5,9 @@
   are folded in (§8, §13). The owner reviews this spec before the implementation
   plan is written. Amended 2026-10-02 during implementation, not yet reviewed by
   the owner: planner configs are read as UTF-8 and refuse a key written twice
-  (§4.3, deviation 13).
+  (§4.3, deviation 13). Amended 2026-10-03, also not yet reviewed: `_finish`
+  keeps its v1.0.0 signature, which a consumer overrides, and the failure notes
+  are added after it (§7.4).
 - **Issue:** <https://github.com/rammp-org/RAMMP-CuRobo/issues/19>
 - **Branch:** `feature/19-platform-layers`, off `origin/dev` (b734928, the
   v1.0.0 content), in the worktree `~/RAMMP-CuRobo-19`. Local commits only,
@@ -938,11 +940,24 @@ retract on the chair,
 `"constraint violation at state; collides with person/lap (154 mm), person/torso_head_3 (134 mm), person/torso_head_1 (89 mm)"`.
 The v1.0.0 prefix is kept, and the suffix is added only when boxes are hit.
 
-**`_finish(result, t0, q_goal=None, start=None, goal_point=None)`.**
-`plan_to_pose` passes `start` and the corrected goal `xyz`. `plan_to_joints(js)`
-passes `start` and `q_goal`. On failure the error is `_explain(status)`
-(unchanged) plus a note that **never raises**; any exception becomes
-`"(attribution unavailable: ...)"`. The note:
+**`_finish(result, t0, q_goal=None)`, unchanged, and
+`_with_failure_note(res, result, start, q_goal=None, goal_point=None)`.**
+`_finish` keeps v1.0.0's signature and code, and `plan_to_pose` and
+`plan_to_joints(js)` call it exactly as v1.0.0 did. RAMMP-generalized subclasses
+the planner and overrides `_finish` with that signature, calling
+`super()._finish(result, t0, q_goal=q_goal)` (RAMMP-generalized
+`rammp_adl/motion/curobo_stationary.py:86-87`), so a new parameter would make
+every plan through that subclass raise `TypeError`. The note is therefore added
+after `_finish` returns, where no override of it can leave the note out. Both
+callers pass `_finish`'s result and cuRobo's to `_with_failure_note`, with
+`start` and the corrected goal `xyz` from `plan_to_pose`, and `start` and
+`q_goal` from `plan_to_joints(js)`. When cuRobo failed, the error is
+`_explain(status)` (unchanged) plus a note that **never raises**; any exception
+becomes `"(attribution unavailable: ...)"`. A success, an override's included,
+and a plan cuRobo found that post-validation refused are returned as they are.
+`test_a_subclass_overriding_the_v100_finish_plans_and_is_explained` plans
+through a subclass that overrides `_finish` as RAMMP-generalized does. The
+note:
 
 - **INVALID_START:** `" [start collides with person/lap (154 mm), ...]"`, or
   `" [start: no world box penetrated — self-collision or joint limits]"`.
@@ -1322,7 +1337,7 @@ the tests that need it.
 | `core/rammp_curobo/scene.py`                                                  | modify          | strict layer loader, `Layer`, `load_layer(s)`, `Scene(layers=)`, scene `layers:`, UTF-8, entry errors naming file and entry                                                         |
 | `core/rammp_curobo/world.py`                                                  | modify          | `compose_cuboids`, `to_world_config`, `make_world_config(layers=)` (cache default 60), `sphere_box_penetration`, `point_box_distance`, `summarize`; guards before the cuRobo import |
 | `core/rammp_curobo/config.py`                                                 | modify          | `layers: []`, `resolve_config(search_cwd=)`, misplaced-key and type checks; read as UTF-8, a key written twice refused                                                              |
-| `core/rammp_curobo/planner.py`                                                | modify          | config layers loaded, composed everywhere; warm-up first; fixed-sphere check; `world_boxes`, `world_summary()`; CPU attribution in `check_state_valid` and `_finish`; seed warning  |
+| `core/rammp_curobo/planner.py`                                                | modify          | config layers loaded, composed everywhere; warm-up first; fixed-sphere check; `world_boxes`, `world_summary()`; CPU attribution in `check_state_valid` and plans; seed warning      |
 | `core/rammp_curobo/configs/gen3.yaml`                                         | modify          | `layers: []`                                                                                                                                                                        |
 | `core/rammp_curobo/configs/gen3_mebot.yaml`                                   | add             | chair planner config                                                                                                                                                                |
 | `core/rammp_curobo/configs/world_mebot.yaml`                                  | add             | chair start-up scene (floor as a scene layer; no inline obstacles)                                                                                                                  |
