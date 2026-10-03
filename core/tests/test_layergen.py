@@ -2,9 +2,10 @@
 
 The generator's logic is exercised on synthetic URDFs and a throwaway git
 clone, so these tests need no network, no cache and no Demo-Software checkout.
-The committed layer files are checked too: the person byte for byte (it needs
-no URDF) and every layer against the packaged robot config here, and against
-the pinned URDF wherever it can be had (in CI, from GitHub).
+The committed layer files are checked too: the person byte for byte and
+against every occupant of its range (it needs no URDF), and every layer
+against the packaged robot config here, and against the pinned URDF wherever
+it can be had (in CI, from GitHub).
 """
 
 import bisect
@@ -1441,6 +1442,32 @@ def _within(box, union):
     return bool(filled[cells].all())
 
 
+def _segments(data, sizes, backrest):
+    """The segments of an occupant of `sizes` (inches, by key), seated as
+    `data` seats the person with its back against `backrest`, the backrest
+    face's range: [(lo, hi)] in the mebot frame, metres, margin and all."""
+    person = data["person"]
+    occupant = {
+        "ansur_in": {key: {"inches": inches} for key, inches in sizes.items()},
+        "seat": dict(person["seat"], backrest_face_x=backrest),
+        "margin_m": person["margin_m"],
+    }
+    return [(lo, hi) for _, lo, hi in gen._person_segments({"person": occupant})]
+
+
+def _occupants(data):
+    """Every occupant the person layer holds (spec 6.1), seated as `data`
+    seats the person: each size at either end of its range (4096 occupants),
+    with its back at either end of the backrest face's range. Yields (sizes,
+    face, segments)."""
+    faces = sorted(data["person"]["seat"]["backrest_face_x"])
+    keys = sorted(OCCUPANTS_IN)
+    for ends in itertools.product((0, 1), repeat=len(keys)):
+        sizes = {key: OCCUPANTS_IN[key][end] for key, end in zip(keys, ends)}
+        for face in faces:
+            yield sizes, face, _segments(data, sizes, [face, face])
+
+
 def test_the_person_holds_every_occupant_of_its_range():
     # Over-sized for every occupant from the smaller sex's 5th percentile to
     # the larger sex's 95th, not for the largest alone: each of them (every
@@ -1448,32 +1475,19 @@ def test_the_person_holds_every_occupant_of_its_range():
     # either end of the backrest face's CAD range, lies inside the envelope,
     # margin and all.
     placed = _inputs()
-    person = placed["person"]
-    faces = sorted(person["seat"]["backrest_face_x"])
-
-    def segments(sizes, backrest):
-        """The segments of an occupant of `sizes` with its back against
-        `backrest`, the backrest face's range: [(lo, hi)], metres."""
-        for key, inches in sizes.items():
-            person["ansur_in"][key]["inches"] = inches
-        person["seat"]["backrest_face_x"] = backrest
-        return [(lo, hi) for _, lo, hi in gen._person_segments(placed)]
-
-    envelope = _union(segments(OCCUPANT_IN, faces))
-    keys = sorted(OCCUPANTS_IN)
-    for ends in itertools.product((0, 1), repeat=len(keys)):
-        sizes = {key: OCCUPANTS_IN[key][end] for key, end in zip(keys, ends)}
-        for face in faces:
-            for box in segments(sizes, [face, face]):
-                assert _within(box, envelope), (sizes, face)
+    faces = sorted(placed["person"]["seat"]["backrest_face_x"])
+    envelope = _union(_segments(placed, OCCUPANT_IN, faces))
+    for sizes, face, segments in _occupants(placed):
+        for box in segments:
+            assert _within(box, envelope), (sizes, face)
 
     # Sized by the largest occupant alone, the legs leave the smallest one's
     # shins and feet behind their back face: the shorter the thigh, the
     # nearer the seat the shins hang.
     largest = {key: high for key, (_, high) in OCCUPANTS_IN.items()}
     smallest = {key: low for key, (low, _) in OCCUPANTS_IN.items()}
-    alone = _union(segments(largest, faces))
-    held = [_within(box, alone) for box in segments(smallest, faces[:1] * 2)]
+    alone = _union(_segments(placed, largest, faces))
+    held = [_within(box, alone) for box in _segments(placed, smallest, faces[:1] * 2)]
     assert held == [True, True, False]  # torso_head, lap, legs
 
 
@@ -1815,6 +1829,55 @@ def test_committed_platform_covers_every_urdf_primitive():
         assert ((lo <= a) & (b <= hi)).all(axis=1).any(), link
     # and the samples reach the faces: 1 mm in from every face, some are out
     assert len(outside(points, inset=0.001)) > 0
+
+
+def test_committed_person_holds_every_occupant_of_its_range():
+    # The committed boxes as the planner loads them, against every occupant
+    # of spec 6.1 seated as scripts/mebot_layers.yaml seats the person (its
+    # mount, seat and margin): with the arm's column, where no occupant can
+    # be, they hold each one, margin and all. A size tuned in the data file
+    # may grow the person, never shrink it below that range. The sim's G1
+    # cannot see that on the back of the knees: its three stand-ins pass the
+    # layer below, and first fail near a thigh of 18.5 in.
+    data = gen.load_data()
+    mount = data["mount"]["arm_base_in_mebot"]["position"]
+    committed = load_layer(_committed("person")).obstacles
+    # the spans lo..hi below hold only for an unturned box, as the generator
+    # writes them all
+    assert [o.name for o in committed if any(o.rpy_deg)] == []
+
+    def corner(o, side):
+        """The low (side -1) or high (+1) corner of box `o`, in ticks."""
+        return tuple(
+            round((c + side * d / 2) / gen.TICK) for c, d in zip(o.position, o.dims)
+        )
+
+    def lost(boxes):
+        """The occupants, (sizes, backrest face), that `boxes` (lo, hi in
+        ticks) leave out."""
+        layer = _union(boxes)
+        return [
+            (sizes, back)
+            for sizes, back, segments in _occupants(data)
+            if not all(
+                _within([np.subtract(c, mount) / gen.TICK for c in segment], layer)
+                for segment in segments
+            )
+        ]
+
+    column = _generate(data, FAR_BOX)["person"]["column"]
+    assert lost([(corner(o, -1), corner(o, 1)) for o in committed] + [column]) == []
+
+    # The layer generated with the back of the knees at the larger sex's 5th
+    # percentile (18.07 in, row 14) leaves out every occupant with the
+    # shortest thigh and its back at the rear of the backrest's range, and
+    # no other.
+    data["person"]["ansur_in"]["buttock_popliteal_length"]["inches"] = 18.07
+    person = _generate(data, FAR_BOX)["person"]
+    shorter = lost([b["box"] for b in person["boxes"]] + [person["column"]])
+    rear = min(data["person"]["seat"]["backrest_face_x"])
+    assert len(shorter) == 2048
+    assert {(s["buttock_popliteal_length"], b) for s, b in shorter} == {(17.36, rear)}
 
 
 def test_committed_layers_meet_budgets_and_clear_the_arm():
