@@ -235,11 +235,17 @@ class CuRoboPlanner:
         if hits:
             key = max(hits, key=hits.get)
             # The generated layers assume the default padding
-            # (padding_assumed_m in scripts/mebot_layers.yaml). Above it, the
-            # padding grew the box into the spheres; at or below it, the box
-            # itself reaches them, and restoring the padding would not help.
+            # (padding_assumed_m in scripts/mebot_layers.yaml). The padding is
+            # to blame when it is above that and every box that intrudes
+            # clears the spheres at the default; otherwise a box reaches them
+            # by itself, and restoring the padding would not help.
             assumed = PLANNER_DEFAULTS["planner"]["world_padding"]
-            if self.world_padding > assumed:
+            grown = 2.0 * (self.world_padding - assumed)
+            shrunk = {
+                k: dict(layered[k], dims=[d - grown for d in layered[k]["dims"]])
+                for k in hits
+            }
+            if grown > 0 and not sphere_box_penetration(self._fixed_spheres, shrunk):
                 fix = (
                     "the layers were generated for %g m — regenerate them or "
                     "restore world_padding" % assumed
@@ -660,6 +666,9 @@ class CuRoboPlanner:
             except Exception as exc:
                 # it only explains: the failure is reported all the same
                 note = " (attribution unavailable: %s)" % exc
+            # where the world's boxes come from needs no FK, so it is said
+            # whatever the attribution came to
+            note += " [world: %s]" % self.world_summary()
             return PlanResult.failure(
                 status, self._explain(status) + note, timing=time.monotonic() - t0
             )
@@ -730,8 +739,9 @@ class CuRoboPlanner:
             return ["constraint re-check unavailable: %s" % exc]
 
     def _failure_note(self, status, start, q_goal, goal_point):
-        """What the installed world has to do with a failed plan, as text to
-        follow _explain(status)."""
+        """Which boxes of the installed world a failed plan's start or joint
+        goal reach into, or its tool point lies in or near, as text to follow
+        _explain(status)."""
         s = str(status).upper().replace(" ", "_")
         note = ""
         if "INVALID_START" in s and start is not None:
@@ -762,7 +772,7 @@ class CuRoboPlanner:
                 note += " [goal point %s] (heuristic: tool point only)" % "; ".join(
                     where
                 )
-        return note + " [world: %s]" % self.world_summary()
+        return note
 
     @staticmethod
     def _explain(status):

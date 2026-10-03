@@ -1889,9 +1889,12 @@ def test_config_layers_reach_every_world_input(tmp_path, monkeypatch):
     # a push replaces the scene and never the config's layers, in every form a
     # push takes: a name, a path, a Scene and a list
     kitchen = PACKAGED_CONFIG_DIR / "world_sim_kitchen.yaml"
-    for world in ("world_sim_kitchen.yaml", kitchen, load_scene(kitchen)):
+    scene = load_scene(kitchen)
+    for world in ("world_sim_kitchen.yaml", kitchen, scene):
         planner.update_world(world)
         assert installed() == {"scene": 26, "platform": 16, "person": 6}
+    # the scene the planner says it holds is the one pushed last
+    assert planner.scene is scene
     planner.update_world([_box("crate"), _box("mug")])
     assert installed() == {"scene": 2, "platform": 16, "person": 6}
     # the floor is the start-up scene's, and comes back with it
@@ -2058,18 +2061,23 @@ def test_a_layer_box_in_the_arms_fixed_spheres_is_refused_and_the_world_kept(
         "be infeasible; move or shrink that box, or regenerate its layer"
     )
     assert (len(stand_in.events), planner.scene, planner.world_boxes) == before
-    # and below it too: there, restoring the padding would only grow the box
+    # and at any other padding, since the box reaches the spheres at that one
+    # too: below it, restoring the padding would only grow the box, and above
+    # it, would not shrink the box enough. At 0.022 the chair's own boxes grow
+    # 2 mm, within the 4 mm the generator keeps them from the spheres, so the
+    # planner still starts
     text = (PACKAGED_CONFIG_DIR / "gen3_mebot.yaml").read_text(encoding="utf-8")
-    (tmp_path / "narrow.yaml").write_text(
-        text + "planner: {world_padding: 0.01}\n", encoding="utf-8"
-    )
-    narrow = CuRoboPlanner.from_config(tmp_path / "narrow.yaml")
-    with pytest.raises(ValueError) as exc:
-        narrow.update_world(tmp_path / "scene.yaml")
-    assert str(exc.value).endswith(
-        "(world_padding 0.010 m): every start state would be infeasible; move or "
-        "shrink that box, or regenerate its layer"
-    )
+    for padding in (0.01, 0.022):
+        (tmp_path / "padded.yaml").write_text(
+            text + "planner: {world_padding: %g}\n" % padding, encoding="utf-8"
+        )
+        padded = CuRoboPlanner.from_config(tmp_path / "padded.yaml")
+        with pytest.raises(ValueError) as exc:
+            padded.update_world(tmp_path / "scene.yaml")
+        assert str(exc.value).endswith(
+            "(world_padding %.3f m): every start state would be infeasible; move "
+            "or shrink that box, or regenerate its layer" % padding
+        )
 
     # the same box as the scene's own is cuRobo's to judge, as in v1.0.0
     planner.update_world(
@@ -2116,6 +2124,8 @@ def test_attribution_explains_an_answer_and_never_changes_or_hides_it(
     # lists the crate first
     reaching = np.array([[1.1, 0, 0.5, 0.03], [1, 0.27, 0.5, 0.03]])
     hits = "block/wall (150 mm), obj_crate (50 mm)"
+    # one 2 m above the arm's base reaches into no box
+    clear = np.array([[0.0, 0.0, 2.0, 0.03]])
     # an infinite joint value gives spheres FK cannot place
     lost = np.array([[math.nan, 0.0, 0.0, 0.03]])
     unplaced = "spheres must be finite, got [nan, 0.0, 0.0, 0.03]"
@@ -2129,11 +2139,14 @@ def test_attribution_explains_an_answer_and_never_changes_or_hides_it(
         "constraint violation at state; collides with " + hits,
     )
     # the names only explain cuRobo's verdict: a state it finds feasible is
-    # valid whatever the boxes, and one it does not stays infeasible when
-    # there is nothing to name it by, without raising
+    # valid whatever the boxes, and one it does not stays infeasible when it
+    # reaches into no box (a self-collision, a joint limit) and when its boxes
+    # cannot be named, without raising
     stand_in.feasible = True
     assert planner.check_state_valid(q) == (True, "")
     stand_in.feasible = False
+    stand_in.spheres = lambda q: clear
+    assert planner.check_state_valid(q) == (False, "constraint violation at state")
     stand_in.spheres = lambda q: lost
     assert planner.check_state_valid(q) == (
         False,
@@ -2153,7 +2166,7 @@ def test_attribution_explains_an_answer_and_never_changes_or_hides_it(
     stand_in.spheres = lambda q: reaching
     refused = "MotionGenStatus.INVALID_START_STATE_WORLD_COLLISION"
     assert note(refused, start=q) == " [start collides with %s]%s" % (hits, world)
-    stand_in.spheres = lambda q: np.array([[0.0, 0.0, 2.0, 0.03]])
+    stand_in.spheres = lambda q: clear
     assert note(refused, start=q) == (
         " [start: no world box penetrated — self-collision or joint limits]" + world
     )
@@ -2172,13 +2185,41 @@ def test_attribution_explains_an_answer_and_never_changes_or_hides_it(
     )
     # ... and, always, where the world's boxes come from
     assert note(trajopt, start=q) == world
-    # it never raises: a failure is reported, whatever its explanation
+    # it never raises: a failure is reported, whatever its explanation, and
+    # where the world's boxes come from, which needs no FK, is said all the same
     stand_in.spheres = lambda q: lost
     res = planner._finish(None, 0.0, start=q, q_goal=q)
     assert (res.success, res.status, res.error) == (
         False,
         "no result",
-        "planning failed (no result) (attribution unavailable: %s)" % unplaced,
+        "planning failed (no result) (attribution unavailable: %s)%s"
+        % (unplaced, world),
+    )
+
+
+def test_a_pose_goal_is_attributed_at_the_tool_point_curobo_is_given(
+    tmp_path, monkeypatch
+):
+    _curobo_stand_in(monkeypatch)
+    # cuRobo's tool frame stops 10 cm short of the fingertip a pose goal
+    # names, along the tool's z axis
+    text = (PACKAGED_CONFIG_DIR / "gen3_mebot.yaml").read_text(encoding="utf-8")
+    (tmp_path / "tipped.yaml").write_text(
+        text + "tool: {tip_offset_m: 0.1}\n", encoding="utf-8"
+    )
+    planner = CuRoboPlanner.from_config(tmp_path / "tipped.yaml")
+    planner.update_world([_box("crate", position=[1, 0, 0.5], dims=[0.2, 0.2, 0.2])])
+    ik = "MotionGenStatus.IK_FAIL"
+    planner._motion_gen.plan_single = lambda *_: _failed(ik)
+    # a fingertip 8 cm above the padded crate, with the tool's z axis up, puts
+    # the tool frame cuRobo is asked to reach 2 cm inside it
+    res = planner.plan_to_pose([1, 0, 0.7], [0, 0, 0, 1], start=[0.0] * 7)
+    assert (res.status, res.error) == (
+        ik,
+        planner._explain(ik)
+        + " [goal point inside obj_crate] (heuristic: tool point only)"
+        + " [world: 23 boxes: scene 1 | config layers: platform 16, person 6 "
+        "| scene layers: none]",
     )
 
 
@@ -2214,4 +2255,22 @@ def test_auto_logs_the_joint_space_failure_it_falls_back_from(monkeypatch, caplo
         planner._explain(ik)
         + " [goal point inside obj_crate] (heuristic: tool point only)"
         + world,
+    )
+
+    # every state puts the sphere in the crate, the start too: when cuRobo
+    # refuses the start, each failure names the box the start reaches into
+    refused = "MotionGenStatus.INVALID_START_STATE_WORLD_COLLISION"
+    planner._motion_gen.plan_single_js = lambda *_: _failed(refused)
+    planner._motion_gen.plan_single = lambda *_: _failed(refused)
+    caplog.clear()
+    res = planner.plan_to_joints([0.1] * 7, start=[0.0] * 7)
+    start = " [start collides with obj_crate (150 mm)]"
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == [
+        "plan_single_js failed (%s: %s%s [goal collides with obj_crate (150 mm)]%s) "
+        "— falling back to FK-pose planning"
+        % (refused, planner._explain(refused), start, world)
+    ]
+    assert (res.status, res.error) == (
+        refused,
+        planner._explain(refused) + start + world,
     )
