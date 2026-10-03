@@ -1067,37 +1067,46 @@ print(len(load_scene(kitchen).obstacles), load_layer(layer).name)
 
 
 def test_planner_configs_load_as_utf8_under_a_c_locale():
-    # the config, its world, and the layers they list. gen3.yaml has non-ASCII
-    # comments, which the child first proves it cannot read without an
-    # encoding. Not the robot YAML: robot_config reads it, before the world,
-    # in the locale's encoding, so where that is not UTF-8 the planner still
-    # stops there (the image sets PYTHONUTF8=1)
+    # what the planner reads before cuRobo: the config, its robot config, its
+    # world, and the layers they list. gen3.yaml and the robot config have
+    # non-ASCII comments, which the child first proves it cannot read without
+    # an encoding
     code = """\
 import sys
 from pathlib import Path
 
 from rammp_curobo.config import load_planner_config, resolve_config
+from rammp_curobo.robot_config import load_robot_config
 from rammp_curobo.scene import load_layers, load_scene
 
-try:
-    with open(sys.argv[1]) as f:
-        f.read()
-except UnicodeDecodeError:
-    pass
-else:
-    sys.exit("premise broken: this locale reads %s as it is" % sys.argv[1])
+
+def premise(path):
+    try:
+        with open(path) as f:
+            f.read()
+    except UnicodeDecodeError:
+        return
+    sys.exit("premise broken: this locale reads %s as it is" % path)
+
+
+premise(sys.argv[1])
 for path in sys.argv[1:]:
     cfg, folder = load_planner_config(path)
+    robot = resolve_config(cfg["robot"], relative_to=folder)
+    premise(robot)
+    ee_link = load_robot_config(robot)["kinematics"]["ee_link"]
     scene = load_scene(resolve_config(cfg["world"], relative_to=folder))
     layers = load_layers(cfg["layers"], relative_to=folder, listed_in=path)
     names = [layer.name for layer in layers + scene.layers]
-    print(Path(path).name, len(scene.obstacles), names)
+    print(Path(path).name, robot.name, ee_link, len(scene.obstacles), names)
 """
     gen3, mebot = (PACKAGED_CONFIG_DIR / n for n in ("gen3.yaml", "gen3_mebot.yaml"))
     child = _in_a_c_locale(code, gen3, mebot)
     assert child.returncode == 0, child.stderr
     assert child.stdout == (
-        "gen3.yaml 11 []\ngen3_mebot.yaml 0 ['platform', 'person', 'floor']\n"
+        "gen3.yaml robot_gen3_2f85.yaml tool_frame 11 []\n"
+        "gen3_mebot.yaml robot_gen3_2f85.yaml tool_frame 0 "
+        "['platform', 'person', 'floor']\n"
     )
 
 

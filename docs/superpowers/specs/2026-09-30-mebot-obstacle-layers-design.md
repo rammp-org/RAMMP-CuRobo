@@ -7,7 +7,8 @@
   the owner: planner configs are read as UTF-8 and refuse a key written twice
   (§4.3, deviation 13). Amended 2026-10-03, also not yet reviewed: `_finish`
   keeps its v1.0.0 signature, which a consumer overrides, and the failure notes
-  are added after it (§7.4).
+  are added after it (§7.4); the robot config is read as UTF-8 too (deviation
+  13).
 - **Issue:** <https://github.com/rammp-org/RAMMP-CuRobo/issues/19>
 - **Branch:** `feature/19-platform-layers`, off `origin/dev` (b734928, the
   v1.0.0 content), in the worktree `~/RAMMP-CuRobo-19`. Local commits only,
@@ -1271,7 +1272,7 @@ are absent (checked with pytest 9.1.1).
 | `test_chair_config_composes_within_the_cache`                                    | `gen3_mebot.yaml` resolves platform (not excludable) and person (excludable); the start-up world is 23 boxes; kitchen + chair layers = 48 ≤ 60; `world_padding` equals the files' `padding_assumed_m`; `robot` resolves to the robot config whose fixed spheres the layers were generated against (`keep_out.robot_config` in `scripts/mebot_layers.yaml`)   |
 | `test_chair_startup_world_is_empty_to_a_v100_loader`                             | `world_mebot.yaml` has no inline obstacles or objects (the only keys v1.0.0 `load_scene` turns into collision boxes)                                                                                                                                                                                                                                         |
 | `test_world_files_load_as_utf8_under_a_c_locale`                                 | a subprocess with `PYTHONUTF8=0 LC_ALL=C` loads `world_sim_kitchen.yaml` (non-ASCII comments) and a layer file; v1.0.0's `open()` without an encoding raises UnicodeDecodeError there                                                                                                                                                                        |
-| `test_planner_configs_load_as_utf8_under_a_c_locale`                             | a subprocess in the same C locale loads `gen3.yaml` (non-ASCII comments) and `gen3_mebot.yaml`, each with its world and layers. Not the robot YAML: `robot_config.py` reads it in the locale's encoding, so the image keeps `PYTHONUTF8=1`                                                                                                                   |
+| `test_planner_configs_load_as_utf8_under_a_c_locale`                             | a subprocess in the same C locale loads `gen3.yaml` and `gen3_mebot.yaml`, each with its robot config, world and layers: what the planner reads before cuRobo. `gen3.yaml` and `robot_gen3_2f85.yaml` have non-ASCII comments                                                                                                                                |
 | `test_sphere_box_penetration_matches_brute_force`                                | 300 random rotated OBBs × 50 spheres against dense point sampling; the right box is named; a rotated case where AABB and OBB answers differ                                                                                                                                                                                                                  |
 | `test_world_summary_distinguishes_config_and_scene_layers`                       | format                                                                                                                                                                                                                                                                                                                                                       |
 
@@ -1338,6 +1339,7 @@ the tests that need it.
 | `core/rammp_curobo/world.py`                                                  | modify          | `compose_cuboids`, `to_world_config`, `make_world_config(layers=)` (cache default 60), `sphere_box_penetration`, `point_box_distance`, `summarize`; guards before the cuRobo import |
 | `core/rammp_curobo/config.py`                                                 | modify          | `layers: []`, `resolve_config(search_cwd=)`, misplaced-key and type checks; read as UTF-8, a key written twice refused                                                              |
 | `core/rammp_curobo/planner.py`                                                | modify          | config layers loaded, composed everywhere; warm-up first; fixed-sphere check; `world_boxes`, `world_summary()`; CPU attribution in `check_state_valid` and plans; seed warning      |
+| `core/rammp_curobo/robot_config.py`                                           | modify          | read the robot YAML as UTF-8                                                                                                                                                        |
 | `core/rammp_curobo/configs/gen3.yaml`                                         | modify          | `layers: []`                                                                                                                                                                        |
 | `core/rammp_curobo/configs/gen3_mebot.yaml`                                   | add             | chair planner config                                                                                                                                                                |
 | `core/rammp_curobo/configs/world_mebot.yaml`                                  | add             | chair start-up scene (floor as a scene layer; no inline obstacles)                                                                                                                  |
@@ -1439,8 +1441,9 @@ boxes only, and the paired cuboid tests are the Task-1 acceptance.
   and plan-failure errors carry the world summary.
 - **Fixed**: duplicate box names refused instead of collapsed; non-finite or
   non-positive boxes refused; guards run without cuRobo; malformed scene entries
-  name file and entry; world files read as UTF-8; planner configs read as UTF-8,
-  and a key written twice in one refused instead of the last one kept.
+  name file and entry; world files, planner configs and the robot config read as
+  UTF-8; a key written twice in a planner config refused instead of the last
+  one kept.
 
 **Workflow.** Branch `feature/19-platform-layers` off `origin/dev` (b734928,
 equal to the v1.0.0 content) in the worktree `~/RAMMP-CuRobo-19`.
@@ -1499,13 +1502,16 @@ install follows. Local commits only, never pushed. Run tests with
    General unknown-key strictness for planner configs is not added.
 1. **The URDF is pinned at 80908b9, not 59d5aef.** 59d5aef is only on a feature
    branch. The blob and sha256 are identical.
-1. **Planner configs are read as UTF-8, and a key written twice is refused**
-   (§4.3). Plain PyYAML keeps the last of two equal keys, so a second, empty
-   `layers:` would plan without the chair. A duplicate is not an unknown key, so
-   deviation 11 stands; none of the 22 planner configs on this Jetson is
-   refused or loads differently. The robot YAML is still read in the locale's
-   encoding (`robot_config.py` is outside this issue's files), so the image
-   keeps `PYTHONUTF8=1`.
+1. **Planner configs and the robot config are read as UTF-8, and a key written
+   twice in a planner config is refused** (§4.3). Plain PyYAML keeps the last
+   of two equal keys, so a second, empty `layers:` would plan without the
+   chair. A duplicate is not an unknown key, so deviation 11 stands; none of
+   the 22 planner configs on this Jetson is refused or loads differently.
+   `robot_config.py` read the robot config in the locale's encoding, and
+   `robot_gen3_2f85.yaml` has non-ASCII comments, so in a C locale the planner
+   stopped there. Read as UTF-8, the chair planner starts in a C locale, cuRobo
+   included (checked on the Jetson); the image keeps `PYTHONUTF8=1` all the
+   same.
 
 ## 13. Risks
 

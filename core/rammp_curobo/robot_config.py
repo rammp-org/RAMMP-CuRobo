@@ -31,7 +31,8 @@ def load_robot_config(path):
     of its own to rewrite it with — where the arm belongs is the arm
     layer's business, not the planner's (issue #6).
     """
-    with open(path, "r") as f:
+    # UTF-8 whatever the locale: the baked config has non-ASCII comments
+    with open(path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)["robot_cfg"]
     kin = cfg["kinematics"]
 
