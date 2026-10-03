@@ -11,8 +11,9 @@ core/rammp_curobo/configs/layer_mebot_{platform,person,floor}.yaml:
     arm's base_link and merged pairwise down to a box budget. A merge only
     ever grows a box, so the layer covers every primitive (asserted); what
     merging adds is measured exactly and held to a budget.
-  * person: a 95th-percentile seated occupant plus a margin, as three
-    segments carved around the arm's joint-independent spheres.
+  * person: any seated occupant from the 5th-percentile woman to the
+    95th-percentile man, plus a margin, as three segments carved around the
+    arm's joint-independent spheres.
   * floor: a slab whose top is the URDF's lowest point.
 
 No padded box of any layer may come near those fixed spheres, or the planner
@@ -628,19 +629,25 @@ def _platform(data, primitives, spheres):
 
 # ---------------------------------------------------------------------- person
 def _person_segments(data):
-    """The occupant's three segments in the mebot frame, metres: (name, lo, hi)."""
+    """The occupant's three segments in the mebot frame, metres: (name, lo, hi).
+
+    Each size is the one, over every occupant the layer holds, that puts the
+    faces it sets furthest out (scripts/mebot_layers.yaml says which): the
+    back of the knees takes the shortest thigh, every other face the largest
+    size. The margin then goes on every face.
+    """
     person = data["person"]
-    size = {key: row["inches"] * INCH for key, row in person["ansur_p95_in"].items()}
+    size = {key: row["inches"] * INCH for key, row in person["ansur_in"].items()}
     seat, m = person["seat"], person["margin_m"]
     # A size that is not positive, or a negative margin, shrinks a segment and
     # may leave it with volume, which is all the gate on the boxes looks at.
     # An infinite one cannot be snapped to the grid, and float's OverflowError
     # would name no key. "not 0 < x < inf": a NaN is refused too, which a
     # max() below would pass over.
-    for key, row in person["ansur_p95_in"].items():
+    for key, row in person["ansur_in"].items():
         if not 0 < row["inches"] < math.inf:
             raise ValueError(
-                "person ansur_p95_in %s: size must be a finite number above 0,"
+                "person ansur_in %s: size must be a finite number above 0,"
                 " got %s inches" % (key, row["inches"])
             )
     if not 0 <= m < math.inf:
@@ -674,7 +681,9 @@ def _person_segments(data):
             ],
         ),
         # Lower legs and feet: below the pan, from the back of the knee to the
-        # front of the knee plus a foot. Its top is the others' bottom face.
+        # front of the knee plus a foot. The shorter the thigh, the nearer the
+        # seat the shins hang, so the back face is the shortest thigh's. Its
+        # top is the others' bottom face.
         (
             "legs",
             [
@@ -851,11 +860,14 @@ def _platform_text(data, layer):
 
 def _person_text(data, layer):
     person = data["person"]
-    rows = sorted(person["ansur_p95_in"].items(), key=lambda item: item[1]["row"])
+    rows = sorted(person["ansur_in"].items(), key=lambda item: item[1]["row"])
     seat = ("pan_top_z", "backrest_face_x", "backrest_rear_x", "centreline_y")
     meta = _frame_meta(data)
-    meta += ["keep_out_margin_m: %s" % data["keep_out_margin_m"], "ansur_p95_in:"]
-    meta += ["  %s: %s" % (key, row["inches"]) for key, row in rows]
+    meta += ["keep_out_margin_m: %s" % data["keep_out_margin_m"], "ansur_in:"]
+    meta += [
+        "  %s: %s" % (key, _flow(row, "row", "sex", "percentile", "inches"))
+        for key, row in rows
+    ]
     meta += [
         "margin_m: %s" % person["margin_m"],
         "seat: %s" % _flow(person["seat"], *seat),
@@ -867,8 +879,9 @@ def _person_text(data, layer):
         "keep_out_clearance_m: %.4f" % layer["clearance_m"],
     ]
     about = (
-        "The MEBot's occupant: an ANSUR II 95th-percentile seated adult plus a"
-        " margin, carved around the arm's fixed spheres."
+        "The MEBot's occupant: any seated adult from the ANSUR II 5th-percentile"
+        " woman to the 95th-percentile man, plus a margin, carved around the"
+        " arm's fixed spheres."
     )
     return _layer_text("person", True, about, meta, layer["boxes"])
 

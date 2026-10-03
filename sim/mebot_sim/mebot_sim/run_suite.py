@@ -100,8 +100,8 @@ def refusal(message):
 
 def planned_in(planner, reply, world):
     """A case's planner and the world it planned in, as the planner summed
-    it up in its `reply` to the push of `world`: "/rammp_curobo (23 boxes:
-    scene 0 | config layers: platform 16, person 6 | scene layers: floor 1)".
+    it up in its `reply` to the push of `world`: "/rammp_curobo (25 boxes:
+    scene 0 | config layers: platform 16, person 8 | scene layers: floor 1)".
     A world it did not take is named as it was pushed."""
     taken = re.fullmatch(r"world set to .* \(([^()]*)\)", reply or "")
     return "%s (%s)" % (planner, taken.group(1) if taken else Path(world).name)

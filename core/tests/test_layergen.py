@@ -7,10 +7,12 @@ no URDF) and every layer against the packaged robot config here, and against
 the pinned URDF wherever it can be had (in CI, from GitHub).
 """
 
+import bisect
 import hashlib
 import http.client
 import importlib.util
 import io
+import itertools
 import math
 import os
 import re
@@ -50,21 +52,28 @@ QUARTER = "1.5707963267948966"
 X, Y, Z = 0, 1, 2
 LO, HI = 0, 1
 SEGMENTS = ("torso_head", "lap", "legs")
-# The spec's occupant (its 6.1): ANSUR II 95th percentiles, in inches.
-OCCUPANT_IN = {
-    "sitting_height": 38.46,
-    "sitting_elbow_height": 11.46,
-    "thigh_clearance": 8.15,
-    "buttock_knee_length": 26.34,
-    "buttock_popliteal_length": 21.57,
-    "popliteal_height": 18.54,
-    "shoulder_breadth_bideltoid": 22.32,
-    "hip_breadth": 15.75,
-    "chest_depth": 11.73,
-    "abdominal_depth": 12.60,
-    "hand_breadth": 3.78,
-    "foot_length": 11.54,
+# The occupants the person layer holds (spec 6.1): each ANSUR II size, in
+# inches, from the smaller sex's 5th percentile to the larger sex's 95th, with
+# its row in the NCSU table.
+OCCUPANTS_IN = {
+    "sitting_height": (31.61, 38.46),  # row 8
+    "sitting_elbow_height": (7.44, 11.46),  # row 11
+    "thigh_clearance": (5.71, 8.15),  # row 12
+    "buttock_knee_length": (21.30, 26.34),  # row 13
+    "buttock_popliteal_length": (17.36, 21.57),  # row 14
+    "popliteal_height": (13.78, 18.54),  # row 16
+    "shoulder_breadth_bideltoid": (15.98, 22.32),  # row 17
+    "hip_breadth": (12.13, 15.75),  # row 19
+    "chest_depth": (8.07, 11.73),  # row 20
+    "abdominal_depth": (7.24, 12.60),  # row 21
+    "hand_breadth": (2.83, 3.78),  # row 29
+    "foot_length": (8.90, 11.54),  # row 30
 }
+# The spec's envelope: each size at the end of its range that puts its face
+# furthest out. That is the 95th percentile, but for the back of the knees,
+# which the shortest thigh brings nearest the seat.
+OCCUPANT_IN = {key: high for key, (_, high) in OCCUPANTS_IN.items()}
+OCCUPANT_IN["buttock_popliteal_length"] = OCCUPANTS_IN["buttock_popliteal_length"][0]
 
 
 def _inputs():
@@ -84,7 +93,7 @@ def _inputs():
     data["platform"] = {"max_boxes": 16, "max_over_pct": 15.0}
     person = data["person"]
     for key, inches in OCCUPANT_IN.items():
-        person["ansur_p95_in"][key]["inches"] = inches
+        person["ansur_in"][key]["inches"] = inches
     person["margin_m"] = 0.05
     person["seat"] = {
         "pan_top_z": 0.4705,
@@ -504,8 +513,8 @@ def test_unsupported_input_is_refused(data, tmp_path, monkeypatch):
     sizes += [(key, math.inf) for key in OCCUPANT_IN]
     for key, inches in sizes + [("hand_breadth", 0.0), ("hand_breadth", math.nan)]:
         shrunk = _inputs()
-        shrunk["person"]["ansur_p95_in"][key]["inches"] = inches
-        with pytest.raises(ValueError, match="ansur_p95_in %s: " % key):
+        shrunk["person"]["ansur_in"][key]["inches"] = inches
+        with pytest.raises(ValueError, match="ansur_in %s: " % key):
             _generate(shrunk, FAR_BOX)
     for bad in (-0.01, math.nan, math.inf):
         thin = _inputs()
@@ -1193,8 +1202,9 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
     assert radii == pytest.approx([s["radius"] + buffer for s in base + shoulder])
 
     margin = data["keep_out_margin_m"]
-    # The spec's mount and padding, where only the torso meets the column, and
-    # a mount that stands the column in all three segments, with more padding.
+    # The spec's mount and padding, where the column stands in the torso and
+    # the legs, and a mount that stands it in all three segments, with more
+    # padding.
     for mount, pad in (([0.505, -0.265, 0.376], 0.02), ([0.65, 0.1, 0.30], 0.03)):
         placed = _inputs()
         placed["mount"]["arm_base_in_mebot"]["position"] = mount
@@ -1237,11 +1247,11 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
             numbered = ["%s_%d" % (segment, k) for k in range(len(pieces))]
             assert pieces == [segment] or (len(pieces) > 1 and pieces == numbered)
 
-        # The file says what it was built from, and its volumes are the
-        # cells' (summed here, not by the generator).
+        # The file says what it was built from, each size with its row, sex
+        # and percentile, and its volumes are the cells' (summed here, not by
+        # the generator).
         meta = yaml.safe_load(result["files"][placed["outputs"]["person"]])["meta"]
-        rows = placed["person"]["ansur_p95_in"]
-        assert meta["ansur_p95_in"] == {key: row["inches"] for key, row in rows.items()}
+        assert meta["ansur_in"] == placed["person"]["ansur_in"]
         assert meta["margin_m"] == placed["person"]["margin_m"]
         assert meta["seat"] == placed["person"]["seat"]
         assert meta["keep_out_clearance_m"] == pytest.approx(clear, abs=5e-5)
@@ -1262,11 +1272,14 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
         )
 
     # Where the boxes are, which the deltas below cannot see: the spec's
-    # occupant at the spec's mount is its table of six boxes (6.2).
+    # occupant at the spec's mount is its table of eight boxes (6.2). The
+    # legs reach back under the seat to the arm's column, which carves them.
     files = _generate(_inputs(), FAR_BOX)["files"]
     assert _obstacle_lines(files[data["outputs"]["person"]]) == _box_lines(
         ("lap", "0.31285, 0.26500, 0.28800", "0.3491, 0.6670, 0.4872"),
-        ("legs", "0.46600, 0.26500, -0.19095", "0.6290, 0.5002, 0.4711"),
+        ("legs_0", "0.44280, 0.26500, -0.19095", "0.6754, 0.5002, 0.4711"),
+        ("legs_1", "0.07485, 0.31010, -0.19095", "0.0605, 0.4100, 0.4711"),
+        ("legs_2", "0.07485, 0.06000, -0.23330", "0.0605, 0.0902, 0.3864"),
         ("torso_head_0", "-0.40520, 0.26500, 0.58290", "0.6002, 0.6670, 1.0770"),
         ("torso_head_1", "0.12175, 0.26500, 0.58290", "0.0333, 0.6670, 1.0770"),
         ("torso_head_2", "0.00000, 0.35180, 0.58290", "0.2102, 0.4934, 1.0770"),
@@ -1308,7 +1321,7 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
 
     def inches(key, amount):
         def change(person, mount):
-            person["ansur_p95_in"][key]["inches"] += amount
+            person["ansur_in"][key]["inches"] += amount
 
         return change
 
@@ -1335,14 +1348,14 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
     # The smaller term of a max() moves nothing until it is the larger one:
     # the thighs under the forearms, the chest behind the abdomen.
     def raise_thigh(person, mount):
-        rows = person["ansur_p95_in"]
+        rows = person["ansur_in"]
         forearms = (
             rows["sitting_elbow_height"]["inches"] + rows["hand_breadth"]["inches"]
         )
         rows["thigh_clearance"]["inches"] = forearms + grow
 
     def raise_chest(person, mount):
-        rows = person["ansur_p95_in"]
+        rows = person["ansur_in"]
         rows["chest_depth"]["inches"] = rows["abdominal_depth"]["inches"] + grow
 
     assert moved(inches("thigh_clearance", grow / 10)) == {}
@@ -1405,6 +1418,63 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
     strict["keep_out"]["min_clearance_m"] = 0.006
     with pytest.raises(ValueError, match="person"):
         _generate(strict, FAR_BOX)
+
+
+def _union(boxes):
+    """The union of `boxes`, (lo, hi) each: the grid cut at their faces, and
+    which of its cells they fill."""
+    cuts = [sorted({b[side][k] for b in boxes for side in (LO, HI)}) for k in (X, Y, Z)]
+    return cuts, _occupied(boxes, cuts)
+
+
+def _within(box, union):
+    """Whether `box`, (lo, hi), lies inside `union` (_union's): inside its
+    grid, and every cell the box reaches into filled."""
+    cuts, filled = union
+    lo, hi = box
+    if any(lo[k] < c[0] or hi[k] > c[-1] for k, c in enumerate(cuts)):
+        return False
+    cells = tuple(
+        slice(bisect.bisect_right(c, lo[k]) - 1, bisect.bisect_left(c, hi[k]))
+        for k, c in enumerate(cuts)
+    )
+    return bool(filled[cells].all())
+
+
+def test_the_person_holds_every_occupant_of_its_range():
+    # Over-sized for every occupant from the smaller sex's 5th percentile to
+    # the larger sex's 95th, not for the largest alone: each of them (every
+    # size at either end of its range, 4096 occupants), with its back at
+    # either end of the backrest face's CAD range, lies inside the envelope,
+    # margin and all.
+    placed = _inputs()
+    person = placed["person"]
+    faces = sorted(person["seat"]["backrest_face_x"])
+
+    def segments(sizes, backrest):
+        """The segments of an occupant of `sizes` with its back against
+        `backrest`, the backrest face's range: [(lo, hi)], metres."""
+        for key, inches in sizes.items():
+            person["ansur_in"][key]["inches"] = inches
+        person["seat"]["backrest_face_x"] = backrest
+        return [(lo, hi) for _, lo, hi in gen._person_segments(placed)]
+
+    envelope = _union(segments(OCCUPANT_IN, faces))
+    keys = sorted(OCCUPANTS_IN)
+    for ends in itertools.product((0, 1), repeat=len(keys)):
+        sizes = {key: OCCUPANTS_IN[key][end] for key, end in zip(keys, ends)}
+        for face in faces:
+            for box in segments(sizes, [face, face]):
+                assert _within(box, envelope), (sizes, face)
+
+    # Sized by the largest occupant alone, the legs leave the smallest one's
+    # shins and feet behind their back face: the shorter the thigh, the
+    # nearer the seat the shins hang.
+    largest = {key: high for key, (_, high) in OCCUPANTS_IN.items()}
+    smallest = {key: low for key, (low, _) in OCCUPANTS_IN.items()}
+    alone = _union(segments(largest, faces))
+    held = [_within(box, alone) for box in segments(smallest, faces[:1] * 2)]
+    assert held == [True, True, False]  # torso_head, lap, legs
 
 
 # --------------------------------------------------------------- determinism

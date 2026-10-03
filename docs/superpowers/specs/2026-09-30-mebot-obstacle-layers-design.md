@@ -8,7 +8,12 @@
   (§4.3, deviation 13). Amended 2026-10-03, also not yet reviewed: `_finish`
   keeps its v1.0.0 signature, which a consumer overrides, and the failure notes
   are added after it (§7.4); the robot config is read as UTF-8 too (deviation
-  13).
+  13). Amended 2026-10-03 by the lead, not yet reviewed by the owner: the
+  person layer holds every occupant from the 5th-percentile woman to the
+  95th-percentile man, not the 95th percentile alone. Each face takes the end
+  of that range that puts it furthest out; only the legs' back face changes,
+  and the legs, now reaching back under the seat, are carved like the torso:
+  8 person boxes (decision 6, §6.1, §6.2).
 - **Issue:** <https://github.com/rammp-org/RAMMP-CuRobo/issues/19>
 - **Branch:** `feature/19-platform-layers`, off `origin/dev` (b734928, the
   v1.0.0 content), in the worktree `~/RAMMP-CuRobo-19`. Local commits only,
@@ -17,7 +22,8 @@
 **Summary.**
 
 - `platform`: the MEBot drive base, 16 boxes generated from the pinned URDF.
-- `person`: 95th-percentile occupant + 5 cm, 6 boxes in 3 segments, excludable.
+- `person`: any occupant from the 5th-percentile woman to the 95th-percentile
+  man + 5 cm, 8 boxes in 3 segments, excludable.
 - Config layers join every world, set_world pushes included; no IDL change.
 - Gated: under-coverage 0, over-coverage ≤ 15 % (10.9 % measured), padded boxes
   ≥ 4 mm clear of the arm's fixed spheres.
@@ -131,7 +137,11 @@ The issue's review bar, and how this design meets it:
    despite its workspace cost: about 2.2 % of uniform joint samples are free
    with the person layer, and the bench retract is 154.4 mm inside it (§13, risk
    1). Sizes are data: tuning later is one edit to `scripts/mebot_layers.yaml`
-   plus `make layers`.
+   plus `make layers`. Amended 2026-10-03 by the lead: the over-size holds for
+   every occupant from the smaller sex's 5th percentile to the larger sex's
+   95th, so each face takes the end of that range that puts it furthest out
+   (§6.1). That moves the back of the knees alone, and the cost above is
+   unchanged.
 1. **The person layer includes the lower legs and feet**: a third segment,
    `legs`, below the seat pan and in front of the seat (§6.2).
 1. **The design is approved**, with 6 and 7. The owner reviews this written spec
@@ -142,7 +152,7 @@ The issue's review bar, and how this design meets it:
 ```
 scripts/mebot_layers.yaml --> scripts/generate_layers.py --> core/rammp_curobo/configs/
   (pin, mount, budgets,        (CPU: numpy + PyYAML + stdlib;    layer_mebot_platform.yaml  16 boxes, excludable: false
-   keep-out, ANSUR II,          pinned sha256 fetch; pure-Python  layer_mebot_person.yaml     6 boxes, excludable: true
+   keep-out, ANSUR II,          pinned sha256 fetch; pure-Python  layer_mebot_person.yaml     8 boxes, excludable: true
    seat anchors, floor)         FK; 0.1 mm integer grid)          layer_mebot_floor.yaml      1 box
                                                                   (committed; `make layers` + CI diff-assert)
 
@@ -327,7 +337,7 @@ import comes first (world.py:50).
     box-opening world would silently become "chair only".
   - The chair's start-up scene is non-empty because it lists the floor layer.
 - **Overflow.**
-  `"%d collision boxes > collision_cache_obb=%d (scene 41, platform 16, person 6, floor 1); raise the cache setting in the planner config or shrink a layer"`.
+  `"%d collision boxes > collision_cache_obb=%d (scene 41, platform 16, person 8, floor 1); raise the cache setting in the planner config or shrink a layer"`.
   It still contains `collision_cache_obb` (test_smoke.py:127-132). Nothing is
   truncated. The cache stays at **60**.
 - **Fixed spheres** (layer boxes only; §7.4). A padded layer box that penetrates
@@ -344,12 +354,12 @@ import comes first (world.py:50).
 
 | World                                                                                   | Boxes               |
 | --------------------------------------------------------------------------------------- | ------------------- |
-| Chair start-up: floor + platform + person                                               | 1 + 16 + 6 = **23** |
-| box-opening worst case: 8 + 22 (the push replaces the floor)                            | 30                  |
-| ADL: 2 + 2k (pedestal, placeholder table, up to 2 boxes for each of k moved parts) + 22 | 24 + 2k             |
-| Sim kitchen: 26 + 22                                                                    | **48**              |
+| Chair start-up: floor + platform + person                                               | 1 + 16 + 8 = **25** |
+| box-opening worst case: 8 + 24 (the push replaces the floor)                            | 32                  |
+| ADL: 2 + 2k (pedestal, placeholder table, up to 2 boxes for each of k moved parts) + 24 | 26 + 2k             |
+| Sim kitchen: 26 + 24                                                                    | **50**              |
 
-All fit in the 60-box cache (ADL up to k = 18, which is exactly 60). A
+All fit in the 60-box cache (ADL up to k = 17, which is exactly 60). A
 design-phase scan of 566 consumer worlds found a maximum of 26 boxes (the
 kitchen). The 566 are the 563 worlds on this Jetson in
 `~/.ros/rammp_box_opening/worlds/` (562 box-opening, 1 ADL moved-parts; 3 to 8
@@ -579,7 +589,7 @@ hashes. Verified bytes are written to the cache atomically (temp file +
 ### 5.6 Outputs and determinism
 
 - `layer_mebot_platform.yaml` (16 boxes, `excludable: false`),
-  `layer_mebot_person.yaml` (6 boxes, `excludable: true`),
+  `layer_mebot_person.yaml` (8 boxes, `excludable: true`),
   `layer_mebot_floor.yaml` (1 box).
 - The floor box is a 3.0 × 3.0 × 0.1 m slab under the arm base. Its top is the
   lowest drive-wheel point (-0.459359) **rounded up** (outward for the floor
@@ -621,24 +631,41 @@ hashes. Verified bytes are written to the cache atomically (temp file +
 ### 6.1 Parameters and anchors (data, with sources)
 
 **Anthropometry.** ANSUR II 2012 (Gordon et al. 2014), via The Ergonomics Center
-(NCSU), "Anthropometric Data for U.S. Adults", 11/2024. Values are the 95th
-percentile of the larger sex, stored in inches with their table row and
-converted at 0.0254 m/in:
+(NCSU), "Anthropometric Data for U.S. Adults", 11/2024. The layer holds every
+occupant from the smaller sex's 5th percentile to the larger sex's 95th, not the
+95th percentile alone (amended 2026-10-03). So every face of every segment takes
+the end of that range that puts it furthest out: a back face the smallest length
+that sets it, a front, top, bottom or side face the largest. Values are stored
+in inches with their table row, sex and percentile, and converted at 0.0254
+m/in:
 
-| Parameter                                       | Table row | Larger sex        | Inches | Metres | Sets                       |
-| ----------------------------------------------- | --------- | ----------------- | ------ | ------ | -------------------------- |
-| sitting height                                  | 8         | men               | 38.46  | 0.977  | torso_head top             |
-| sitting elbow height                            | 11        | men               | 11.46  | 0.291  | lap top                    |
-| thigh clearance                                 | 12        | men               | 8.15   | 0.207  | lap top                    |
-| buttock-knee length                             | 13        | men               | 26.34  | 0.669  | lap front, legs front      |
-| buttock-popliteal length                        | 14        | men               | 21.57  | 0.548  | legs back                  |
-| popliteal height                                | 16        | men               | 18.54  | 0.471  | legs bottom                |
-| shoulder breadth (bideltoid)                    | 17        | men               | 22.32  | 0.567  | torso_head and lap width   |
-| hip breadth                                     | 19        | women (men 15.24) | 15.75  | 0.400  | legs width                 |
-| chest depth                                     | 20        | men               | 11.73  | 0.298  | torso_head front, lap back |
-| abdominal depth                                 | 21        | men               | 12.60  | 0.320  | torso_head front, lap back |
-| hand breadth (forearm and hand thickness proxy) | 29        | men               | 3.78   | 0.096  | lap top                    |
-| foot length                                     | 30        | men               | 11.54  | 0.293  | legs front                 |
+| Parameter                                       | Table row | Sex, percentile         | Inches | Metres | Sets                       |
+| ----------------------------------------------- | --------- | ----------------------- | ------ | ------ | -------------------------- |
+| sitting height                                  | 8         | men, 95th               | 38.46  | 0.977  | torso_head top             |
+| sitting elbow height                            | 11        | men, 95th               | 11.46  | 0.291  | lap top                    |
+| thigh clearance                                 | 12        | men, 95th               | 8.15   | 0.207  | lap top                    |
+| buttock-knee length                             | 13        | men, 95th               | 26.34  | 0.669  | lap front, legs front      |
+| buttock-popliteal length                        | 14        | women, 5th (men 18.07)  | 17.36  | 0.441  | legs back                  |
+| popliteal height                                | 16        | men, 95th               | 18.54  | 0.471  | legs bottom                |
+| shoulder breadth (bideltoid)                    | 17        | men, 95th               | 22.32  | 0.567  | torso_head and lap width   |
+| hip breadth                                     | 19        | women, 95th (men 15.24) | 15.75  | 0.400  | legs width                 |
+| chest depth                                     | 20        | men, 95th               | 11.73  | 0.298  | torso_head front, lap back |
+| abdominal depth                                 | 21        | men, 95th               | 12.60  | 0.320  | torso_head front, lap back |
+| hand breadth (forearm and hand thickness proxy) | 29        | men, 95th               | 3.78   | 0.096  | lap top                    |
+| foot length                                     | 30        | men, 95th               | 11.54  | 0.293  | legs front                 |
+
+**Every face against that rule.** The design of 2026-09-30 took the 95th
+percentile for every face. Of the faces an occupant's size sets, one is a back
+face: the legs' back face, the back of the knees. The shorter the thigh, the
+nearer the seat the shins hang, so it takes the shortest thigh, the women's 5th
+percentile. At the 95th-percentile thigh (21.57 in, 0.548 m) a smaller
+occupant's shins and feet hung in the gap under the lap, behind the legs
+segment (§6.4). Every other face is a front, top, bottom or side face. Each
+takes the larger sex's 95th percentile, as before, and does not move. The faces
+the seat alone sets (torso_head's back, the bottoms of torso_head and lap, the
+top of the legs) depend on no occupant. The lap's back face is no body surface:
+it is where torso_head ends, and torso_head holds everything behind it at the
+lap's height and width, so it stays at the chest front.
 
 **Margin.** `margin_m: 0.05` on every face, a deliberate over-size (decision 6).
 The planner adds 0.02 of padding, so about 7 cm is effective.
@@ -659,7 +686,7 @@ and seat modelling is out of scope (decision 3).
 In `base_link` the occupant centreline is at y +0.265 and the pan top at z
 +0.0945. The occupant faces +x.
 
-### 6.2 Geometry: three segments, carved around the arm's column → 6 boxes
+### 6.2 Geometry: three segments, carved around the arm's column → 8 boxes
 
 Segments are built in the mebot frame (m is the margin), moved into `base_link`
 by -mount, and snapped outward:
@@ -676,14 +703,15 @@ by -mount, and snapped outward:
     breadth) + m).
 - **legs** (lower legs and feet, below the pan and in front of the seat;
   decision 7)
-  - x from (backrest-face min + buttock-popliteal - m), the back of the knee
-    with the backrest at its rearmost, to (backrest-face max + buttock-knee +
-    foot length + m), the front of the knee plus a foot with the backrest at its
-    foremost;
+  - x from (backrest-face min + buttock-popliteal - m), the back of the knee of
+    the shortest thigh with the backrest at its rearmost, to (backrest-face
+    max + buttock-knee + foot length + m), the front of the knee plus a foot
+    with the backrest at its foremost;
   - y: centreline ± (hip breadth/2 + m);
   - z from (pan - popliteal height - m) to (pan - m), the level of the
-    torso_head and lap bottom faces. It abuts lap's bottom face; it starts in
-    front of torso_head, and in front of the lap (x > 0.4874) its top is open.
+    torso_head and lap bottom faces. It reaches back under the seat, below the
+    front of torso_head and below the lap, and abuts both; in front of the lap
+    (x > 0.4874) its top is open.
   - Its bottom is mebot z -0.0505 (`base_link` -0.4265), above the ground at
     mebot -0.0834: it ends 3.3 cm above the floor layer's top (-0.4593).
 
@@ -699,20 +727,24 @@ them `<segment>_<k>`.
   person exactly where the arm works.
 - The margin is 5 mm (`keep_out_margin_m`). It leaves the padded person 5.1 mm
   clear of the fixed spheres; a 1 mm margin would fail the 4 mm keep-out gate.
-- Only torso_head meets the column, and it becomes 4 boxes. lap starts at x
-  0.1383 and legs at x 0.1515, both in front of the column (x ≤ 0.1051), so the
-  carve, which runs on every segment, leaves them whole.
+- torso_head and legs meet the column. torso_head becomes 4 boxes. legs, from x
+  0.0446 and over z -0.4265 .. 0.0446, reaches past the column's front face (x
+  0.1051) and below its bottom (z -0.0401), and becomes 3. lap starts at x
+  0.1383, in front of the column, so the carve, which runs on every segment,
+  leaves it whole.
 
 **Result** (`base_link`, unpadded):
 
-| Box          | x                  | y                 | z                 |
-| ------------ | ------------------ | ----------------- | ----------------- |
-| lap          | 0.1383 .. 0.4874   | -0.0685 .. 0.5985 | 0.0444 .. 0.5316  |
-| legs         | 0.1515 .. 0.7805   | 0.0149 .. 0.5151  | -0.4265 .. 0.0446 |
-| torso_head_0 | -0.7053 .. -0.1051 | -0.0685 .. 0.5985 | 0.0444 .. 1.1214  |
-| torso_head_1 | 0.1051 .. 0.1384   | -0.0685 .. 0.5985 | 0.0444 .. 1.1214  |
-| torso_head_2 | -0.1051 .. 0.1051  | 0.1051 .. 0.5985  | 0.0444 .. 1.1214  |
-| torso_head_3 | -0.1051 .. 0.1051  | -0.0685 .. 0.1051 | 0.4085 .. 1.1214  |
+| Box          | x                  | y                 | z                  |
+| ------------ | ------------------ | ----------------- | ------------------ |
+| lap          | 0.1383 .. 0.4874   | -0.0685 .. 0.5985 | 0.0444 .. 0.5316   |
+| legs_0       | 0.1051 .. 0.7805   | 0.0149 .. 0.5151  | -0.4265 .. 0.0446  |
+| legs_1       | 0.0446 .. 0.1051   | 0.1051 .. 0.5151  | -0.4265 .. 0.0446  |
+| legs_2       | 0.0446 .. 0.1051   | 0.0149 .. 0.1051  | -0.4265 .. -0.0401 |
+| torso_head_0 | -0.7053 .. -0.1051 | -0.0685 .. 0.5985 | 0.0444 .. 1.1214   |
+| torso_head_1 | 0.1051 .. 0.1384   | -0.0685 .. 0.5985 | 0.0444 .. 1.1214   |
+| torso_head_2 | -0.1051 .. 0.1051  | 0.1051 .. 0.5985  | 0.0444 .. 1.1214   |
+| torso_head_3 | -0.1051 .. 0.1051  | -0.0685 .. 0.1051 | 0.4085 .. 1.1214   |
 
 The same boxes as the generator writes them (header and `meta` omitted):
 
@@ -721,17 +753,20 @@ layer: person
 excludable: true
 obstacles:
   - {name: lap, position: [0.31285, 0.26500, 0.28800], dims: [0.3491, 0.6670, 0.4872]}
-  - {name: legs, position: [0.46600, 0.26500, -0.19095], dims: [0.6290, 0.5002, 0.4711]}
+  - {name: legs_0, position: [0.44280, 0.26500, -0.19095], dims: [0.6754, 0.5002, 0.4711]}
+  - {name: legs_1, position: [0.07485, 0.31010, -0.19095], dims: [0.0605, 0.4100, 0.4711]}
+  - {name: legs_2, position: [0.07485, 0.06000, -0.23330], dims: [0.0605, 0.0902, 0.3864]}
   - {name: torso_head_0, position: [-0.40520, 0.26500, 0.58290], dims: [0.6002, 0.6670, 1.0770]}
   - {name: torso_head_1, position: [0.12175, 0.26500, 0.58290], dims: [0.0333, 0.6670, 1.0770]}
   - {name: torso_head_2, position: [0.00000, 0.35180, 0.58290], dims: [0.2102, 0.4934, 1.0770]}
   - {name: torso_head_3, position: [0.00000, 0.01830, 0.76495], dims: [0.2102, 0.1736, 0.7129]}
 ```
 
-- Envelope 0.867678 m³, layer 0.854392 m³, carved 0.013286 m³.
+- Envelope 0.892858 m³, layer 0.879110 m³, carved 0.013747 m³ (at the
+  95th-percentile thigh: 0.867678, 0.854392 and 0.013286 m³, 6 boxes).
 - Padded clearance to the fixed spheres **5.1 mm**.
-- Self-overlap 0.000066 m³: the outward snap overlaps lap and torso_head by 0.1
-  mm, and legs and lap by 0.2 mm.
+- Self-overlap 0.000076 m³: the outward snap overlaps lap and torso_head by 0.1
+  mm, and the legs with lap and torso_head by 0.2 mm.
 - Deterministic under ±1e-12 relative FK noise.
 
 **Why not the issue's "one conservative volume".** The occupant's centreline is
@@ -780,10 +815,12 @@ Measured with the design-phase prototypes, 3 postures × backrest face 0.1587 an
   cases.** 99.11 to 99.86 % of the 0.076 to 0.0805 m³ body is covered; the rest
   (about 0.0001 to 0.0007 m³) is inside the arm's column, where the arm's own
   base is.
-- Unpadded: 0, except slivers of the feet (0.00001 to 0.00007 m³; backrest face
-  0.1587, all three postures) and `lean_lap` at 0.2733 (0.0001 m³; the head
-  passes the chest-front face). Both lie inside the 0.02 m padding. Against the
-  unpadded layer, 0.0006 to 0.0018 m³ lies inside the arm's column.
+- Unpadded: 0, except `lean_lap` at 0.2733 (0.0001 m³; the head passes the
+  chest-front face), which lies inside the 0.02 m padding. The legs sized by the
+  95th-percentile thigh also left slivers of the feet out (0.00001 to 0.00007
+  m³; backrest face 0.1587, all three postures); the shortest thigh's legs hold
+  them. Against the unpadded layer, 0.0006 to 0.0018 m³ lies inside the arm's
+  column.
 
 **Physical finding.** At the bench retract, the menagerie Gen3 meshes clear the
 stand-in as follows:
@@ -843,7 +880,7 @@ the real chair is a follow-up (§15).
   `[x, y, z, qw, qx, qy, qz]` with padded dims. It is the same test as cuRobo's
   feasibility check at activation 0.
 - `point_box_distance(point, cuboids) -> {key: signed_m}`.
-- `summarize(sources, config_layer_names) -> "23 boxes: scene 0 | config layers: platform 16, person 6 | scene layers: floor 1"`.
+- `summarize(sources, config_layer_names) -> "25 boxes: scene 0 | config layers: platform 16, person 8 | scene layers: floor 1"`.
 - The module docstring's trap list gains: duplicates collapse, NaN,
   zero-quaternion or negative dims are invisible, and an unknown top-level key
   gives an empty world.
@@ -876,8 +913,8 @@ the real chair is a follow-up (§15).
    m: the base and on-axis shoulder spheres.
 1. `self._check_fixed_spheres(full)`. Any padded **layer** box that penetrates
    them raises a ValueError naming the deepest intrusion, for example (at
-   `world_padding` 0.030 all four torso_head boxes intrude, torso_head_3
-   deepest):
+   `world_padding` 0.030 the four torso_head boxes and the three legs boxes
+   intrude, torso_head_3 deepest):
    `ValueError("layer box person/torso_head_3 intrudes 4.9 mm into the arm's fixed base/shoulder spheres (world_padding 0.030 m): every start state would be infeasible; the layers were generated for 0.02 m — regenerate them or restore world_padding")`.
    Scene boxes are not checked, so v1.0.0 behaviour is unchanged.
 1. `warmup()` (logged: "warming up in the scene-only world (1 box); config
@@ -973,7 +1010,7 @@ of their own. The note:
 - **IK failure on a pose goal:**
   `" [goal point inside person/lap; within 5 cm of platform/...] (heuristic: tool point only)"`.
 - **Always:**
-  `" [world: 23 boxes: scene 0 | config layers: platform 16, person 6 | scene layers: floor 1]"`.
+  `" [world: 25 boxes: scene 0 | config layers: platform 16, person 8 | scene layers: floor 1]"`.
 
 `PlanResult.error` reaches ROS clients as `"%s: %s"` (planner_node.py:222-225),
 so no IDL change is needed.
@@ -1168,7 +1205,7 @@ change. A pair whose premise no longer holds fails loudly; nothing is skipped.
   `/rammp_curobo`. The success rate is reported. Every flown plan is
   contact-free.
 - **S4 a consumer's push.** `set_world` on `/rammp_curobo` with an 8-box scene
-  that lists no layers. The reply must list platform 16 and person 6 (§7.5), and
+  that lists no layers. The reply must list platform 16 and person 8 (§7.5), and
   the S2 requests are then run again and must still be refused or avoid the
   stand-in.
 - **S5 diagnostics.** A plan from the bench retract on `/rammp_curobo` fails
@@ -1275,7 +1312,7 @@ are absent (checked with pytest 9.1.1).
 | `test_guards_run_without_curobo`                                                 | with `sys.modules['curobo'] = None`, empty, overflow, duplicate and malformed inputs raise ValueError, not ImportError                                                                                                                                                                                                                                       |
 | `test_misplaced_layers_key_is_refused`                                           | top-level `layer:`, `planner.layers`, and `layers` that is not a list of strings                                                                                                                                                                                                                                                                             |
 | `test_a_planner_config_key_written_twice_is_refused`                             | `layers:` written twice in a planner config, the second empty (plain PyYAML keeps it), is refused naming the file, the key and its line                                                                                                                                                                                                                      |
-| `test_chair_config_composes_within_the_cache`                                    | `gen3_mebot.yaml` resolves platform (not excludable) and person (excludable); the start-up world is 23 boxes; kitchen + chair layers = 48 ≤ 60; `world_padding` equals the files' `padding_assumed_m`; `robot` resolves to the robot config whose fixed spheres the layers were generated against (`keep_out.robot_config` in `scripts/mebot_layers.yaml`)   |
+| `test_chair_config_composes_within_the_cache`                                    | `gen3_mebot.yaml` resolves platform (not excludable) and person (excludable); the start-up world is 25 boxes; kitchen + chair layers = 50 ≤ 60; `world_padding` equals the files' `padding_assumed_m`; `robot` resolves to the robot config whose fixed spheres the layers were generated against (`keep_out.robot_config` in `scripts/mebot_layers.yaml`)   |
 | `test_chair_startup_world_is_empty_to_a_v100_loader`                             | `world_mebot.yaml` has no inline obstacles or objects (the only keys v1.0.0 `load_scene` turns into collision boxes)                                                                                                                                                                                                                                         |
 | `test_world_files_load_as_utf8_under_a_c_locale`                                 | a subprocess with `PYTHONUTF8=0 LC_ALL=C` loads `world_sim_kitchen.yaml` (non-ASCII comments) and a layer file; v1.0.0's `open()` without an encoding raises UnicodeDecodeError there                                                                                                                                                                        |
 | `test_planner_configs_load_as_utf8_under_a_c_locale`                             | a subprocess in the same C locale loads `gen3.yaml` and `gen3_mebot.yaml`, each with its robot config, world and layers: what the planner reads before cuRobo. `gen3.yaml` and `robot_gen3_2f85.yaml` have non-ASCII comments                                                                                                                                |
@@ -1298,7 +1335,8 @@ are absent (checked with pytest 9.1.1).
 | `test_merge_meets_the_budget_and_never_touches_the_keep_out`                             | synthetic boxes near a synthetic sphere; budget met; an unmeetable budget raises                                                                                                                                                                                                                                                          |
 | `test_over_coverage_is_exact_on_known_cases`                                             | two boxes with a known gap; overlaps counted once; max stack                                                                                                                                                                                                                                                                              |
 | `test_containment_certificate_catches_a_defective_layer[drop, shrink_1_tick, shift_1mm]` | the under-coverage metric is not vacuous                                                                                                                                                                                                                                                                                                  |
-| `test_person_boxes_are_the_envelope_minus_the_arm_column`                                | union of the boxes = envelope - column exactly (integers), over all three segments; padded clearance ≥ 4 mm; each parameter moves exactly its face (sitting height +0.1 raises the top by 0.1; popliteal height +0.1 lowers the legs' bottom by 0.1; the backrest-face range moves the chest and knee faces and both x faces of the legs) |
+| `test_person_boxes_are_the_envelope_minus_the_arm_column`                                | union of the boxes = envelope - column exactly (integers), all three segments; padded clearance ≥ 4 mm; §6.2's 8 boxes; each parameter moves only its face (sitting height +0.1 raises the top by 0.1; the shortest thigh +0.1 moves the legs' back face by 0.1; the backrest range moves the chest and knee faces and the legs' x faces) |
+| `test_the_person_holds_every_occupant_of_its_range`                                      | every occupant from the smaller sex's 5th percentile to the larger sex's 95th (all twelve sizes at either end: 4096), its back at either end of the backrest face's range, lies in the envelope, margin and all; sized by the largest occupant alone, the smallest one's legs do not                                                      |
 | `test_output_is_deterministic_under_float_noise`                                         | same bytes twice, and under ±1e-12 relative FK noise; grid-aligned; sorted                                                                                                                                                                                                                                                                |
 | `test_committed_layers_regenerate_byte_identical`                                        | **Task 3's diff-assert**: pinned fetch, then all three committed files byte-for-byte. Skips locally without a source; fails when `CI=true`                                                                                                                                                                                                |
 | `test_committed_platform_covers_every_urdf_primitive`                                    | an **independent sampler**: parse the COMMITTED platform file, sample the true URDF shapes (box lattices; cylinder rims at 72 angles × 2 radii × 9 heights), 0 points outside; each primitive's exact AABB is inside a box                                                                                                                |
@@ -1311,7 +1349,8 @@ are absent (checked with pytest 9.1.1).
   byte-identical. `ignore={'platform'}` raises. A prop named `person` plus
   `ignore={'person'}` raises (ambiguous). An unknown name is a no-op.
 - Offline:
-  `test_layergen.py::test_person_boxes_are_the_envelope_minus_the_arm_column`.
+  `test_layergen.py::test_person_boxes_are_the_envelope_minus_the_arm_column`
+  and `test_layergen.py::test_the_person_holds_every_occupant_of_its_range`.
 - GPU: `test_person_is_excluded_without_touching_the_platform` (below).
 - Sim: G1 (independent stand-in coverage) and S2.
 
@@ -1324,8 +1363,8 @@ the tests that need it.
 | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `test_platform_layer_pair` (gen3 planner, scene-level layers) | Seeded batched search for a retract-neighbourhood pair whose straight path is invalid only because of `platform/*`. With `[floor, platform]` it is blocked (fail or `dev > 0.10`); with `[floor]` it is straight. The generated geometry reaches cuRobo                                                                                                                                                                                                                                         |
 | `test_world_read_back_matches_composition`                    | after construction and after `update_world` (both planners), cuRobo's `_env_n_obbs`, `_env_obbs_names[:n]`, enable bytes and dims (atol 1e-6) equal `world_boxes`, and `_cube_tensor_list[1][0, :n, :7]` equals the inverse of each `world_boxes` pose (atol 1e-5; quaternions up to sign; cuRobo stores inverse poses, geom/types.py:1309-1312). These are v0.7.8 private attributes (geom/sdf/world.py:712-715, 856-865), used **in tests only**; the read-back is a test, not a runtime gate |
-| `test_chair_config_composes_the_layers_and_warms_up_first`    | `world_boxes` holds floor 1, platform 16, person 6; `planner._warm_boxes == 1` (white-box: warm-up ran in the scene-only world); the retract is invalid naming `person/`                                                                                                                                                                                                                                                                                                                        |
-| `test_chair_layers_survive_every_push`                        | `update_world(list)`, `(path)` and `(Scene)` without layers keep platform 16 and person 6; a state found to penetrate only `platform/*` stays invalid, naming `platform/`                                                                                                                                                                                                                                                                                                                       |
+| `test_chair_config_composes_the_layers_and_warms_up_first`    | `world_boxes` holds floor 1, platform 16, person 8; `planner._warm_boxes == 1` (white-box: warm-up ran in the scene-only world); the retract is invalid naming `person/`                                                                                                                                                                                                                                                                                                                        |
+| `test_chair_layers_survive_every_push`                        | `update_world(list)`, `(path)` and `(Scene)` without layers keep platform 16 and person 8; a state found to penetrate only `platform/*` stays invalid, naming `platform/`                                                                                                                                                                                                                                                                                                                       |
 | `test_person_is_excluded_without_touching_the_platform`       | retract invalid naming `person/`; after `update_world('world_mebot.yaml', ignore={'person'})` the retract is valid and the platform entries of `world_boxes` are identical; a platform-colliding state still fails; `ignore={'platform'}` raises and keeps the previous world                                                                                                                                                                                                                   |
 | `test_invalid_start_names_the_blocking_layer`                 | `plan_to_joints` from the retract on the chair returns INVALID_START with `person/` and "mm" in the error                                                                                                                                                                                                                                                                                                                                                                                       |
 | `test_a_layer_box_over_the_arm_base_is_refused`               | a scene layer with a box at (0, 0, 0.2) is refused naming the box and the fixed spheres; the previous world is kept                                                                                                                                                                                                                                                                                                                                                                             |
@@ -1350,7 +1389,7 @@ the tests that need it.
 | `core/rammp_curobo/configs/gen3_mebot.yaml`                                   | add             | chair planner config                                                                                                                                                                |
 | `core/rammp_curobo/configs/world_mebot.yaml`                                  | add             | chair start-up scene (floor as a scene layer; no inline obstacles)                                                                                                                  |
 | `core/rammp_curobo/configs/layer_mebot_platform.yaml`                         | add (generated) | 16 boxes, coverage meta                                                                                                                                                             |
-| `core/rammp_curobo/configs/layer_mebot_person.yaml`                           | add (generated) | 6 boxes in three segments, excludable, parameters and volumes in meta                                                                                                               |
+| `core/rammp_curobo/configs/layer_mebot_person.yaml`                           | add (generated) | 8 boxes in three segments, excludable, parameters and volumes in meta                                                                                                               |
 | `core/rammp_curobo/configs/layer_mebot_floor.yaml`                            | add (generated) | floor slab at the URDF ground                                                                                                                                                       |
 | `scripts/generate_layers.py`                                                  | add             | the CPU generator and CLI (`--check`, `--offline`, `--clone`, `--cache`)                                                                                                            |
 | `scripts/mebot_layers.yaml`                                                   | add             | generator inputs with provenance                                                                                                                                                    |
@@ -1384,8 +1423,9 @@ them.
 - `excludable` and `ignore={'person'}`;
 - the chair config;
 - `make layers` and the coverage table: platform 16 boxes, under 0, over 10.9 %
-  of the bounding boxes, about 15 % of the true shapes; person 6 boxes in three
-  segments (torso and head, lap, lower legs and feet), +0.05 m on every face;
+  of the bounding boxes, about 15 % of the true shapes; person 8 boxes in three
+  segments (torso and head, lap, lower legs and feet), any occupant from the
+  5th-percentile woman to the 95th-percentile man, +0.05 m on every face;
 - the headline workspace numbers (§13, risk 1);
 - `make sim`.
 
@@ -1474,14 +1514,14 @@ install follows. Local commits only, never pushed. Run tests with
 1. **The generator reads URDF primitives, not "mesh files".** Mesh input is
    refused. The CAD is a primitives URDF, and the three v0.7.8 mesh traps are in
    §11.
-1. **The person is 6 boxes in three segments, not one volume.** One box covering
+1. **The person is 8 boxes in three segments, not one volume.** One box covering
    the occupant contains the arm's fixed base spheres, because the occupant's
    centreline is 0.265 m from the arm axis and a 95th-percentile half-bideltoid
    is 0.283 m: every state would be infeasible. One box would also swallow the
    workspace in front of the chest and above the lower legs. Three segments
    follow the seated body instead: torso and head, lap, and lower legs and feet
    (decision 7). The carve around the arm's column splits torso_head into 4
-   boxes.
+   boxes and legs into 3.
 1. **The person layer is carved around the arm's joint-independent sphere
    column**, and every layer is gated against that column. This is not in the
    issue, but it is forced: any padded box there makes every state INVALID_START
@@ -1524,15 +1564,22 @@ install follows. Local commits only, never pushed. Run tests with
 1. **The person layer confines the arm at the RAMMS mount.** This is a known
    consequence of the approved size (decision 6), not an open question. The arm
    axis is 0.265 m from the occupant centreline, and a 95th-percentile
-   half-bideltoid is 0.283 m. Uniform joint samples free of world collision (a
-   design-phase CPU sphere model of the arm, N = 4000, world collision only; the
-   legs segment does not change these):
+   half-bideltoid is 0.283 m. Uniform joint samples free of world collision
+   (joint vectors uniform in cuRobo's limits, seed 0; the arm's buffered spheres
+   against the padded boxes, world collision only). The design phase measured
+   4000 samples with a CPU sphere model. Re-measured on 2026-10-03 with cuRobo's
+   own kinematics on the Jetson's GPU, the same 4000 give the same numbers, and
+   1,000,000 samples the ones in brackets:
 
-   | World      | All samples | Tool high and in front (z > 0.3, x > 0.2) |
-   | ---------- | ----------- | ----------------------------------------- |
-   | floor      | 98.4 %      | n/a                                       |
-   | + platform | 87.9 %      | 99.7 %                                    |
-   | + person   | **2.2 %**   | **1.2 %**                                 |
+   | World      | All samples       | Tool high and in front (z > 0.3, x > 0.2) |
+   | ---------- | ----------------- | ----------------------------------------- |
+   | floor      | 98.4 % (98.1 %)   | n/a                                       |
+   | + platform | 87.9 % (88.2 %)   | 99.7 % (99.7 %)                           |
+   | + person   | **2.2 %** (2.3 %) | **1.2 %** (1.3 %)                         |
+
+   The legs' reach back under the seat (§6.1) costs none of it: with the legs
+   at the 95th-percentile thigh or at the shortest, the same 23,434 of the
+   1,000,000 samples are free.
 
    The bench retract is **154.4 mm inside** the padded person layer
    (`person/lap` vs `spherical_wrist_1_link`; retract +0.1 rad on joint_1:
@@ -1540,8 +1587,9 @@ install follows. Local commits only, never pushed. Run tests with
    occupant will IK_FAIL with this envelope. In the spike, none of 22,869 valid
    states (of 1,000,000 sampled; 2.3 %) put the tool more than 0.1 m onto the
    person's side or in front of the knees: anything handed to the person needs
-   the person layer excluded. The sizes are data, so tuning them
-   later is one edit to `scripts/mebot_layers.yaml` plus `make layers`.
+   the person layer excluded. `find_pairs`, rerun with the shortest thigh's
+   legs, finds the same 22,869. The sizes are data, so tuning them later is one
+   edit to `scripts/mebot_layers.yaml` plus `make layers`.
 
 1. **The mount is unverified** (§15).
 
@@ -1577,13 +1625,15 @@ install follows. Local commits only, never pushed. Run tests with
    follow-ups, #21). Motions cuRobo never plans are not protected by any layer:
    box-opening's straight descent, lift and recoil, and ADL's back-out.
 
-1. **Per-box plan-time cost on the Orin at 23 to 48 boxes is unmeasured.** It is
+1. **Per-box plan-time cost on the Orin at 25 to 50 boxes is unmeasured.** It is
    linear in loaded boxes (sphere_obb_kernel.cu:2453). The sim reports plan
    times.
 
 1. **SUM_COLLISIONS stacks cost in overlaps.** Platform self-overlap is 0.026 m³
-   (max stack 3; kept low by the pairwise objective, §5.4) and person 0.00007
-   m³; the legs box also has 0.005 m³ inside the platform's front-caster boxes.
+   (max stack 3; kept low by the pairwise objective, §5.4) and person 0.00008
+   m³. The legs boxes also have 0.015 m³ inside the platform: in its
+   front-caster boxes, and slivers of `mebot` and `motor_swing_arm_r` under the
+   seat (at the 95th-percentile thigh, 0.005 m³ in the front casters alone).
    The composed chair world's max stack stays 3.
 
 1. **The CI regeneration test depends on GitHub raw.** It fails, never skips, in
@@ -1675,6 +1725,7 @@ are gated.
 | Design-phase MuJoCo prototype                  | registration 0 of 23,216 samples, and 4,321 after a 1 mm shrink; stand-in coverage (§6.4); MuJoCo retract distances; scene counts; the `upright_lap` and `forearms_forward` posture searches                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Sim spike with the v1.0.0 planner (2026-10-01) | 3 platform pairs and 3 person pairs behaved as designed (detours 0.15 to 0.62 rad with no contact; without the layer, straight paths 10 to 52 mm into the true shape); 7 of 8 reaches planned, all contact-free; an independent re-check confirmed it; joint-space freedom, joint-goal and `mj_geomDistance` findings (§13)                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | ROS prototype of the sim stack (2026-10-02)    | 20 of 20 cases as expected over `/rammp_curobo` and `/execute_joint_trajectory` on domain 88 (§8)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Person layer over the occupant range           | the generator (2026-10-03): 8 person boxes, 5.1 mm clear; at `world_padding` 0.030 torso_head_3 still intrudes deepest (4.9 mm; the legs boxes 4.9 and 3.5 mm); envelope 0.892858 m³, self-overlap 0.000076 m³; the legs 0.014945 m³ inside the platform; the composed chair world's max stack 3. cuRobo's kinematics on the GPU, the design phase's method (§13, risk 1): 4000 samples give 98.4, 87.9 and 2.2 % (99.7 and 1.2 % in front), 1,000,000 give 98.1, 88.2 and 2.3 % (99.7 and 1.3 %), 23,434 free with either legs; the retract -154.4 mm, -134.4 mm at +0.1 rad, platform +53.4 mm. `find_pairs` rerun: the same requests, 22,869 of 1,000,000 valid                                                                                                                       |
 | Consumer world scan                            | 566 consumer worlds (the 563 in `~/.ros/rammp_box_opening/worlds/` on this Jetson, the kitchen, the bench, box-opening's `world_bench.yaml`; §4.6): 0 files newly refused; max 26 boxes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Git                                            | sha256 201ec24a... for the blob at 59d5aef, 80908b9 and 0a94cce and for `~/mebot.urdf`; `branch -r --contains`: 59d5aef only on `origin/feature/106-drive-base-publisher`, 80908b9 on `origin/dev` (= `origin/HEAD`), 0a94cce on `origin/main`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | cuRobo v0.7.8 source read                      | warm-up and early exits (motion_gen.py:1868-1960, 2105-2113, 3007-3015); `update_world` (motion_gen.py:1825-1837); cache init and load (geom/sdf/world.py:716, 724-727, 827-866); mesh `_init_cache` delegation (world_mesh.py:72-81); sphere buffer (cuda_robot_generator.py:759-771); `sum_collisions_` (sphere_obb_kernel.cu:2711); box count from device memory (sphere_obb_kernel.cu:2453); `enable_obstacle` / `enable_obb` / `get_obb_idx` (geom/sdf/world.py:978-1014, 1094-1110); `get_cuboid` and the cylinder trimesh (geom/types.py:99-132, 341); `get_obb_world` (geom/types.py:1096); inverse cube poses in `batch_tensor_cube` (geom/types.py:1309-1312); `normalize_quaternion` (types/math.py:536); MESH-checker traps (world_mesh.py:96-99, 101-117, 103-105, 167-173) |

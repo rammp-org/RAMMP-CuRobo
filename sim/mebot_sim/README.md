@@ -156,7 +156,7 @@ as the planner summed it up in its reply to the push, its boxes by the
 layers they come from:
 
 ```text
-/rammp_curobo (23 boxes: scene 0 | config layers: platform 16, person 6 | scene layers: floor 1)
+/rammp_curobo (25 boxes: scene 0 | config layers: platform 16, person 8 | scene layers: floor 1)
 ```
 
 Then each gate's verdict, the reported numbers, and the result file:
@@ -183,7 +183,7 @@ The suite holds the planners to the layer files, not to what a planner
 config lists. A chair config that drops the person layer is no stale
 request but a regression, and the gates catch it: tried on a scratch copy,
 the person-pair and reach flights hit the stand-in (G2), the push's reply
-lacks `person 6` (G4), and the retract plans (G5).
+lacks `person 8` (G4), and the retract plans (G5).
 
 ## Files
 

@@ -1848,7 +1848,7 @@ def test_chair_config_composes_within_the_cache():
     start = load_scene(resolve_config(cfg["world"], relative_to=folder))
     _, sources = compose_cuboids(start, **kw)
     assert summarize(sources, names) == (
-        "23 boxes: scene 0 | config layers: platform 16, person 6 "
+        "25 boxes: scene 0 | config layers: platform 16, person 8 "
         "| scene layers: floor 1"
     )
     # the largest known world, the sim kitchen, with the chair's layers added
@@ -1856,7 +1856,7 @@ def test_chair_config_composes_within_the_cache():
     kitchen = load_scene(PACKAGED_CONFIG_DIR / "world_sim_kitchen.yaml")
     _, sources = compose_cuboids(kitchen, **kw)
     assert summarize(sources, names) == (
-        "48 boxes: scene 26 | config layers: platform 16, person 6 "
+        "50 boxes: scene 26 | config layers: platform 16, person 8 "
         "| scene layers: none"
     )
     assert p["collision_cache_obb"] == 60
@@ -1917,16 +1917,16 @@ def test_config_layers_reach_every_world_input(tmp_path, monkeypatch):
     scene = load_scene(kitchen)
     for world in ("world_sim_kitchen.yaml", kitchen, scene):
         planner.update_world(world)
-        assert installed() == {"scene": 26, "platform": 16, "person": 6}
+        assert installed() == {"scene": 26, "platform": 16, "person": 8}
     # the scene the planner says it holds is the one pushed last
     assert planner.scene is scene
     planner.update_world([_box("crate"), _box("mug")])
-    assert installed() == {"scene": 2, "platform": 16, "person": 6}
+    assert installed() == {"scene": 2, "platform": 16, "person": 8}
     # the floor is the start-up scene's, and comes back with it
     planner.update_world("world_mebot.yaml")
-    assert installed() == {"platform": 16, "person": 6, "floor": 1}
+    assert installed() == {"platform": 16, "person": 8, "floor": 1}
     assert planner.world_summary() == (
-        "23 boxes: scene 0 | config layers: platform 16, person 6 "
+        "25 boxes: scene 0 | config layers: platform 16, person 8 "
         "| scene layers: floor 1"
     )
 
@@ -1960,10 +1960,10 @@ def test_config_layers_reach_every_world_input(tmp_path, monkeypatch):
             planner.update_world(world)
         assert str(exc.value) == CHAIR_ONLY
     with pytest.raises(ValueError) as exc:
-        planner.update_world([_box("b%d" % i) for i in range(39)])
+        planner.update_world([_box("b%d" % i) for i in range(37)])
     assert str(exc.value) == (
-        "61 collision boxes > collision_cache_obb=60 (scene 39, platform 16, "
-        "person 6); raise the cache setting in the planner config or shrink a layer"
+        "61 collision boxes > collision_cache_obb=60 (scene 37, platform 16, "
+        "person 8); raise the cache setting in the planner config or shrink a layer"
     )
     with pytest.raises(ValueError, match="layer 'platform' is not excludable"):
         planner.update_world("world_mebot.yaml", ignore={"platform"})
@@ -1988,18 +1988,18 @@ def test_config_layers_reach_every_world_input(tmp_path, monkeypatch):
     assert Counter(box["layer"] for box in deployed.world_boxes) == {
         "scene": 1,
         "platform": 16,
-        "person": 6,
+        "person": 8,
     }
 
     # and a config whose start-up world overflows the cache is refused before
     # any GPU work
     (mounted / "small.yaml").write_text(
-        text + "planner: {collision_cache_obb: 22}\n", encoding="utf-8"
+        text + "planner: {collision_cache_obb: 24}\n", encoding="utf-8"
     )
     with pytest.raises(ValueError) as exc:
         CuRoboPlanner.from_config(mounted / "small.yaml")
     assert str(exc.value) == (
-        "23 collision boxes > collision_cache_obb=22 (platform 16, person 6, "
+        "25 collision boxes > collision_cache_obb=24 (platform 16, person 8, "
         "floor 1); raise the cache setting in the planner config or shrink a layer"
     )
     assert inits == [True, True]
@@ -2016,7 +2016,7 @@ def test_the_chair_warms_up_in_its_scene_and_then_loads_its_layers(
     whole = [box["name"] for box in planner.world_boxes]
     assert Counter(box["layer"] for box in planner.world_boxes) == {
         "platform": 16,
-        "person": 6,
+        "person": 8,
         "floor": 1,
     }
     # warm-up plans from the retract, which is in the person's lap: MotionGen
@@ -2057,7 +2057,7 @@ def test_the_chair_warms_up_in_its_scene_and_then_loads_its_layers(
     stand_in.events.clear()
     cold = CuRoboPlanner.from_config(tmp_path / "cold.yaml")
     assert stand_in.events == [("built", whole)]
-    assert cold._warm_boxes == 23
+    assert cold._warm_boxes == 25
 
     # a padding the layers were not generated for grows the person into the
     # arm's base, where every start state would collide: the planner refuses
@@ -2159,7 +2159,7 @@ def test_attribution_explains_an_answer_and_never_changes_or_hides_it(
     )
     planner.update_world(tmp_path / "scene.yaml")
     world = (
-        " [world: 24 boxes: scene 1 | config layers: platform 16, person 6 "
+        " [world: 26 boxes: scene 1 | config layers: platform 16, person 8 "
         "| scene layers: block 1]"
     )
     # a 3 cm sphere 10 cm from the crate's centre reaches 50 mm in, and one at
@@ -2264,7 +2264,7 @@ def test_a_pose_goal_is_attributed_at_the_tool_point_curobo_is_given(
         ik,
         planner._explain(ik)
         + " [goal point inside obj_crate] (heuristic: tool point only)"
-        + " [world: 23 boxes: scene 1 | config layers: platform 16, person 6 "
+        + " [world: 25 boxes: scene 1 | config layers: platform 16, person 8 "
         "| scene layers: none]",
     )
 
@@ -2274,7 +2274,7 @@ def test_auto_logs_the_joint_space_failure_it_falls_back_from(monkeypatch, caplo
     planner = CuRoboPlanner.from_config("gen3_mebot.yaml")
     planner.update_world([_box("crate", position=[1, 0, 0.5], dims=[0.2, 0.2, 0.2])])
     world = (
-        " [world: 23 boxes: scene 1 | config layers: platform 16, person 6 "
+        " [world: 25 boxes: scene 1 | config layers: platform 16, person 8 "
         "| scene layers: none]"
     )
     # the joint goal puts a 3 cm sphere at the crate's centre, 150 mm into it,
@@ -2373,7 +2373,7 @@ def test_a_subclass_overriding_the_v100_finish_plans_and_is_explained(monkeypatc
     planner._motion_gen.plan_single = lambda *_: _failed(ik)
     planner._motion_gen.plan_single_js = lambda *_: _failed(refused)
     world = (
-        " [world: 23 boxes: scene 1 | config layers: platform 16, person 6 "
+        " [world: 25 boxes: scene 1 | config layers: platform 16, person 8 "
         "| scene layers: none]"
     )
     crate = "obj_crate (150 mm)"

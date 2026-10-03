@@ -53,7 +53,7 @@ thresholds:
 # sha256 of the layer files they were found with
 layers_sha256:
   layer_mebot_floor.yaml: 5259de334e8cf81e0e42db4eae527a1537704811daaa60952210cbd77e81a702
-  layer_mebot_person.yaml: ec6834879b27773221678bee41d60f7e2271586fde1f56a9d2f2fc01ff352f7f
+  layer_mebot_person.yaml: 2e07146bcdb2d7027c72ead6c3e809c0e23445ba57a8cf45f26cc7666e9c0bcc
   layer_mebot_platform.yaml: 25b5a3ef490f92336391a2d89611db001bb2a1d73a6650894bf2b3dba3e7d024
 
 # Where the sim arm starts, and goes back to on /mebot_sim/reset, and

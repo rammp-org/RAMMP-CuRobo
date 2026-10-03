@@ -49,7 +49,7 @@ log = logging.getLogger("rammp_curobo")
 
 
 def _boxes(hits):
-    """_colliding_boxes' hits as text: "person/lap (154 mm), person/legs
+    """_colliding_boxes' hits as text: "person/lap (154 mm), person/legs_0
     (12 mm)"."""
     return ", ".join("%s (%.0f mm)" % (key, depth * 1e3) for key, _, depth in hits)
 
@@ -458,7 +458,7 @@ class CuRoboPlanner:
 
     def world_summary(self):
         """Where the installed world's boxes come from, on one line, e.g.
-        "23 boxes: scene 0 | config layers: platform 16, person 6 | scene
+        "25 boxes: scene 0 | config layers: platform 16, person 8 | scene
         layers: floor 1"."""
         return summarize(self._world_sources, [layer.name for layer in self._layers])
 

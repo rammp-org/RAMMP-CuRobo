@@ -15,7 +15,7 @@ from mebot_sim import scene, stack  # noqa: E402
 DATA = stack.generator().load_data()
 MOUNT = np.array(DATA["mount"]["arm_base_in_mebot"]["position"])
 SEAT = DATA["person"]["seat"]
-SITTING = DATA["person"]["ansur_p95_in"]["sitting_height"]["inches"] * 0.0254
+SITTING = DATA["person"]["ansur_in"]["sitting_height"]["inches"] * 0.0254
 POSTURES = ("upright_lap", "lean_lap", "forearms_forward")
 
 
@@ -74,7 +74,7 @@ def test_the_floor_is_the_floor_layers_top(assets, model):
 def test_the_overlays_are_the_padded_layers_and_touch_nothing(assets, model):
     m = model
     overlays = _geoms(m, "overlay/")
-    assert len(overlays) == 23  # floor 1, platform 16, person 6
+    assert len(overlays) == 25  # floor 1, platform 16, person 8
     for layer in assets.layers.values():
         for box in layer.obstacles:
             g = m.geom("overlay/%s/%s" % (layer.name, box.name))

@@ -73,32 +73,37 @@ platform:
   max_boxes: 16       # of the planner's 60-box cache
   max_over_pct: 15.0  # volume merging adds, against the primitives' bounding boxes
 
-# The occupant: a 95th-percentile seated adult plus a margin on every face,
-# as three segments (torso and head, lap, lower legs and feet).
+# The occupant: any seated adult from the 5th-percentile woman to the
+# 95th-percentile man, plus a margin on every face, as three segments (torso
+# and head, lap, lower legs and feet).
 person:
   # ANSUR II 2012 (Gordon et al. 2014), via The Ergonomics Center (NCSU),
-  # "Anthropometric Data for U.S. Adults", 11/2024. Each value is the 95th
-  # percentile of the larger sex, in inches as tabulated (0.0254 m/in), with
-  # its table row.
-  ansur_p95_in:
+  # "Anthropometric Data for U.S. Adults", 11/2024: inches as tabulated
+  # (0.0254 m/in), with the table row, the sex and the percentile. The layer
+  # holds every occupant from the smaller sex's 5th percentile to the larger
+  # sex's 95th, so each size is the end of that range that puts the faces it
+  # sets furthest out: the 5th percentile for the back of the knees, the 95th
+  # for every other face.
+  ansur_in:
     # torso_head: its top, and its front (the deeper of chest and abdomen)
-    sitting_height: {row: 8, sex: men, inches: 38.46}
-    chest_depth: {row: 20, sex: men, inches: 11.73}
-    abdominal_depth: {row: 21, sex: men, inches: 12.60}
+    sitting_height: {row: 8, sex: men, percentile: 95, inches: 38.46}
+    chest_depth: {row: 20, sex: men, percentile: 95, inches: 11.73}
+    abdominal_depth: {row: 21, sex: men, percentile: 95, inches: 12.60}
     # torso_head and lap: their width
-    shoulder_breadth_bideltoid: {row: 17, sex: men, inches: 22.32}
+    shoulder_breadth_bideltoid: {row: 17, sex: men, percentile: 95, inches: 22.32}
     # lap: its front (the knees), and its top (the higher of the thighs and of
     # forearms resting on them or on the armrests, a hand breadth thick)
-    buttock_knee_length: {row: 13, sex: men, inches: 26.34}
-    thigh_clearance: {row: 12, sex: men, inches: 8.15}
-    sitting_elbow_height: {row: 11, sex: men, inches: 11.46}
-    hand_breadth: {row: 29, sex: men, inches: 3.78}
-    # legs: the back of the knees, the soles, the width (men 15.24), and the
+    buttock_knee_length: {row: 13, sex: men, percentile: 95, inches: 26.34}
+    thigh_clearance: {row: 12, sex: men, percentile: 95, inches: 8.15}
+    sitting_elbow_height: {row: 11, sex: men, percentile: 95, inches: 11.46}
+    hand_breadth: {row: 29, sex: men, percentile: 95, inches: 3.78}
+    # legs: the back of the knees (the shortest thigh, whose shins hang
+    # nearest the seat; men 18.07), the soles, the width (men 15.24), and the
     # feet in front of the knees
-    buttock_popliteal_length: {row: 14, sex: men, inches: 21.57}
-    popliteal_height: {row: 16, sex: men, inches: 18.54}
-    hip_breadth: {row: 19, sex: women, inches: 15.75}
-    foot_length: {row: 30, sex: men, inches: 11.54}
+    buttock_popliteal_length: {row: 14, sex: women, percentile: 5, inches: 17.36}
+    popliteal_height: {row: 16, sex: men, percentile: 95, inches: 18.54}
+    hip_breadth: {row: 19, sex: women, percentile: 95, inches: 15.75}
+    foot_length: {row: 30, sex: men, percentile: 95, inches: 11.54}
   # A deliberate over-size (owner decision). The planner pads another 0.02,
   # so about 7 cm is effective.
   margin_m: 0.05

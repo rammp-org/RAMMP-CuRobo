@@ -321,7 +321,7 @@ def _signed_distances(points, cuboids):
 
 def summarize(sources, config_layer_names):
     """Where the boxes of a composed world come from, on one line, e.g.
-    "23 boxes: scene 0 | config layers: platform 16, person 6 | scene
+    "25 boxes: scene 0 | config layers: platform 16, person 8 | scene
     layers: floor 1". `sources` is compose_cuboids' map, and
     `config_layer_names` the layers the planner config lists: one that
     this world leaves out (ignore=) is still named, with 0."""

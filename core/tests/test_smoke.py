@@ -540,8 +540,8 @@ def test_world_read_back_matches_composition(planner, chair_planner, tmp_path):
     finally:
         planner.update_world("world_sim_kitchen.yaml")
     _check_read_back(planner)
-    # the chair given the kitchen with its layers, 48 boxes, and then its own
-    # world again, 23: the 25 slots in between are disabled again
+    # the chair given the kitchen with its layers, 50 boxes, and then its own
+    # world again, 25: the 25 slots in between are disabled again
     try:
         chair_planner.update_world("world_sim_kitchen.yaml")
         _check_read_back(chair_planner)
@@ -553,7 +553,7 @@ def test_world_read_back_matches_composition(planner, chair_planner, tmp_path):
 def test_chair_config_composes_the_layers_and_warms_up_first(chair_planner):
     boxes = chair_planner.world_boxes
     layers = Counter(box["layer"] for box in boxes)
-    assert layers == {"floor": 1, "platform": 16, "person": 6}
+    assert layers == {"floor": 1, "platform": 16, "person": 8}
     # the installed world is the layer files: each box is an entry of its
     # file, padded on every side
     entries = {}
@@ -626,7 +626,7 @@ def test_chair_layers_survive_every_push(chair_planner, platform_state, tmp_path
         for form, world in pushes.items():
             chair_planner.update_world(world)
             layers = Counter(box["layer"] for box in chair_planner.world_boxes)
-            assert layers == {"scene": 1, "platform": 16, "person": 6}, form
+            assert layers == {"scene": 1, "platform": 16, "person": 8}, form
             # and in cuRobo: a state that only the platform blocks stays invalid
             ok, detail = chair_planner.check_state_valid(platform_state)
             assert not ok and "platform/" in detail, (form, detail)

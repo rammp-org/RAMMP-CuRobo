@@ -68,7 +68,7 @@ class Assets:
         self.data = generator.load_data()
         self.urdf, self.urdf_origin = generator.fetch_pinned(self.data["source"])
         self.mount = np.array(self.data["mount"]["arm_base_in_mebot"]["position"])
-        occupant = self.data["person"]["ansur_p95_in"]
+        occupant = self.data["person"]["ansur_in"]
         self.sitting_height = occupant["sitting_height"]["inches"] * generator.INCH
         self.postures = stack.scenarios()["standin"]
         self.boxes, self.layers = _chair_world()
