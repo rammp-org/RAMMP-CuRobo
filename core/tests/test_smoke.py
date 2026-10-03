@@ -40,7 +40,12 @@ PERSON = "layer_mebot_person.yaml"
 
 @pytest.fixture(scope="session")
 def planner():
-    return CuRoboPlanner.from_config("gen3.yaml")
+    gen3 = CuRoboPlanner.from_config("gen3.yaml")
+    # read back as construction loaded it: the tests before the read-back
+    # test push worlds on this planner and put the kitchen back through
+    # update_world
+    _check_read_back(gen3)
+    return gen3
 
 
 @pytest.fixture(scope="session")
@@ -504,10 +509,9 @@ def _check_read_back(planner):
 
 
 def test_world_read_back_matches_composition(planner, chair_planner, tmp_path):
-    # each in the world it was built with (every test puts back what it
-    # found): the chair warmed up in its floor alone and loaded its layers
-    # after
-    _check_read_back(planner)
+    # the chair as built, since no test before this one asks for it: it
+    # warmed up in its floor alone and loaded its layers after. The planner
+    # fixture read the gen3 planner back as built
     _check_read_back(chair_planner)
     # a push with a rotated obstacle, a rotated prop and layers, smaller than
     # the world it replaces: the slots it frees are disabled
@@ -706,15 +710,30 @@ def test_a_layer_box_over_the_arm_base_is_refused(chair_planner, tmp_path):
         chair_planner.update_world("world_mebot.yaml")
 
 
+def _clearance(spheres, cuboids):
+    """The least distance, in metres, from the surface of one of `spheres`
+    ((..., 4)) to a box of `cuboids`: negative if one reaches in."""
+    # grown by more than any distance here, a sphere reaches every box, by
+    # `far` less its distance
+    far = 10.0
+    grown = np.asarray(spheres, dtype=float) + [0.0, 0.0, 0.0, far]
+    return far - max(sphere_box_penetration(grown, cuboids).values(), default=0.0)
+
+
 def test_plans_keep_curobo_spheres_outside_every_padded_box(
     chair_planner, chair_states
 ):
     # the planner's own re-check of a plan (_recheck_constraints) asks the
     # world cuRobo holds, so it cannot see a box cuRobo does not honour: this
-    # asks the boxes the planner composed, on the CPU
+    # asks the boxes the planner composed, on the CPU. It can catch only a box
+    # the plans come near. Valid states on the chair sit against the person,
+    # so these plans test the person layer, and keep clear of the platform
+    # and the floor: test_platform_layer_pair and the platform_state tests
+    # show that cuRobo honours the platform
     start, goals = chair_states
     boxes = _cuboids(chair_planner)
-    planned, deep = 0, {}
+    person = _cuboids(chair_planner, "person")
+    planned, deep, closest = 0, {}, math.inf
     for i, goal in enumerate(goals):
         res = chair_planner.plan_to_joints(goal, start)
         if not res.success:
@@ -723,8 +742,21 @@ def test_plans_keep_curobo_spheres_outside_every_padded_box(
         spheres = _spheres(chair_planner, _path(res, start))
         hits = sphere_box_penetration(spheres[spheres[..., 3] > 0], boxes)
         deep.update({(i, key): 1e3 * d for key, d in hits.items() if d > 0.0005})
+        # how near the person the plan takes the spheres it moves: the base
+        # and shoulder spheres, which no joint moves, sit by it in every state
+        travel = np.linalg.norm(spheres[..., :3] - spheres[0, :, :3], axis=2)
+        moved = spheres[:, (travel.max(axis=0) > 1e-6) & (spheres[0, :, 3] > 0)]
+        closest = min(closest, _clearance(moved, person))
     # a goal the chair leaves no path to is not this test's concern, but too
     # few plans would leave it nothing to check
     if planned < 4:
         pytest.fail("%d of the 8 seeded valid goals planned; 4 are needed" % planned)
+    # and plans that keep beyond the activation distance of the person are
+    # not pushed by it: they would be the same if cuRobo ignored it
+    if closest > chair_planner.collision_activation_distance:
+        pytest.fail(
+            "the spheres the plans move come no closer than %.1f mm to the "
+            "person, beyond the %.0f mm activation distance: they do not test it"
+            % (1e3 * closest, 1e3 * chair_planner.collision_activation_distance)
+        )
     assert not deep, "mm into a padded box, by (goal, box): %s" % deep
