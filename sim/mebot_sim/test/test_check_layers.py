@@ -17,8 +17,9 @@ stack.core()
 from rammp_curobo.scene import Layer, Obstacle, load_layer  # noqa: E402
 
 POSTURES = ("upright_lap", "lean_lap", "forearms_forward")
-# G1's bodies, config/scenarios.yaml's standin.sizes (spec 6.4)
-SIZES = ("woman_5th", "man_50th", "man_95th")
+# G1's bodies, config/scenarios.yaml's standin.sizes (spec 6.4): their sitting
+# heights in inches, ANSUR II row 8 of the NCSU table
+SIZES = {"woman_5th": 31.61, "man_50th": 36.14, "man_95th": 38.46}
 # the humanoid's lower legs and feet
 SHINS_AND_FEET = {
     "%s_%s" % (part, side)
@@ -228,7 +229,7 @@ def test_the_standin_is_inside_the_padded_person_layer(
     # padded person layer, or in the arm's column where the arm's base is
     seat = assets.data["person"]["seat"]
     face = (max if back == "front" else min)(seat["backrest_face_x"])
-    height = stack.scenarios()["standin"]["sizes"][size]["inches"] * 0.0254
+    height = SIZES[size] * 0.0254
     padded, column = person
     geoms, scale = scene.standin(assets, posture, face, height)
     c = check_layers.coverage(geoms, padded, column)
@@ -252,8 +253,10 @@ def test_a_person_layer_without_its_lap_leaves_a_gap(assets, person):
 def test_s0_is_one_registration_and_eighteen_standins_each_gated(assets):
     cases = check_layers.cases(assets)
     faces = sorted(assets.data["person"]["seat"]["backrest_face_x"])
+    # the three bodies of spec 6.4, at row 8's sitting heights: an edit to
+    # config/scenarios.yaml that seats any other body fails here
     sizes = stack.scenarios()["standin"]["sizes"]
-    assert list(sizes) == list(SIZES)
+    assert {size: row["inches"] for size, row in sizes.items()} == SIZES
     assert [c["case"] for c in cases] == ["S0 registration"] + [
         "S0 %s %s %.4f" % (size, posture, face)
         for size in SIZES
@@ -263,7 +266,7 @@ def test_s0_is_one_registration_and_eighteen_standins_each_gated(assets):
     # each stand-in seated at its size's sitting height: the scale grows with
     # it, posture by posture
     heights = [c["sitting_height_in"] for c in cases[1:]]
-    assert heights == [sizes[size]["inches"] for size in SIZES for _ in range(6)]
+    assert heights == [inches for inches in SIZES.values() for _ in range(6)]
     scales = np.reshape([c["scale"] for c in cases[1:]], (3, 6))
     heights = np.reshape(heights, (3, 6))
     assert scales / scales[-1] == pytest.approx(heights / heights[-1])
@@ -356,6 +359,20 @@ def test_g1_seats_the_standin_at_the_scenarios_sizes(assets, monkeypatch):
     assert all(c["sitting_height_in"] == 36.0 for c in standins)
     assert all(c["gap_m3"] == 0 and 0.05 < c["body_m3"] < 0.07 for c in standins)
     assert all(c["gates"] == {"G1": True} for c in standins)
+
+
+def test_s0_with_no_size_to_seat_the_standin_at_is_an_error(
+    assets, monkeypatch, capsys
+):
+    # with no body seated, G1 would judge nothing, and pass
+    data = stack.scenarios()
+    empty = dict(data, standin=dict(data["standin"], sizes={}))
+    monkeypatch.setattr(stack, "scenarios", lambda: empty)
+    said = "config/scenarios.yaml holds no standin.sizes"
+    with pytest.raises(ValueError, match=said):
+        check_layers.cases(assets)
+    assert check_layers.main([]) == 1
+    assert said in capsys.readouterr().err
 
 
 def test_g1_fails_legs_sized_by_the_95th_percentile_thigh_alone(

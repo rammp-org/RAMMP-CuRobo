@@ -801,8 +801,10 @@ independent of the layer parameters. Only its overall scale comes from ANSUR.
   `sim/mebot_sim/config/scenarios.yaml` (ANSUR II row 8, NCSU table): the
   5th-percentile woman's 31.61 in (×1.010, or ×1.030 when leaning), the
   50th-percentile man's 36.14 in (×1.155 or ×1.178) and the 95th-percentile
-  man's 38.46 in (×1.229 or ×1.254). The flown scenarios (§8) seat the
-  95th-percentile man. Until 2026-10-03 G1 seated him alone.
+  man's 38.46 in (×1.229 or ×1.254). `test_check_layers.py` holds the data to
+  those three, and with no size `check_layers` is an error, not a G1 that judged
+  no body. The flown scenarios (§8) seat the 95th-percentile man. Until
+  2026-10-03 G1 seated him alone.
 - Placed with the buttock on the pan top, against the backrest face, centred.
 - Postures (joint angles as data in `sim/mebot_sim/config/scenarios.yaml`):
   - `upright_lap`: hands on the thighs;

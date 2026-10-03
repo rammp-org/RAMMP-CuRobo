@@ -28,8 +28,9 @@ and the layer files the generator writes, as the planner loads them.
     scale that seats it at its size: its volume within body_volume_pct of
     the humanoid's own times the scale cubed. The sizes are the scenarios',
     not the occupant scripts/mebot_layers.yaml sizes the layer for, so a
-    layer that holds a smaller range of bodies than they span fails. Spec
-    8's G1 is the gap alone.
+    layer that holds a smaller range of bodies than they span fails; with
+    no size, G1 would judge no body, and S0 is an error. Spec 8's G1 is the
+    gap alone.
 
 Exit status 1 if a gate fails.
 """
@@ -245,7 +246,8 @@ def cases(assets):
     """S0's cases, as stack.case: the registration (G0), then the stand-in at
     each size, in each posture, with its back at each end of the backrest
     face's range (G1). They check the layer files the generator writes,
-    whatever the chair's config lists."""
+    whatever the chair's config lists. A config/scenarios.yaml with no size
+    is a ValueError: G1 would judge no body."""
     m = scene.build(assets, None)
     layers = stack.generated_layers()
     platform = layers["platform"]
@@ -290,9 +292,14 @@ def cases(assets):
     thresholds = scenarios["thresholds"]
     inch = stack.generator().INCH
     unscaled = humanoid_m3(assets)
-    sizes = scenarios["standin"]["sizes"].items()
+    sizes = scenarios["standin"]["sizes"]
+    if not sizes:
+        raise ValueError(
+            "config/scenarios.yaml holds no standin.sizes: G1 would seat no "
+            "stand-in, and judge nothing"
+        )
     for (size, row), posture, face in itertools.product(
-        sizes, assets.postures["postures"], faces
+        sizes.items(), assets.postures["postures"], faces
     ):
         geoms, scale = scene.standin(assets, posture, face, row["inches"] * inch)
         # a numpy float: a verdict compared from it would be a numpy bool,
