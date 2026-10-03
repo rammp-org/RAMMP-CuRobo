@@ -1,0 +1,35 @@
+# Data of the MEBot sim stack (sim/mebot_sim): where the simulated arm starts,
+# and the postures of the seated stand-in.
+#
+# Joint values are radians for the arm and degrees for the stand-in, the
+# DeepMind humanoid, whose joints these are. mebot_sim/scene.py poses it with
+# them and then scales and seats it from scripts/mebot_layers.yaml: the
+# occupant's sitting height, the seat pan, the backrest and the centreline.
+
+# The arm's joints, joint_1..joint_7, when the sim starts and after
+# /mebot_sim/reset: a valid start with every layer on, so a goal can be
+# planned from where the sim arm rests. The tool_frame is at (0.249, -0.366,
+# 0.253) in base_link, beside the chair on the arm's own side. From the
+# design-phase spike's seeded search (seed 33). The bench retract is no such
+# start: it is 154 mm inside the padded person layer.
+start: [-1.3631769894949686, -1.7811959375456539, 2.3496439780270606, 1.696112223172896, -1.2342512983053389, 1.9494038856934996, -2.9469084267350865]
+
+standin:
+  # Every posture sits: thighs forward, shins down.
+  seated: {hip_y_right: -90, knee_right: -90, hip_y_left: -90, knee_left: -90}
+  postures:
+    # Hands on the thighs. The arm angles are the best of a seeded posture
+    # search of the design phase.
+    upright_lap:
+      joints: {shoulder1_right: 44.4, shoulder2_right: -32.7, elbow_right: -21.0, shoulder1_left: 45.3, shoulder2_left: -27.5, elbow_left: -28.6}
+    # The same hands, leaning 15 degrees forward: the whole body pitches
+    # forward and the abdomen pitches back by as much, so the pelvis and the
+    # legs stay level in the seat.
+    lean_lap:
+      pitch_deg: 15
+      joints: {abdomen_y: -15, shoulder1_right: 44.4, shoulder2_right: -32.7, elbow_right: -21.0, shoulder1_left: 45.3, shoulder2_left: -27.5, elbow_left: -28.6}
+    # Upper arms down, forearms forward at elbow height (on the armrests or
+    # a joystick): a seeded search for elbows 0.26 m below the shoulders and
+    # hands 0.27 m in front of the elbows.
+    forearms_forward:
+      joints: {shoulder1_right: 49.7, shoulder2_right: -25.1, elbow_right: -24.0, shoulder1_left: 49.9, shoulder2_left: -24.8, elbow_left: -14.0}

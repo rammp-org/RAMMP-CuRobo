@@ -9,10 +9,14 @@
 #   make verify    run the core suite INSIDE the built image
 #   make run       run the planner node from the image
 #   make layers    regenerate the MEBot obstacle layers (expect no diff)
+#   make sim-build build the MEBot sim stack into .sim_ws/ (Jetson)
 
 IMAGE ?= rammp-curobo:jp6
+# The ROS workspace that provides rammp_arm_interfaces, which the sim's
+# driver stand-in serves; consumed as built.
+SIM_OVERLAY ?= ~/rammp_deps_ws/install/setup.bash
 
-.PHONY: lint test colcon build verify run shell bake layers
+.PHONY: lint test colcon build verify run shell bake layers sim-build
 
 lint:                      ## pre-commit run --all-files
 	pre-commit run --all-files
@@ -62,3 +66,16 @@ layers:                    ## Regenerate the MEBot layers (expect no diff)
 	git diff --exit-code core/rammp_curobo/configs/layer_mebot_platform.yaml \
 	  core/rammp_curobo/configs/layer_mebot_person.yaml \
 	  core/rammp_curobo/configs/layer_mebot_floor.yaml
+
+# The sim stack (sim/mebot_sim) and the two packages it runs, built into the
+# git-ignored .sim_ws/ as links to these sources. sim/ carries a COLCON_IGNORE
+# so that CI's colcon build needs no rammp_arm_interfaces; here the package is
+# named as a base path instead. The sim and its planners then run from
+# .sim_ws/install/setup.bash, never on the bench's ROS domain: 0 or unset
+# becomes 88.
+sim-build: SHELL := /bin/bash
+sim-build:                 ## Build the sim stack into .sim_ws/ (Jetson)
+	. /opt/ros/humble/setup.bash && . $(SIM_OVERLAY) && \
+	  colcon --log-base .sim_ws/log build --symlink-install \
+	    --base-paths rammp_curobo_interfaces rammp_curobo_ros sim/mebot_sim \
+	    --build-base .sim_ws/build --install-base .sim_ws/install
