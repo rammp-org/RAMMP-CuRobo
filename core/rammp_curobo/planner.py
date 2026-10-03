@@ -745,8 +745,16 @@ class CuRoboPlanner:
             # nothing failed, or post-validation refused a plan cuRobo found
             # and its error says why
             return res
+        # cuRobo's status, read as _finish reads it: an override may report
+        # the failure under a status of its own, which names neither the
+        # start cuRobo refused nor the goal point no arm could hold
+        status = (
+            "no result"
+            if result is None
+            else str(getattr(result, "status", None) or "unknown")
+        )
         try:
-            note = self._failure_note(res.status, start, q_goal, goal_point)
+            note = self._failure_note(status, start, q_goal, goal_point)
         except Exception as exc:
             # it only explains: the failure is reported all the same
             note = " (attribution unavailable: %s)" % exc

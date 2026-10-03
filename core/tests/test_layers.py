@@ -2428,3 +2428,19 @@ def test_a_subclass_overriding_the_v100_finish_plans_and_is_explained(monkeypatc
             status,
             note + world,
         ), name
+
+    # and one it reports under a status of its own is explained by cuRobo's:
+    # the start cuRobo refused and the goal point no arm could hold are named
+    # all the same
+    def relabelled(self, result, t0, q_goal=None):
+        res = super(Stationary, self)._finish(result, t0, q_goal=q_goal)
+        return PlanResult.failure("ADL_PLAN_FAILED", res.error)
+
+    monkeypatch.setattr(Stationary, "_finish", relabelled)
+    for name, status, note in failures:
+        res = plans[name]()
+        assert (res.success, res.status, res.error) == (
+            False,
+            "ADL_PLAN_FAILED",
+            planner._explain(status) + note + world,
+        ), name
