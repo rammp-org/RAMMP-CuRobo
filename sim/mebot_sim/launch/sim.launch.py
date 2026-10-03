@@ -13,10 +13,11 @@
                            same request can be planned without a layer
 
 /mebot_sim serves the driver's names, so the stack never runs on the bench's
-ROS domain: when ROS_DOMAIN_ID is 0 or unset, everything launched here runs
-on 88 instead, and the launch says so. Another non-zero domain is kept. The
-stack runs whole or not at all: when any of its nodes ends, /mebot_sim
-refusing to start beside another driver included, the launch ends the rest.
+ROS domain, 0: when ROS_DOMAIN_ID is anything but a domain from 1 to 232
+(stack.isolate), the launch itself and everything launched here run on 88
+instead, and the launch says so. Such a domain is kept. The stack runs
+whole or not at all: when any of its nodes ends, /mebot_sim refusing to
+start beside another driver included, the launch ends the rest.
 The planner nodes run this checkout's rammp_curobo, its core/ first on their
 PYTHONPATH (this host has an editable install of another checkout); the
 launch refuses to start them if they would import any other.
@@ -25,7 +26,7 @@ launch refuses to start them if they would import any other.
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, LogInfo, Shutdown
+from launch.actions import DeclareLaunchArgument, Shutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -35,6 +36,10 @@ PLANNERS = (("rammp_curobo", "gen3_mebot.yaml"), ("rammp_curobo_control", "gen3.
 
 
 def generate_launch_description():
+    # The launch's own process first: a launch_ros action such as a RosTimer
+    # starts a ROS node in it, and a process launched without a domain of its
+    # own inherits its environment.
+    stack.isolate()
     actions = [
         DeclareLaunchArgument(
             "posture",
@@ -61,25 +66,11 @@ def generate_launch_description():
             description="the DeepMind humanoid the stand-in is posed from",
         ),
     ]
-    if stack.on_bench_domain(os.environ):
-        domain = stack.SIM_DOMAIN
-        actions.append(
-            LogInfo(
-                msg="ROS_DOMAIN_ID is 0 or unset, the bench's domain: the sim "
-                "stack runs on ROS_DOMAIN_ID=%s instead" % domain
-            )
-        )
-    else:
-        domain = os.environ["ROS_DOMAIN_ID"]
-    # Each node is given its domain and middleware itself: a process starts
-    # with the launch's environment as it stands when the launch reaches it,
-    # so an action that changed that would miss the nodes listed before it.
-    ros = {
-        "ROS_DOMAIN_ID": domain,
-        "RMW_IMPLEMENTATION": os.environ.get(
-            "RMW_IMPLEMENTATION", "rmw_cyclonedds_cpp"
-        ),
-    }
+    # Each node is given its domain and middleware itself as well: a process
+    # starts with the launch's environment as it stands when the launch
+    # reaches it, so an action that changed that would miss the nodes listed
+    # before it.
+    ros = {name: os.environ[name] for name in ("ROS_DOMAIN_ID", "RMW_IMPLEMENTATION")}
 
     environment = stack.planner_environment(os.environ)
     stack.check_planner_imports(environment)

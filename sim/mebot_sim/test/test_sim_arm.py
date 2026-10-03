@@ -35,12 +35,12 @@ def run(sim, seconds):
     sim.step(int(round(seconds / sim_arm.TIMESTEP)))
 
 
-def straight(to, seconds, dt=0.02):
-    """A trajectory from START to START + `to`, as the planner stamps one:
+def straight(to, seconds, dt=0.02, start=START):
+    """A trajectory from `start` to `start` + `to`, as the planner stamps one:
     point k at (k + 1) * dt."""
     n = int(round(seconds / dt))
     times = [(k + 1) * dt for k in range(n)]
-    rows = [START + np.asarray(to) * (k + 1) / n for k in range(n)]
+    rows = [start + np.asarray(to) * (k + 1) / n for k in range(n)]
     return times, rows
 
 
@@ -57,6 +57,8 @@ def trajectory(times, rows, names=stack.JOINTS):
 
 
 AWAY = [0.3, -0.2, 0.2, 0.2, 0.3, -0.2, 0.3]
+# from where AWAY ends back to START
+BACK = straight(np.negative(AWAY), 1.0, start=START + AWAY)
 
 
 def test_a_trajectory_is_flown_on_its_own_time_base(sim):
@@ -74,14 +76,52 @@ def test_a_trajectory_is_flown_on_its_own_time_base(sim):
 
 def test_the_latest_trajectory_wins(sim):
     first = sim_arm.Flight(*straight(AWAY, 2.0))
+    queued = sim_arm.Flight(*BACK, queue=True)
     sim.post("fly", first)
+    sim.post("fly", queued)
     run(sim, 0.2)
     second = sim_arm.Flight(*straight([0.1] * 7, 0.2))
     sim.post("fly", second)
     run(sim, 0.0)
-    assert first.outcome == "preempted" and "newer" in first.reason
+    # and the one queued behind it, as the driver drops it
+    for flight in (first, queued):
+        assert flight.outcome == "preempted" and "newer" in flight.reason
     run(sim, 0.3)
     assert second.outcome == "done"
+
+
+def test_a_queued_trajectory_waits_for_the_one_under_way(sim):
+    first = sim_arm.Flight(*straight(AWAY, 1.0))
+    second, third = (sim_arm.Flight(*BACK, queue=True) for _ in range(2))
+    sim.post("fly", first)
+    run(sim, 0.2)
+    sim.post("fly", second)
+    sim.post("fly", third)
+    run(sim, 0.0)
+    # the driver keeps one trajectory queued: the newer
+    assert second.outcome == "preempted" and "newer" in second.reason
+    assert not first.ended.is_set() and not third.ended.is_set()
+    run(sim, 0.85)
+    # flown when the first is done, from where it ended
+    assert first.outcome == "done" and sim.flight is third
+    run(sim, 1.05)
+    assert third.outcome == "done"
+    run(sim, 0.5)
+    assert np.abs(sim.q - START).max() < 0.02
+
+
+def test_a_stop_ends_the_flight_and_the_one_queued_behind_it(sim):
+    # as a cancel ends the driver's whole chain, whichever goal it names
+    first = sim_arm.Flight(*straight(AWAY, 2.0))
+    queued = sim_arm.Flight(*BACK, queue=True)
+    sim.post("fly", first)
+    sim.post("fly", queued)
+    run(sim, 0.3)
+    sim.post("stop", queued)
+    run(sim, 0.0)
+    for flight in (first, queued):
+        assert flight.outcome == "preempted" and "stop" in flight.reason
+    assert sim.flight is None and sim.queued is None
 
 
 def test_a_stopped_arm_holds_where_it_is(sim):
@@ -101,12 +141,15 @@ def test_a_stopped_arm_holds_where_it_is(sim):
 
 def test_a_flight_under_way_ends_when_the_sim_stops(sim):
     # its goal is waiting on it, and the node's shutdown on the goal
-    flight = sim_arm.Flight(*straight(AWAY, 2.0))
-    sim.post("fly", flight)
+    under_way = sim_arm.Flight(*straight(AWAY, 2.0))
+    queued = sim_arm.Flight(*BACK, queue=True)
+    sim.post("fly", under_way)
+    sim.post("fly", queued)
     run(sim, 0.1)
     sim.close()
-    assert flight.ended.is_set() and flight.outcome == "preempted"
-    assert "stopping" in flight.reason
+    for flight in (under_way, queued):
+        assert flight.ended.is_set() and flight.outcome == "preempted"
+        assert "stopping" in flight.reason
 
 
 def test_teleport_and_reset(sim):
@@ -198,10 +241,16 @@ def test_a_distance_at_or_below_zero_counts_only_for_a_real_touch(sim, monkeypat
 def test_the_driver_interface_refuses_a_malformed_trajectory():
     good = [[0.0] * 7, [0.1] * 7]
     assert sim_arm.trajectory_problem(trajectory([0.02, 0.04], good)) is None
+    eight = [[0.0] * 8, [0.1] * 8]
     for traj, why in (
         (trajectory([], []), "no points"),
-        (trajectory([0.02, 0.04], good, names=stack.JOINTS[:6] + ["x"]), "joint_7"),
+        # the driver takes positions as joint_1..joint_7, never by name
+        (trajectory([0.02, 0.04], good, names=stack.JOINTS[::-1]), "in order"),
+        (trajectory([0.02, 0.04], good, names=stack.JOINTS[:6] + ["x"]), "in order"),
+        (trajectory([0.02, 0.04], eight, names=stack.JOINTS + ["joint_8"]), "in order"),
+        # and seven of them in every point
         (trajectory([0.02, 0.04], [[0.0] * 6, [0.1] * 7]), "point 0"),
+        (trajectory([0.02, 0.04], [[0.0] * 7, [0.1] * 8]), "point 1"),
         (trajectory([0.02, 0.04], [[0.0] * 7, [float("nan")] * 7]), "point 1"),
         (trajectory([0.04, 0.04], good), "point 1"),
     ):
@@ -288,11 +337,16 @@ def driver(sim, monkeypatch):
 
 class Goal:
     """A goal being executed, as Driver._execute sees rclpy's goal handle:
-    its request, a cancel its client may ask for, and the state and the
+    its request (with `preemption` 0, QUEUE, as a client leaves it, or 1,
+    LATEST_WINS), a cancel its client may ask for, and the state and the
     feedback the driver gives it."""
 
-    def __init__(self, times, rows):
-        self.request = types.SimpleNamespace(trajectory=trajectory(times, rows))
+    def __init__(self, times, rows, preemption=0):
+        from rammp_arm_interfaces.action import ExecuteJointTrajectory
+
+        self.request = ExecuteJointTrajectory.Goal(
+            trajectory=trajectory(times, rows), preemption=preemption
+        )
         self.cancel = threading.Event()
         self.state, self.feedback, self.result = "executing", [], None
 
@@ -402,9 +456,10 @@ def test_a_cancelled_goal_is_preempted_and_the_arm_holds(driver):
     assert np.abs(sim.q - (START + AWAY)).max() > 0.1
 
 
-def test_the_latest_goal_preempts_the_one_flying(driver):
+def test_a_latest_wins_goal_preempts_the_one_flying(driver):
     sim = driver.sim
-    first, second = Goal(*straight(AWAY, 4.0)), Goal(*straight([0.1] * 7, 0.5))
+    first = Goal(*straight(AWAY, 4.0))
+    second = Goal(*straight([0.1] * 7, 0.5), preemption=sim_arm.LATEST_WINS)
     one = execute(driver.driver, first)
     step_until(sim, lambda: progress(sim) > 0.1)
     two = execute(driver.driver, second)
@@ -414,6 +469,81 @@ def test_the_latest_goal_preempts_the_one_flying(driver):
     assert "newer" in first.result.error_string
     assert second.state == "succeeded"
     assert second.result.error_code == sim_arm.SUCCESSFUL
+
+
+def test_a_queued_goal_is_flown_once_the_one_flying_is_done(driver):
+    # QUEUE is what a goal says unless it says LATEST_WINS
+    sim = driver.sim
+    first, second = Goal(*straight(AWAY, 1.0)), Goal(*BACK)
+    one = execute(driver.driver, first)
+    step_until(sim, lambda: progress(sim) > 0.1)
+    two = execute(driver.driver, second)
+    step_until(sim, lambda: progress(sim) > 0.5)
+    # it waits, given no feedback: the driver gives that to the goal it flies
+    assert first.state == second.state == "executing" and not second.feedback
+    step_until(sim, lambda: not one.is_alive() and not two.is_alive())
+    assert first.state == second.state == "succeeded"
+    assert second.feedback
+    run(sim, 0.5)
+    assert np.abs(sim.q - START).max() < 0.02
+
+
+def test_every_goal_ends_when_the_sim_stops(driver):
+    # A goal whose flight the sim never takes up, posted before its loop
+    # stopped or after: it ends all the same, or the node's shutdown waits
+    # on it for ever.
+    sim = driver.sim
+    before, after = Goal(*straight(AWAY, 1.0)), Goal(*straight(AWAY, 1.0))
+    threads = [execute(driver.driver, before)]
+    deadline = time.monotonic() + 5.0
+    while sim.commands.empty():  # posted, and never carried out
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    sim.close()
+    threads.append(execute(driver.driver, after))
+    for goal, thread in zip((before, after), threads):
+        thread.join(5.0)
+        assert not thread.is_alive()
+        assert goal.state == "aborted"
+        assert goal.result.error_code == sim_arm.PREEMPTED
+        assert "stopping" in goal.result.error_string
+
+
+class Refused(Exception):
+    """_refuse_a_second_driver was called."""
+
+
+def test_the_sim_arm_looks_for_another_driver_before_it_serves_anything(
+    monkeypatch,
+):
+    rclpy = pytest.importorskip("rclpy")
+    import rclpy.node
+
+    class Started:
+        """The node main() starts, as far as it uses it before it serves."""
+
+        def __init__(self, name):
+            pass
+
+        def get_logger(self):
+            return types.SimpleNamespace(info=lambda message: None)
+
+        def declare_parameter(self, name, value):
+            return types.SimpleNamespace(value=value)
+
+    def refuse(node):
+        raise Refused()
+
+    def serve(node, sim):
+        raise AssertionError("the driver's names served before the check")
+
+    monkeypatch.delenv("ROS_DOMAIN_ID", raising=False)
+    monkeypatch.setattr(rclpy, "init", lambda **options: None)
+    monkeypatch.setattr(rclpy.node, "Node", Started)
+    monkeypatch.setattr(sim_arm, "_refuse_a_second_driver", refuse)
+    monkeypatch.setattr(sim_arm, "Driver", serve)
+    with pytest.raises(Refused):
+        sim_arm.main()
 
 
 def test_the_sim_arm_will_not_start_beside_another_driver(monkeypatch):

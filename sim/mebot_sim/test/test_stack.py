@@ -20,7 +20,13 @@ REPO = Path(__file__).resolve().parents[3]
 PACKAGE = REPO / "sim" / "mebot_sim"
 
 
-@pytest.mark.parametrize("value", [None, "", "0", " 0", "00", "0x0"])
+# rcl reads "00", "0x0" and " 0" as 0, and "-1" and 2**64 - 1 as its default
+# domain, which Cyclone DDS makes 0; "017" is octal to it, and Cyclone has
+# no domain above 232
+@pytest.mark.parametrize(
+    "value",
+    [None, "", "0", " 0", "00", "0x0", "-1", "18446744073709551615", "017", "233"],
+)
 def test_a_process_never_joins_the_bench_domain(monkeypatch, capsys, value):
     if value is None:
         monkeypatch.delenv("ROS_DOMAIN_ID", raising=False)
@@ -32,7 +38,35 @@ def test_a_process_never_joins_the_bench_domain(monkeypatch, capsys, value):
     assert "ROS_DOMAIN_ID" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("value", ["17", "89"])
+class Started(Exception):
+    """rclpy.init was called."""
+
+
+@pytest.mark.parametrize("entry", ["sim_arm", "try_goal"])
+def test_a_process_started_by_hand_leaves_the_bench_domain_before_ros(
+    monkeypatch, entry
+):
+    # `ros2 run mebot_sim sim_arm` and `ros2 run mebot_sim try_goal` (a
+    # client.Tester) start outside the launch, with the shell's domain
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("mujoco")  # the sim's
+    pytest.importorskip("rammp_arm_interfaces.action")  # the Tester's
+    from mebot_sim import client, sim_arm
+
+    seen = []
+
+    def init(*args, **options):
+        seen.append(os.environ.get("ROS_DOMAIN_ID"))
+        raise Started()
+
+    monkeypatch.delenv("ROS_DOMAIN_ID", raising=False)
+    monkeypatch.setattr(rclpy, "init", init)
+    with pytest.raises(Started):
+        {"sim_arm": sim_arm.main, "try_goal": client.Tester}[entry]()
+    assert seen == ["88"]
+
+
+@pytest.mark.parametrize("value", ["1", "17", "89", "232"])
 def test_another_domain_is_kept(monkeypatch, capsys, value):
     monkeypatch.setenv("ROS_DOMAIN_ID", value)
     stack.isolate()
@@ -125,18 +159,26 @@ def test_each_world_holds_the_layers_it_is_said_to(tmp_path, monkeypatch):
         assert "scene" not in sources.values()
 
 
-def test_trajectory_rows_follow_the_joint_names():
+def test_trajectory_rows_are_read_as_the_driver_reads_them():
     msgs = pytest.importorskip("trajectory_msgs.msg")
-    traj = msgs.JointTrajectory(joint_names=list(reversed(stack.JOINTS)))
+    traj = msgs.JointTrajectory(joint_names=list(stack.JOINTS))
     for k in range(2):
         point = msgs.JointTrajectoryPoint(positions=[k + j / 10 for j in range(7)])
         point.time_from_start.sec, point.time_from_start.nanosec = k, 500000000
         traj.points.append(point)
     times, rows = stack.trajectory_arrays(traj)
     assert times == [0.5, 1.5]
-    # columns joint_1..joint_7: the message listed them backwards
-    assert rows[1] == pytest.approx([1.6, 1.5, 1.4, 1.3, 1.2, 1.1, 1.0])
+    assert rows[1] == pytest.approx([1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6])
 
-    traj.joint_names[0] = "joint_9"
-    with pytest.raises(ValueError, match="joint_1"):
-        stack.trajectory_arrays(traj)
+    # The driver takes each point's positions as joint_1..joint_7 and never
+    # reads the names: read by name, these would fly here as the arm would
+    # not fly them.
+    for names in (
+        list(reversed(stack.JOINTS)),
+        stack.JOINTS[:6] + ["joint_9"],
+        stack.JOINTS + ["joint_8"],
+        [],
+    ):
+        traj.joint_names = names
+        with pytest.raises(ValueError, match="in order"):
+            stack.trajectory_arrays(traj)

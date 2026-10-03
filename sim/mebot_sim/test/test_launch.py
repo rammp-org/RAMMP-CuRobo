@@ -1,6 +1,7 @@
-"""sim.launch.py, loaded but not launched: the domain every process it starts
-runs on, what it starts, and that the stack ends whole. The node names and
-their parameters resolve only at launch, so those are left to running it.
+"""sim.launch.py, loaded but not launched: the domain the launch and every
+process it starts run on, what it starts, and that the stack ends whole. The
+node names and their parameters resolve only at launch, so those are left to
+running it.
 """
 
 import importlib.util
@@ -11,7 +12,7 @@ import pytest
 
 pytest.importorskip("launch_ros")
 from launch import LaunchContext  # noqa: E402
-from launch.actions import ExecuteProcess, LogInfo, Shutdown  # noqa: E402
+from launch.actions import ExecuteProcess, Shutdown  # noqa: E402
 from launch.utilities import perform_substitutions  # noqa: E402
 from launch_ros.actions import Node  # noqa: E402
 
@@ -58,31 +59,27 @@ def _processes(entities):
     ]
 
 
-def _said(entities):
-    context = LaunchContext()
-    return [
-        perform_substitutions(context, a.msg)
-        for a in entities
-        if isinstance(a, LogInfo)
-    ]
-
-
-@pytest.mark.parametrize("domain", [None, "0"])
-def test_the_bench_domain_is_left_for_88_and_said(monkeypatch, domain):
+@pytest.mark.parametrize("domain", [None, "0", "-1"])
+def test_the_bench_domain_is_left_for_88_and_said(monkeypatch, capsys, domain):
     entities = _description(monkeypatch, domain)
+    # the launch's own process too: a launch_ros action such as a RosTimer
+    # starts a ROS node in it, and a process launched without a domain of
+    # its own inherits the launch's
+    assert os.environ["ROS_DOMAIN_ID"] == "88"
     processes = _processes(entities)
     assert len(processes) == 3
     for _process, env in processes:
         assert env["ROS_DOMAIN_ID"] == "88"
         assert env["RMW_IMPLEMENTATION"] == "rmw_cyclonedds_cpp"
-    assert any("ROS_DOMAIN_ID=88" in s for s in _said(entities))
+    assert "ROS_DOMAIN_ID=88" in capsys.readouterr().err
 
 
-def test_another_domain_is_kept(monkeypatch):
+def test_another_domain_is_kept(monkeypatch, capsys):
     entities = _description(monkeypatch, "89")
+    assert os.environ["ROS_DOMAIN_ID"] == "89"
     for _process, env in _processes(entities):
         assert env["ROS_DOMAIN_ID"] == "89"
-    assert not any("ROS_DOMAIN_ID" in s for s in _said(entities))
+    assert "ROS_DOMAIN_ID" not in capsys.readouterr().err
 
 
 def test_the_sim_arm_and_this_checkouts_planner_twice(monkeypatch):

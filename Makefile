@@ -72,8 +72,8 @@ layers:                    ## Regenerate the MEBot layers (expect no diff)
 # git-ignored .sim_ws/ as links to these sources. sim/ carries a COLCON_IGNORE
 # so that CI's colcon build needs no rammp_arm_interfaces; here the package is
 # named as a base path instead. The sim and its planners then run from
-# .sim_ws/install/setup.bash, never on the bench's ROS domain: 0 or unset
-# becomes 88.
+# .sim_ws/install/setup.bash, never on the bench's ROS domain: 0, unset or
+# anything else but a domain from 1 to 232 becomes 88.
 sim-build: SHELL := /bin/bash
 sim-build:                 ## Build the sim stack into .sim_ws/ (Jetson)
 	. /opt/ros/humble/setup.bash && . $(SIM_OVERLAY) && \
@@ -85,9 +85,12 @@ sim-build:                 ## Build the sim stack into .sim_ws/ (Jetson)
 # the driver's ROS side on a stub node, the page and the launch description,
 # with MuJoCo on the CPU and EGL and no ROS graph. pytest.ini's testpaths
 # leaves them out of `make test`: they need ROS and the overlay's messages,
-# and this checkout's core/ and sim/mebot_sim first on the path.
+# and this checkout's core/ and sim/mebot_sim first on the path. A test
+# skips without an input from outside the checkout (the menagerie, MuJoCo,
+# EGL, ...); MEBOT_SIM_STRICT=1 makes that a failure here, so that the gate
+# never passes on the tests that could still run.
 sim-test: SHELL := /bin/bash
 sim-test:                  ## The sim package's tests (Jetson; no ROS graph)
 	. /opt/ros/humble/setup.bash && . $(SIM_OVERLAY) && \
 	  PYTHONPATH=$(CURDIR)/core:$(CURDIR)/sim/mebot_sim:$$PYTHONPATH \
-	    python3 -m pytest sim/mebot_sim/test -q
+	  MEBOT_SIM_STRICT=1 python3 -m pytest sim/mebot_sim/test -q

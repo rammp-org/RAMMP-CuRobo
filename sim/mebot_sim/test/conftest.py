@@ -1,11 +1,40 @@
 """The sim renders on EGL, as /mebot_sim does on a headless Jetson. MuJoCo
-picks its GL backend when it is first imported, so this is set first."""
+picks its GL backend when it is first imported, so this is set first.
+
+`make sim-test` sets MEBOT_SIM_STRICT=1, under which a test or a module that
+would be skipped fails instead, giving the skip's reason. Without an input
+from outside this checkout (MuJoCo, EGL, the menagerie, the humanoid, the
+URDF, ROS or the overlay's messages) the tests that need it skip, and the
+gate would pass on the rest.
+"""
 
 import os
 
 import pytest
 
 os.environ.setdefault("MUJOCO_GL", "egl")
+STRICT = os.environ.get("MEBOT_SIM_STRICT") == "1"
+
+
+def _no_skip(outcome):
+    report = outcome.get_result()
+    if STRICT and report.skipped:
+        reason = report.longrepr
+        if isinstance(reason, tuple):  # (path, line, reason)
+            reason = reason[2]
+        report.outcome = "failed"
+        report.longrepr = "MEBOT_SIM_STRICT=1 skips nothing: %s" % reason
+
+
+# old-style wrappers: Ubuntu 22.04's pytest 6 has no wrapper=True
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    _no_skip((yield))
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_make_collect_report(collector):
+    _no_skip((yield))
 
 
 @pytest.fixture(scope="session")

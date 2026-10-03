@@ -2,10 +2,11 @@
 
 The stack runs this checkout's planner node twice beside /mebot_sim, a
 MuJoCo arm that serves the real arm driver's names: /joint_states and
-/execute_joint_trajectory. On the bench's ROS domain those names belong to
-the real arm, so no process of the stack ever joins it. isolate() moves a
-process off domain 0 (which an unset ROS_DOMAIN_ID also means) before it
-starts ROS, and sim.launch.py applies the same rule to everything it
+/execute_joint_trajectory. On the bench's ROS domain, 0, those names belong
+to the real arm, so no process of the stack ever joins it. isolate() moves
+a process whose ROS_DOMAIN_ID is anything but a plain domain from 1 to 232
+(unset, 0, or one of the other values ROS reads as 0) to 88 before it
+starts ROS, and sim.launch.py does the same for itself and everything it
 launches.
 
 The sim and the planners must also run this checkout's rammp_curobo: this
@@ -15,6 +16,7 @@ host has an editable install of another checkout, which is what a bare
 
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -37,25 +39,29 @@ CHAIR_WORLD = "world_mebot.yaml"
 
 
 def on_bench_domain(environ):
-    """Whether `environ` would put ROS on the bench's domain: ROS_DOMAIN_ID
-    unset, empty, or a number rcl reads as 0 ("00" and "0x0" are 0 to it)."""
-    value = environ.get("ROS_DOMAIN_ID", "").strip()
-    try:
-        return int(value or "0", 0) == 0
-    except ValueError:
-        # not a number: rcl refuses it, or reads a nonzero prefix
-        return False
+    """Whether `environ` could put ROS on the bench's domain, 0: whether its
+    ROS_DOMAIN_ID is anything but a domain from 1 to 232 written plainly.
+
+    rcl reads an unset or empty ROS_DOMAIN_ID as 0, and "00", "0x0" and " 0"
+    too; it reads "-1" and 2**64 - 1 as its default domain, which Cyclone
+    DDS makes 0. Rather than follow every such reading, only a plain number
+    is believed (Cyclone has no domain above 232)."""
+    value = environ.get("ROS_DOMAIN_ID", "")
+    return not (re.fullmatch(r"[1-9][0-9]{0,2}", value) and int(value) <= 232)
 
 
 def isolate():
     """Move this process off the bench's ROS domain, saying so. Call it before
     rclpy.init(): rcl reads ROS_DOMAIN_ID when the context starts."""
     if on_bench_domain(os.environ):
+        value = os.environ.get("ROS_DOMAIN_ID")
         os.environ["ROS_DOMAIN_ID"] = SIM_DOMAIN
         print(
-            "[mebot_sim] ROS_DOMAIN_ID is 0 or unset, the bench's domain, where "
-            "the real arm driver serves the names this stack serves: running on "
-            "ROS_DOMAIN_ID=%s instead" % SIM_DOMAIN,
+            "[mebot_sim] ROS_DOMAIN_ID is %s, not a domain from 1 to 232, and "
+            "ROS can read that as 0, the bench's domain, where the real arm "
+            "driver serves the names this stack serves: running on "
+            "ROS_DOMAIN_ID=%s instead"
+            % ("unset" if value is None else repr(value), SIM_DOMAIN),
             file=sys.stderr,
             flush=True,
         )
@@ -182,20 +188,22 @@ def worlds():
 
 def trajectory_arrays(traj):
     """(times, rows) of a trajectory_msgs/JointTrajectory: seconds from its
-    start, and each point's positions as joint_1..joint_7, whatever order
-    the message names them in."""
-    names = list(traj.joint_names)
-    missing = [n for n in JOINTS if n not in names]
-    if missing:
+    start, and each point's positions.
+
+    The arm driver never reads joint_names: it takes each point's positions
+    as joint_1..joint_7. Read by name, a trajectory naming its joints in
+    another order would fly here as the arm would not fly it, so one that
+    names anything but joint_1..joint_7 in that order is refused."""
+    if list(traj.joint_names) != JOINTS:
         raise ValueError(
-            "the trajectory names %s; it has no %s"
-            % (", ".join(names) or "no joints", ", ".join(missing))
+            "the trajectory names %s, not joint_1..joint_7 in order; the arm "
+            "driver takes each point's positions in that order whatever the "
+            "names say" % (", ".join(traj.joint_names) or "no joints")
         )
-    columns = [names.index(n) for n in JOINTS]
     times = [
         p.time_from_start.sec + p.time_from_start.nanosec * 1e-9 for p in traj.points
     ]
-    rows = [[float(p.positions[i]) for i in columns] for p in traj.points]
+    rows = [[float(v) for v in p.positions] for p in traj.points]
     return times, rows
 
 

@@ -5,9 +5,12 @@ MEBot, a seated stand-in and the floor (scene.py).
                                joint_1..joint_7 and the 2F-85's knuckle, the
                                names the driver publishes
     /execute_joint_trajectory  rammp_arm_interfaces/ExecuteJointTrajectory:
-                               flown on the trajectory's own time base, the
-                               latest goal winning; a cancel ends it
-                               PREEMPTED, the arm holding where it is
+                               flown on the trajectory's own time base. As
+                               the driver does, a goal of preemption
+                               LATEST_WINS ends the one flying, and one of
+                               QUEUE (a goal's default) waits for it; a
+                               cancel ends both PREEMPTED, the arm holding
+                               where it is
     /mebot_sim/contacts        std_msgs/String, JSON, 10 Hz: the contacts
                                now, and since the last move began the worst
                                contact and the closest approach per group
@@ -62,20 +65,29 @@ KNUCKLE = "robotiq_85_left_knuckle_joint"
 GRIPPER_JOINT = "g_left_driver_joint"
 PREEMPTED = -6  # ExecuteJointTrajectory's result codes
 SUCCESSFUL = 0
+LATEST_WINS = 1  # its goal's preemption; anything else is QUEUE to the driver
+STOPPING = "the sim stopping"
 
 
 class Flight:
     """A trajectory to fly: seconds from its start, and rows of joint_1..joint_7
-    positions. The sim sets `ended` when it is done with it: `outcome` is
-    "done", or "preempted" with a `reason`, and `final_error` the measured
-    joints minus the reference at that moment."""
+    positions. `queue`: it waits for a flight under way to be done, as the
+    driver queues a goal of preemption QUEUE, instead of ending that flight.
+    The sim sets `ended` when it is done with it: `outcome` is "done", or
+    "preempted" with a `reason`, and `final_error` the measured joints minus
+    the reference at that moment (None if it never flew)."""
 
-    def __init__(self, times, rows):
+    def __init__(self, times, rows, queue=False):
         self.times = np.asarray(times, dtype=float)
         self.rows = np.asarray(rows, dtype=float)
+        self.queue = queue
         self.steps = 0
         self.outcome = self.reason = self.final_error = None
         self.ended = threading.Event()
+
+    def end(self, outcome, reason, final_error=None):
+        self.outcome, self.reason, self.final_error = outcome, reason, final_error
+        self.ended.set()
 
     @property
     def elapsed(self):
@@ -95,26 +107,30 @@ class Flight:
 
 def trajectory_problem(traj):
     """Why the driver interface refuses the trajectory_msgs/JointTrajectory
-    `traj`, or None. Like the real driver it refuses a malformed goal outright
-    instead of flying part of it: it needs points, joint_1..joint_7 among
-    the names, every point a finite position for each name, and times from 0
-    on that rise."""
+    `traj`, or None.
+
+    The real driver refuses a trajectory with no points or a point without
+    seven positions, and takes those as joint_1..joint_7 whatever the names
+    say. The sim refuses those, and also what the driver might fly other
+    than as its sender meant, so that no test passes on it: names other
+    than joint_1..joint_7 in that order, a position that is not finite,
+    times that do not rise from 0."""
     if not traj.points:
         return "the trajectory has no points"
-    missing = [n for n in stack.JOINTS if n not in traj.joint_names]
-    if missing:
-        return "the trajectory names no %s" % ", ".join(missing)
+    try:
+        times, rows = stack.trajectory_arrays(traj)
+    except ValueError as exc:
+        return str(exc)
     last = -math.inf
-    for k, p in enumerate(traj.points):
-        if len(p.positions) != len(traj.joint_names):
-            return "point %d has %d positions for %d joints" % (
+    for k, (t, row) in enumerate(zip(times, rows)):
+        if len(row) != len(stack.JOINTS):
+            return "point %d has %d positions, not %d" % (
                 k,
-                len(p.positions),
-                len(traj.joint_names),
+                len(row),
+                len(stack.JOINTS),
             )
-        if not all(math.isfinite(v) for v in p.positions):
+        if not all(math.isfinite(v) for v in row):
             return "point %d has a position that is not finite" % k
-        t = p.time_from_start.sec + p.time_from_start.nanosec * 1e-9
         if t < 0 or t <= last:
             return "point %d is at %.3f s, not after the one before it" % (k, t)
         last = t
@@ -171,7 +187,9 @@ def _signed_distance(m, d, g, points):
 class Sim:
     """The arm and its scene, stepped by whoever owns it: the real-time loop
     of run(), or a test. Other threads post() commands, which the owner
-    carries out in poll(), and read snapshot()."""
+    carries out in poll(), and read snapshot(). `flight` is the flight under
+    way, and `queued` the one waiting for it; `stopping` is set once nothing
+    will step the sim again."""
 
     def __init__(self, assets, posture, start, offscreen=(960, 720)):
         self.assets = assets
@@ -179,7 +197,8 @@ class Sim:
         self.start = np.array(start, dtype=float)
         self.ref = self.start.copy()
         self.offscreen = offscreen
-        self.flight = None
+        self.flight = self.queued = None
+        self.stopping = threading.Event()
         self.steps = 0
         self.moves = 0
         self.worst, self.closest = {}, {}
@@ -242,7 +261,16 @@ class Sim:
             getattr(self, "_" + command)(*args)
 
     def _fly(self, flight):
+        if flight.queue and self.flight is not None:
+            # the driver keeps one goal queued, the newer
+            if self.queued is not None:
+                self.queued.end("preempted", "a newer trajectory")
+            self.queued = flight
+            return
         self._end("preempted", "a newer trajectory")
+        self._take_off(flight)
+
+    def _take_off(self, flight):
         if flight.times[0] > 0:
             # a planner stamps its first point one step ahead: start from
             # where the arm is told to be now
@@ -252,7 +280,7 @@ class Sim:
         self._new_move()
 
     def _stop(self, flight=None):
-        if self.flight is not None and flight in (None, self.flight):
+        if self.flight is not None and flight in (None, self.flight, self.queued):
             self._end("preempted", "a stop")
             self.ref = self.q
 
@@ -277,11 +305,14 @@ class Sim:
             self.ref[joint] = position
 
     def _end(self, outcome, reason):
+        """End the flight under way. Unless it is done, the one queued behind
+        it ends too, as the driver ends its whole chain."""
         flight, self.flight = self.flight, None
         if flight is not None:
-            flight.outcome, flight.reason = outcome, reason
-            flight.final_error = self.q - self.ref
-            flight.ended.set()
+            flight.end(outcome, reason, self.q - self.ref)
+        if outcome != "done" and self.queued is not None:
+            queued, self.queued = self.queued, None
+            queued.end(outcome, reason)
 
     def _new_move(self):
         self.moves += 1
@@ -297,6 +328,10 @@ class Sim:
                 self.ref = self.flight.reference()
                 if self.flight.elapsed >= self.flight.times[-1]:
                     self._end("done", None)
+                    if self.queued is not None:
+                        # from where this one ended, with no pause
+                        flight, self.queued = self.queued, None
+                        self._take_off(flight)
             d.ctrl[self.actuators] = self.ref
             mujoco.mj_step(m, d)
             self.steps += 1
@@ -304,8 +339,11 @@ class Sim:
                 self._sample()
 
     def close(self):
-        """End the flight under way, which nothing will step again."""
-        self._end("preempted", "the sim stopping")
+        """Stop for good: nothing will step the sim again. The flight under
+        way and the one queued end; so does any goal whose flight the sim
+        never took up (Driver._execute watches `stopping`)."""
+        self.stopping.set()
+        self._end("preempted", STOPPING)
 
     def run(self, view, ok):
         """Step in real time, carry out commands and render for `view` at
@@ -556,8 +594,9 @@ class Driver:
         return self.answer.ACCEPT
 
     def _execute(self, handle):
-        times, rows = stack.trajectory_arrays(handle.request.trajectory)
-        flight = Flight(times, rows)
+        request = handle.request
+        times, rows = stack.trajectory_arrays(request.trajectory)
+        flight = Flight(times, rows, queue=request.preemption != LATEST_WINS)
         self.sim.post("fly", flight)
         result = self.action.Result()
         feedback = self.action.Feedback(joint_names=list(stack.JOINTS))
@@ -571,6 +610,12 @@ class Driver:
                     "PREEMPTED: cancelled; the arm holds where it stopped"
                 )
                 return self._final(result, flight)
+            if self.sim.stopping.is_set():
+                # a flight the sim had not taken up would never end, and the
+                # node's shutdown waits for this goal
+                break
+            if not flight.steps:
+                continue  # queued: the driver gives feedback on the goal it flies
             state = self.sim.snapshot()
             feedback.header.stamp = self.node.get_clock().now().to_msg()
             feedback.desired.positions = state["ref"]
@@ -585,7 +630,8 @@ class Driver:
         else:
             handle.abort()
             result.error_code = PREEMPTED
-            result.error_string = "PREEMPTED by %s" % flight.reason
+            # a flight the sim never took up was never ended, so has no reason
+            result.error_string = "PREEMPTED by %s" % (flight.reason or STOPPING)
         return self._final(result, flight)
 
     @staticmethod
@@ -682,10 +728,11 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        # The flight under way ends first: the goal flying it sees that within
-        # 50 ms and ends PREEMPTED, and rclpy sends its client the result
-        # from the executor, so both get half a second before the executor
-        # and the context go.
+        # Every goal ends first, PREEMPTED within 50 ms: those flown or
+        # queued, one whose flight was posted but never taken up, and one
+        # accepted from now on. rclpy sends their results from the executor,
+        # which is given half a second before it and the context go; its
+        # shutdown waits for every goal's callback to return.
         sim.close()
         time.sleep(0.5)
         live.close()
