@@ -1,7 +1,7 @@
 # S4 of the sim suite (run_suite): a consumer's push to the chair planner,
 # which knows nothing of the chair and lists no layers. Eight boxes, as
 # box-opening's largest world: under the chair's platform and person layers,
-# 30 boxes in all.
+# 32 boxes in all.
 #
 # The first box is a floor where the chair's start-up world has one (the top
 # of layer_mebot_floor.yaml): a push replaces that world, floor included, so
