@@ -3,8 +3,9 @@
 A world is composed in pure Python (compose_cuboids): the scene's own boxes,
 then the layers the planner config lists, then the layers the scene lists.
 Its guards all run there, before cuRobo is imported; to_world_config then
-checks that cuRobo holds exactly the boxes composed. A refused world is
-never loaded, so the world loaded before it stays.
+refuses an empty world again, before its own import, and checks that
+cuRobo holds exactly the boxes composed. A refused world is never loaded,
+so the world loaded before it stays.
 
 cuRobo v0.7.8 sharp edges this module exists to blunt (the first three
 field-verified in RAMMP-Kinova):
@@ -31,6 +32,12 @@ from collections import Counter
 import numpy as np
 
 from rammp_curobo.geometry import euler_deg_to_quat_xyzw
+
+# v1.0.0's words: callers match 'empty'
+_EMPTY = (
+    "collision world is empty; refusing to build it — cuRobo would "
+    "silently keep the previous world on update"
+)
 
 
 def world_cuboids(scene, padding=0.02, ignore=frozenset(), no_pad_names=frozenset()):
@@ -81,8 +88,9 @@ def compose_cuboids(
     keys, and a layer box is '<layer>/<box>'. Every layer box is padded:
     `no_pad_names` exempts scene obstacles only (the pedestal), as in
     v1.0.0. A file that the config and the scene both list is one layer,
-    in the config's place. world_cuboids is v1.0.0's composition, kept as
-    it was: a world without layers composes exactly as it did.
+    in the config's place and as the config loaded it. world_cuboids is
+    v1.0.0's composition, kept as it was: a world without layers composes
+    exactly as it did.
 
     `ignore` leaves out props, as in v1.0.0, and whole layers, if they
     are excludable. A bare string is one name.
@@ -106,11 +114,10 @@ def compose_cuboids(
     layers = list(layers)
     chosen = []
     for layer in layers + list(scene.layers):
-        # one file listed twice is one layer. A Layer built in code may have
-        # no path, or another layer's: a path alone never makes it a copy
-        if layer.path is not None and any(
-            (layer.name, layer.path) == (other.name, other.path) for other in chosen
-        ):
+        # one file is one layer, where it is first listed: a file the config
+        # lists composes as the copy loaded with the config, whatever the
+        # file says now. A Layer built in code may have no path: no file
+        if layer.path is not None and any(layer.path == other.path for other in chosen):
             continue
         for other in chosen:
             if other.name == layer.name:
@@ -179,11 +186,18 @@ def compose_cuboids(
 
     # The scene must bring content of its own, whatever the config adds: a
     # push cut short would otherwise plan as the configured layers alone. A
-    # layer the scene lists is its own, though the config lists it too.
+    # file the scene lists is its own, though the config lists it too, and
+    # it counts as it composed: as the config's copy, boxes and name.
+    listed = {layer.path for layer in scene.layers} - {None}
     own = (
         len(scene.obstacles)
         + sum(o.name not in ignore for o in scene.objects)
-        + sum(len(lay.obstacles) for lay in scene.layers if lay.name not in ignore)
+        + sum(
+            len(layer.obstacles)
+            for layer in chosen
+            if layer.name not in ignore
+            and (layer not in layers or layer.path in listed)
+        )
     )
     if not own:
         configured = [layer.name for layer in chosen if layer in layers]
@@ -193,10 +207,7 @@ def compose_cuboids(
                 "(%s): the pushed scene has no obstacles, objects or layers — "
                 "refusing it" % ", ".join(configured)
             )
-        raise ValueError(
-            "collision world is empty; refusing to build it — cuRobo would "
-            "silently keep the previous world on update"
-        )
+        raise ValueError(_EMPTY)
     n = len(cuboids)
     if n > int(cache_obb):
         counts = Counter(sources.values())
@@ -211,7 +222,11 @@ def compose_cuboids(
 def to_world_config(cuboids):
     """cuRobo's WorldConfig of composed `cuboids`, checked to hold those
     boxes and nothing else (see the module docstring). The only function
-    in this module that imports cuRobo."""
+    in this module that imports cuRobo, and it refuses an empty world
+    before it does: one built anywhere but compose_cuboids would otherwise
+    reach update_world, which keeps the world loaded before."""
+    if not cuboids:
+        raise ValueError(_EMPTY)
     from curobo.geom.types import WorldConfig
 
     wc = WorldConfig.from_dict({"cuboid": cuboids})

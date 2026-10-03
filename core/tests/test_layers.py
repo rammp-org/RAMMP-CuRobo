@@ -751,15 +751,27 @@ def test_one_layer_name_from_two_files_is_refused_and_one_file_twice_composes_on
         "layer 'person' is defined by two files: %s and %s" % (person, other)
     )
 
-    # a Layer built in code may have no path, or another layer's: a path alone
-    # never makes it a copy, so under its own name it is a layer of its own,
-    # and under a name already taken it is refused, not passed over
+    # the config's layers are loaded once, at start-up, and a file the config
+    # lists composes as that copy until a restart: renamed since, the file is
+    # still one layer, not a second one beside the first
+    _layer(platform, "chair", boxes=("seat",))
+    scene = load_scene(_scene(tmp_path / "scene.yaml", "platform.yaml", "floor.yaml"))
+    assert [layer.name for layer in scene.layers] == ["chair", "floor"]
+    _, sources = compose_cuboids(scene, layers=config)
+    assert list(sources.items()) == [
+        ("platform/box", "platform"),
+        ("person/box", "person"),
+        ("floor/box", "floor"),
+    ]
+
+    # a Layer built in code may have no path, and then it is no file's copy:
+    # under its own name it is a layer of its own, and under a name already
+    # taken it is refused, not passed over
     crate = scene_from_obstacles([_box("crate")])
     deck, lap = [Obstacle(_box("deck"))], [Obstacle(_box("lap"))]
-    for path in (None, Path("/nowhere/block.yaml")):
-        built = [Layer("platform", False, deck, path), Layer("person", True, lap, path)]
-        _, sources = compose_cuboids(crate, layers=built)
-        assert list(sources) == ["obj_crate", "platform/deck", "person/lap"], path
+    built = [Layer("platform", False, deck, None), Layer("person", True, lap, None)]
+    _, sources = compose_cuboids(crate, layers=built)
+    assert list(sources) == ["obj_crate", "platform/deck", "person/lap"]
     twins = [Layer("person", True, deck, None), Layer("person", True, lap, None)]
     with pytest.raises(ValueError, match="layer 'person' is defined by two files"):
         compose_cuboids(crate, layers=twins)
@@ -957,14 +969,16 @@ def test_layer_free_worlds_compose_exactly_as_v100(config):
     assert cfg["layers"] == []
     scene = load_scene(resolve_config(cfg["world"], relative_to=cfg_dir))
     p = cfg["planner"]
+    no_pad = frozenset(p["no_pad_names"])
     # ignore holds props a task reaches for, and an obstacle's name, which
-    # v1.0.0 never left out
-    for ignore in (frozenset(), {"bottle", "mug", "table"}):
-        kw = dict(
-            padding=p["world_padding"],
-            ignore=ignore,
-            no_pad_names=frozenset(p["no_pad_names"]),
-        )
+    # v1.0.0 never left out; no_pad_names the props' names, which v1.0.0
+    # padded all the same: it exempts scene obstacles only
+    for ignore, no_pad_names in (
+        (frozenset(), no_pad),
+        ({"bottle", "mug", "table"}, no_pad),
+        (frozenset(), no_pad | {o.name for o in scene.objects}),
+    ):
+        kw = dict(padding=p["world_padding"], ignore=ignore, no_pad_names=no_pad_names)
         cuboids, sources = compose_cuboids(
             scene, cache_obb=p["collision_cache_obb"], **kw
         )
@@ -1214,11 +1228,19 @@ def test_empty_scene_is_refused_even_with_config_layers(tmp_path):
     assert refusal(mug, ignore={"mug"}) == CHAIR_ONLY
     block = load_scene(_scene(tmp_path / "block_only.yaml", "block.yaml"))
     assert refusal(block, ignore={"block"}) == CHAIR_ONLY
+    # a layer counts by its boxes, and one built in code may have none
+    hollow = Scene("base_link", [], [], layers=[Layer("hollow", True, [], None)])
+    assert refusal(hollow, layers=()) == V100_EMPTY
+    assert refusal(hollow) == CHAIR_ONLY
+    # and no path is no file: config layers without one are not the scene's
+    pathless = [Layer(lay.name, lay.excludable, lay.obstacles, None) for lay in config]
+    assert refusal(hollow, layers=pathless) == CHAIR_ONLY
 
     # a scene whose only content is a layer it lists is a world: the chair's
     # start-up scene lists only the floor
     start = load_scene(_scene(tmp_path / "start.yaml", "floor.yaml"))
-    for scene in (start, block):
+    solid = Layer("solid", True, [Obstacle(_box("box"))], None)
+    for scene in (start, block, Scene("base_link", [], [], layers=[solid])):
         for layers in ((), config):
             _, sources = compose_cuboids(scene, layers=layers)
             assert list(sources.values()) == [
@@ -1228,6 +1250,13 @@ def test_empty_scene_is_refused_even_with_config_layers(tmp_path):
     platform = load_scene(_scene(tmp_path / "platform_only.yaml", "platform.yaml"))
     _, sources = compose_cuboids(platform, layers=config)
     assert list(sources.values()) == ["platform", "person"]
+    # and that file counts as it composed: as the copy the config loaded at
+    # start-up, whatever the file says now. Left out under that copy's name,
+    # it leaves the scene nothing
+    _layer(tmp_path / "person.yaml", "human", excludable=True)
+    renamed = load_scene(_scene(tmp_path / "person_only.yaml", "person.yaml"))
+    assert [layer.name for layer in renamed.layers] == ["human"]
+    assert refusal(renamed, ignore={"person"}) == CHAIR_ONLY
 
 
 def test_guards_run_without_curobo(tmp_path, monkeypatch):
@@ -1267,6 +1296,11 @@ def test_guards_run_without_curobo(tmp_path, monkeypatch):
     ):
         with pytest.raises(ValueError, match=refusal):
             make_world_config(scene, ignore=ignore, layers=config)
+    # to_world_config refuses an empty world itself, wherever it came from:
+    # update_world would take it and keep the world loaded before
+    with pytest.raises(ValueError) as exc:
+        to_world_config({})
+    assert str(exc.value) == V100_EMPTY
 
 
 def test_ignore_drops_only_an_excludable_layer(tmp_path):
@@ -1421,9 +1455,11 @@ def test_sphere_box_penetration_matches_brute_force():
     )
     hit = [*frames[0][0], 0.01]  # at a box's centre
     assert "box0" in sphere_box_penetration([hit], boxes)
-    with pytest.raises(ValueError) as exc:
-        sphere_box_penetration([hit, [math.nan, 0.0, 0.0, 0.01]], boxes)
-    assert str(exc.value) == "spheres must be finite, got [nan, 0.0, 0.0, 0.01]"
+    # its radius as much as its centre
+    for sphere in ([math.nan, 0.0, 0.0, 0.01], [0.0, 0.0, 0.0, math.nan]):
+        with pytest.raises(ValueError) as exc:
+            sphere_box_penetration([hit, sphere], boxes)
+        assert str(exc.value) == "spheres must be finite, got %s" % sphere
     assert sphere_box_penetration(np.empty((0, 4)), boxes) == {}
     assert sphere_box_penetration(spheres, {}) == {}
     assert point_box_distance([0.0, 0.0, 0.0], {}) == {}
