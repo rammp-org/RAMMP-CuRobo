@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import types
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,7 @@ import yaml
 import rammp_curobo
 from rammp_curobo.config import PACKAGED_CONFIG_DIR, load_planner_config, resolve_config
 from rammp_curobo.geometry import euler_deg_to_quat_xyzw
+from rammp_curobo.planner import CuRoboPlanner
 from rammp_curobo.scene import (
     Layer,
     Obstacle,
@@ -88,6 +90,34 @@ def _box(name, **changes):
     """A box entry, as Obstacle and scene_from_obstacles take it."""
     box = {"name": name, "position": [0.5, 0.0, 0.2], "dims": [0.1, 0.2, 0.3]}
     return dict(box, **changes)
+
+
+def _no_gpu(monkeypatch):
+    """Let CuRoboPlanner be built, and take worlds, without cuRobo: its
+    _init_curobo only records that it ran and leaves a stand-in MotionGen,
+    and cuRobo's WorldConfig.from_dict records what it is given. Returns
+    the lists they record in: the warmup flag of each _init_curobo call,
+    each from_dict input, and each world MotionGen.update_world loads."""
+    inits, sent, loaded = [], [], []
+
+    def from_dict(data):
+        sent.append(data)
+        kinds = dict(sphere=[], cylinder=[], capsule=[], mesh=[])
+        return types.SimpleNamespace(data=data, cuboid=list(data["cuboid"]), **kinds)
+
+    stand_in = types.ModuleType("curobo.geom.types")
+    stand_in.WorldConfig = types.SimpleNamespace(from_dict=from_dict)
+    monkeypatch.setitem(sys.modules, "curobo.geom.types", stand_in)
+
+    def init_curobo(planner, warmup=True):
+        inits.append(warmup)
+        planner._motion_gen = types.SimpleNamespace(update_world=loaded.append)
+        # the arm's fixed spheres come from cuRobo's FK, which the GPU tests
+        # run; with none, no layer box is refused for reaching into them
+        planner._fixed_spheres = np.empty((0, 4))
+
+    monkeypatch.setattr(CuRoboPlanner, "_init_curobo", init_curobo)
+    return inits, sent, loaded
 
 
 def test_misplaced_layers_key_is_refused(tmp_path):
@@ -668,7 +698,7 @@ def test_scene_layers_resolve_next_to_the_scene_and_never_from_cwd(
     ]
 
 
-def test_missing_layer_is_named_with_every_path_tried(tmp_path):
+def test_missing_layer_is_named_with_every_path_tried(tmp_path, monkeypatch):
     scene = _scene(tmp_path / "scene.yaml", "gone.yaml")
     with pytest.raises(FileNotFoundError) as exc:
         load_scene(scene)
@@ -685,6 +715,21 @@ def test_missing_layer_is_named_with_every_path_tried(tmp_path):
     assert str(exc.value) == (
         "layer '%s' listed in %s not found; tried: %s" % (gone, scene, gone)
     )
+
+    # from a planner config, whose layers resolve from its directory: the
+    # planner refuses to start, before any GPU work
+    inits, _, _ = _no_gpu(monkeypatch)
+    config = tmp_path / "planner.yaml"
+    config.write_text(
+        "robot: robot_gen3_2f85.yaml\nworld: world_mebot.yaml\nlayers: [gone.yaml]\n"
+    )
+    with pytest.raises(FileNotFoundError) as exc:
+        CuRoboPlanner.from_config(config)
+    assert str(exc.value) == (
+        "layer 'gone.yaml' listed in planner config in %s not found; tried: %s, %s"
+        % (tmp_path, tmp_path / "gone.yaml", PACKAGED_CONFIG_DIR / "gone.yaml")
+    )
+    assert inits == []
 
 
 def test_one_layer_name_from_two_files_is_refused_and_one_file_twice_composes_once(
@@ -1726,3 +1771,96 @@ def test_chair_startup_world_is_empty_to_a_v100_loader():
     assert world_cuboids(v100) == {}
     # this planner's start-up world is the floor that the scene lists
     assert [layer.name for layer in load_scene(path).layers] == ["floor"]
+
+
+def test_config_layers_reach_every_world_input(tmp_path, monkeypatch):
+    inits, sent, loaded = _no_gpu(monkeypatch)
+    planner = CuRoboPlanner.from_config("gen3_mebot.yaml")
+    # the config's layers are loaded once, at start-up, before any GPU work
+    assert inits == [True]
+    assert [(lay.name, lay.excludable, lay.path) for lay in planner._layers] == [
+        ("platform", False, PACKAGED_CONFIG_DIR / "layer_mebot_platform.yaml"),
+        ("person", True, PACKAGED_CONFIG_DIR / "layer_mebot_person.yaml"),
+    ]
+
+    def installed():
+        """The world the planner says it holds, by source, checked to be the
+        one that reached cuRobo and that MotionGen loaded."""
+        boxes = planner.world_boxes
+        assert sent[-1] == {
+            "cuboid": {b["name"]: {"dims": b["dims"], "pose": b["pose"]} for b in boxes}
+        }
+        assert loaded[-1].data is sent[-1]
+        return Counter(box["layer"] for box in boxes)
+
+    # a push replaces the scene and never the config's layers, in every form a
+    # push takes: a name, a path, a Scene and a list
+    kitchen = PACKAGED_CONFIG_DIR / "world_sim_kitchen.yaml"
+    for world in ("world_sim_kitchen.yaml", kitchen, load_scene(kitchen)):
+        planner.update_world(world)
+        assert installed() == {"scene": 26, "platform": 16, "person": 6}
+    planner.update_world([_box("crate"), _box("mug")])
+    assert installed() == {"scene": 2, "platform": 16, "person": 6}
+    # the floor is the start-up scene's, and comes back with it
+    planner.update_world("world_mebot.yaml")
+    assert installed() == {"platform": 16, "person": 6, "floor": 1}
+    assert planner.world_summary() == (
+        "23 boxes: scene 0 | config layers: platform 16, person 6 "
+        "| scene layers: floor 1"
+    )
+
+    # the person, an excludable layer, can be left out of one world, and only
+    # its boxes go; a bare string is one name
+    whole = planner.world_boxes
+    for ignore in ({"person"}, "person"):
+        planner.update_world("world_mebot.yaml", ignore=ignore)
+        assert planner.world_boxes == [b for b in whole if b["layer"] != "person"]
+    planner.update_world("world_mebot.yaml")
+    assert planner.world_boxes == whole
+
+    # a push with nothing of its own is refused, a list as much as a file: the
+    # chair alone is not a world anyone pushed. A refused push reaches neither
+    # cuRobo nor what the planner says it holds
+    before = (len(sent), len(loaded), planner.scene, planner.world_boxes)
+    for world in ([], Scene("base_link", [], [])):
+        with pytest.raises(ValueError) as exc:
+            planner.update_world(world)
+        assert str(exc.value) == CHAIR_ONLY
+    with pytest.raises(ValueError, match="layer 'platform' is not excludable"):
+        planner.update_world("world_mebot.yaml", ignore={"platform"})
+    assert (len(sent), len(loaded), planner.scene, planner.world_boxes) == before
+
+    # a deployment mounts its own copy of the config (/config/gen3_mebot.yaml),
+    # naming the layers the package ships: those are the layers, whichever
+    # directory the planner starts in, and a file of the same name there is
+    # not read
+    mounted, cwd = tmp_path / "config", tmp_path / "cwd"
+    mounted.mkdir()
+    cwd.mkdir()
+    text = (PACKAGED_CONFIG_DIR / "gen3_mebot.yaml").read_text(encoding="utf-8")
+    (mounted / "gen3_mebot.yaml").write_text(text, encoding="utf-8")
+    _layer(cwd / "layer_mebot_person.yaml", "person", boxes=("stray",), excludable=True)
+    monkeypatch.chdir(cwd)
+    deployed = CuRoboPlanner.from_config(mounted / "gen3_mebot.yaml")
+    assert [lay.path for lay in deployed._layers] == [
+        lay.path for lay in planner._layers
+    ]
+    deployed.update_world([_box("crate")])
+    assert Counter(box["layer"] for box in deployed.world_boxes) == {
+        "scene": 1,
+        "platform": 16,
+        "person": 6,
+    }
+
+    # and a config whose start-up world overflows the cache is refused before
+    # any GPU work
+    (mounted / "small.yaml").write_text(
+        text + "planner: {collision_cache_obb: 22}\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError) as exc:
+        CuRoboPlanner.from_config(mounted / "small.yaml")
+    assert str(exc.value) == (
+        "23 collision boxes > collision_cache_obb=22 (platform 16, person 6, "
+        "floor 1); raise the cache setting in the planner config or shrink a layer"
+    )
+    assert inits == [True, True]

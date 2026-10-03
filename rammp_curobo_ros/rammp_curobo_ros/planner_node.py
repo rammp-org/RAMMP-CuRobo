@@ -98,9 +98,13 @@ class RammpCuroboNode(Node):
         from rammp_curobo import CuRoboPlanner
 
         self.planner = CuRoboPlanner.from_config(self.config)
+        # The core library's INFO logs do not reach the ROS logger, and this
+        # line is the operator's proof of which layers are in the world.
+        self.get_logger().info("Collision world: %s" % self.planner.world_summary())
         if self.world:
             self.planner.update_world(self.world)
             self.get_logger().info("World overridden: %s" % self.world)
+            self.get_logger().info("Collision world: %s" % self.planner.world_summary())
 
         ActionServer(
             self,
@@ -135,9 +139,13 @@ class RammpCuroboNode(Node):
             )
 
         self.get_logger().info(
-            "rammp_curobo ready — planning only, %d joints, world %s. "
+            "rammp_curobo ready — planning only, %d joints, world %s (%s). "
             "This node never moves the arm; execution is the caller's."
-            % (len(self.planner.joint_names), world_name)
+            % (
+                len(self.planner.joint_names),
+                world_name,
+                self.planner.world_summary(),
+            )
         )
 
     # ---------------------------------------------------------------- planning
@@ -231,7 +239,11 @@ class RammpCuroboNode(Node):
             try:
                 self.planner.update_world(request.world)
                 response.success = True
-                response.message = "world set to %s" % request.world
+                # the layers the config adds to every world are in the reply
+                response.message = "world set to %s (%s)" % (
+                    request.world,
+                    self.planner.world_summary(),
+                )
             except Exception as exc:
                 response.success = False
                 response.message = str(exc)
