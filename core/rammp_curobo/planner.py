@@ -92,9 +92,10 @@ class CuRoboPlanner:
         by_name = dict(zip(cspace["joint_names"], cspace["retract_config"]))
         self.retract_pose = [float(by_name[n]) for n in self.joint_names]
         # Composed into every world, set_world pushes included, as loaded
-        # here: a file edited later changes nothing until a restart.
+        # here: a file edited later changes nothing until a restart. A config
+        # dict built for v1.0.0, which had no such key, lists none.
         self._layers = load_layers(
-            config["layers"],
+            config.get("layers", []),
             relative_to=config_dir,
             listed_in="planner config in %s" % config_dir,
         )

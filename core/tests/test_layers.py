@@ -2038,6 +2038,27 @@ def test_config_layers_reach_every_world_input(tmp_path, monkeypatch):
     assert inits == [True, True]
 
 
+def test_a_planner_is_built_from_a_v100_config_dict(monkeypatch):
+    # CuRoboPlanner takes the config as a dict, and v1.0.0's took any dict
+    # that held the keys it read: its gen3.yaml, gen3.yaml without the
+    # `layers:` line this branch added, read with plain PyYAML. That dict
+    # lists no layers, and the planner warms up in its world as v1.0.0's did
+    stand_in = _curobo_stand_in(monkeypatch)
+    config = yaml.safe_load(
+        (PACKAGED_CONFIG_DIR / "gen3.yaml").read_text(encoding="utf-8")
+    )
+    del config["layers"]
+    planner = CuRoboPlanner(config, config_dir=PACKAGED_CONFIG_DIR)
+    assert planner._layers == []
+    assert stand_in.events == [
+        ("built", [box["name"] for box in planner.world_boxes]),
+        ("warmup",),
+    ]
+    assert planner.world_summary() == (
+        "26 boxes: scene 26 | config layers: none | scene layers: none"
+    )
+
+
 def test_the_chair_warms_up_in_its_scene_and_then_loads_its_layers(
     tmp_path, monkeypatch, caplog
 ):
