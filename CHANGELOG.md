@@ -80,10 +80,11 @@ Fixed says otherwise: a world 1.0.0 built wrong is refused, and a bare-string
   (`obstacles[3] (table): missing 'dims'`), not a bare `KeyError`.
 - World files, planner configs and the robot config are read as UTF-8 whatever
   the locale.
-- A key written twice in a planner config is refused, naming the file, the key
-  and its line, instead of the last one silently winning. A top-level `layer:`
-  or a `layers:` under `planner:` is refused too: either would have left the
-  chair out.
+- A key written twice in a planner config or a world file is refused, naming the
+  file, the key and its line, instead of the last one silently winning: a second
+  `layers:` would have dropped the layers of the first. A top-level `layer:` or
+  a `layers:` under `planner:` is refused too: either would have left the chair
+  out.
 
 ## [1.0.0] — 2026-09-08
 

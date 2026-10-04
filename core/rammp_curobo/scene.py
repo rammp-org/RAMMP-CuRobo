@@ -308,12 +308,12 @@ def load_layer(path):
     `meta` is for people: nothing here reads it.
 
     Strict where load_scene is lenient, because each of these would
-    otherwise pass unnoticed and leave a box out or wrong: a key written
-    twice, an unknown key (`rpy:` for `rpy_deg:`, a nested `layers:`), two
-    boxes of one name, a number that is not one. Every refusal is a
-    ValueError naming the file, the layer and the entry. Only YAML that
-    PyYAML itself cannot read stays its yaml.YAMLError, which names the
-    file and the line.
+    otherwise pass unnoticed and leave a box out or wrong: an unknown key
+    (`rpy:` for `rpy_deg:`, a nested `layers:`), two boxes of one name, a
+    number that is not one; and, as load_scene does too, a key written
+    twice. Every refusal is a ValueError naming the file, the layer and the
+    entry. Only YAML that PyYAML itself cannot read stays its
+    yaml.YAMLError, which names the file and the line.
     """
     path = Path(path).resolve()
     try:
@@ -398,9 +398,11 @@ def load_layers(refs, relative_to, listed_in):
 
 
 def load_scene(path):
-    # UTF-8 whatever the locale: the packaged worlds have non-ASCII comments
+    # UTF-8 whatever the locale: the packaged worlds have non-ASCII comments.
+    # A key written twice is refused, as in a layer file: plain PyYAML keeps
+    # the last one, so a second `layers:` would drop the layers of the first
     with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+        data = yaml.load(f, Loader=_StrictLoader)
     return Scene(
         base_frame=data.get("base_frame", "base_link"),
         obstacles=_entries(Obstacle, data.get("obstacles", []), path, "obstacles"),

@@ -1025,6 +1025,35 @@ targets:
         ), layers
 
 
+def test_a_world_file_key_written_twice_is_refused(tmp_path):
+    _layer(tmp_path / "floor.yaml", "floor")
+    _layer(tmp_path / "platform.yaml", "platform")
+    path = tmp_path / "world.yaml"
+    world = (
+        "layers: [floor.yaml, platform.yaml]\n"
+        "obstacles:\n"
+        "  - {name: table, position: [0.5, 0, 0], dims: [0.1, 0.1, 0.1]}\n"
+    )
+    # plain PyYAML keeps the last of the two: a world that lists its layers
+    # the issue's way would lose the platform without a word
+    path.write_text(world + "layers: [floor.yaml]\n")
+    assert yaml.safe_load(path.read_text())["layers"] == ["floor.yaml"]
+    with pytest.raises(ValueError) as exc:
+        load_scene(path)
+    assert str(exc.value) == "%s: duplicate key 'layers' on line 4" % path
+    # and a second `obstacles:` would drop the boxes of the first, a second
+    # `dims:` an entry's own
+    wall = "  - {name: wall, position: [1, 0, 0], dims: [1, 1, 1], dims: [2, 2, 2]}\n"
+    for extra, key in (("obstacles: []\n", "obstacles"), (wall, "dims")):
+        path.write_text(world + extra)
+        with pytest.raises(ValueError) as exc:
+            load_scene(path)
+        assert str(exc.value) == "%s: duplicate key %r on line 4" % (path, key)
+    # written once, each loads
+    path.write_text(world)
+    assert [layer.name for layer in load_scene(path).layers] == ["floor", "platform"]
+
+
 def _in_a_c_locale(code, *args):
     """Run `code` with `args` in a child Python whose locale is C."""
     # PYTHONUTF8=0: Python otherwise turns UTF-8 mode on for the C locale.

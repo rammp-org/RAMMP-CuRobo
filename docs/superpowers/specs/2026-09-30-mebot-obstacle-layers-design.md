@@ -37,6 +37,8 @@
     leave out (§13, risks 4 and 5); §9 and §10 list what was added; §13 risk 1
     states how its joint samples are drawn (two full turns for the continuous
     joints, not cuRobo's ±6.0 rad), which its numbers already followed.
+  - 2026-10-04, after the whole-branch review: world files refuse a key written
+    twice, as planner configs do (§4.2, §7.1, deviation 13).
 - **Issue:** <https://github.com/rammp-org/RAMMP-CuRobo/issues/19>
 - **Branch:** `feature/19-platform-layers`, off `origin/dev` (b734928, the
   v1.0.0 content), in the worktree `~/RAMMP-CuRobo-19`. Local commits only,
@@ -266,6 +268,13 @@ extra keys, which makes it a debugging fallback only.
 - `load_scene` now opens files with `encoding="utf-8"`. scene.py:125 has no
   encoding, and the kitchen world has non-ASCII comments; the image sets
   `PYTHONUTF8=1` for exactly that reason (docker/Dockerfile:105-111).
+- `load_scene` reads with the layer files' strict loader (§4.1), so a key
+  written twice is refused, naming the file, the key and its line. Plain PyYAML
+  keeps the last one: a second `layers:` would drop the layers of the first (the
+  chair's floor, or the platform of a world that lists it), and a second
+  `obstacles:` the boxes of the first. Nothing else about `load_scene` is made
+  strict. None of the 673 world files on this Jetson is refused or loads
+  differently (§16).
 - Malformed obstacle and object entries become
   `ValueError("<file>: obstacles[3] (table): missing 'dims'")`. Today a missing
   `dims` is a bare `KeyError` (scene.py:30), and SetWorld replies with
@@ -414,7 +423,8 @@ boxes), the kitchen, the bench (`world_real_bench.yaml`) and box-opening's
   (§7.5).
 - **New refusals** (duplicates, non-finite or non-positive boxes, malformed
   entries) reject none of the 566 known consumer worlds (the same scan: 0
-  duplicates, 0 bad numbers, 0 `/` names, 0 props named like a layer).
+  duplicates, 0 bad numbers, 0 `/` names, 0 props named like a layer), and a
+  key written twice none of the 673 world files on this Jetson (§4.2).
 - **1.0.0 image.**
   - `gen3_mebot.yaml` and the layer files exist only in images ≥ 1.1.0, so
     `config:=gen3_mebot.yaml` on 1.0.0 fails with
@@ -914,8 +924,9 @@ the real chair is a follow-up (§15).
   `resolve_config(ref, relative_to, search_cwd=False)`, missing-file message,
   dedupe by path, same name from two paths refused.
 - `Scene(..., layers=())` and `Scene.layers`.
-- `load_scene` reads `layers:` relative to the scene file, uses UTF-8, and wraps
-  entry errors with file and entry.
+- `load_scene` reads `layers:` relative to the scene file, uses UTF-8, refuses a
+  key written twice (`_StrictLoader`), and wraps entry errors with file and
+  entry.
 - `scene_from_obstacles`, `Obstacle`, `SceneObject`, `Target` and `__all__` are
   unchanged.
 - Still stdlib + PyYAML only.
@@ -1675,8 +1686,8 @@ boxes only, and the paired cuboid tests are the Task-1 acceptance.
   or non-positive boxes, and a `world_padding` below 0 or not finite, refused;
   guards run without cuRobo; malformed scene entries name file and entry; world
   files, planner configs and the robot config read as UTF-8; a key written
-  twice in a planner config refused instead of the last one kept, and a
-  misplaced `layer:` or `planner.layers` refused.
+  twice in a planner config or a world file refused instead of the last one
+  kept, and a misplaced `layer:` or `planner.layers` refused.
 
 **Workflow.** Branch `feature/19-platform-layers` off `origin/dev` (b734928,
 equal to the v1.0.0 content) in the worktree `~/RAMMP-CuRobo-19`.
@@ -1736,10 +1747,12 @@ install follows. Local commits only, never pushed. Run tests with
 1. **The URDF is pinned at 80908b9, not 59d5aef.** 59d5aef is only on a feature
    branch. The blob and sha256 are identical.
 1. **Planner configs and the robot config are read as UTF-8, and a key written
-   twice in a planner config is refused** (§4.3). Plain PyYAML keeps the last
-   of two equal keys, so a second, empty `layers:` would plan without the
-   chair. A duplicate is not an unknown key, so deviation 11 stands; none of
-   the 22 planner configs on this Jetson is refused or loads differently.
+   twice in a planner config or a world file is refused** (§4.2, §4.3). Plain
+   PyYAML keeps the last of two equal keys, so a second, empty `layers:` would
+   plan without the chair, and a world's second `layers:` would drop the layers
+   of its first. A duplicate is not an unknown key, so deviation 11 stands;
+   none of the 22 planner configs and none of the 673 world files on this
+   Jetson is refused or loads differently.
    `robot_config.py` read the robot config in the locale's encoding, and
    `robot_gen3_2f85.yaml` has non-ASCII comments, so in a C locale the planner
    stopped there. Read as UTF-8, the chair planner starts in a C locale, cuRobo
@@ -1926,6 +1939,7 @@ are gated.
 | G7, and G6 of each planner                     | `make sim` on the Jetson (2026-10-03), twice, 197 s each: 45 cases, G0 to G7 PASS. The chair planner planned and flew 7 of the 8 S3 reaches with no contact (the first refused, `FINETUNE_TRAJOPT_FAIL`), against `min_chair_reaches` 6, and 13 of its 14 requests; G6 judged 13 flights of the chair planner and 3 of the control planner's (S1 with the platform on). In a scratch copy whose chair planner turned every plan it made into a `TRAJOPT_FAIL` refusal, G0 to G5 passed, G2 and G4 on its refusals; G7 failed (0 of 8), G6 failed for want of a chair planner flight, and the launch exited 1 (§8)                                                                                                                                                                        |
 | Docs (Task 10, 2026-10-03)                     | the platform's true shapes on a 1 mm lattice: 0.133020 m³, so the layer's 0.152908 m³ is 14.95 % over them (14.70 % on a 2 mm lattice); §13 risk 1's samples reproduced exactly, and 98.1, 88.4 and 2.5 % in cuRobo's ±6.0 rad; the retract 154.4 mm into `person/lap` and 53.4 mm clear of the platform; v1.0.0's code (`origin/dev`) given `gen3_mebot.yaml`: "config 'gen3_mebot.yaml' not found", and given the files mounted: "collision world is empty"; a wheel built from `core/` holds the five new configs; `make sim` on domain 88 (about three minutes, the build included): 45 cases, G0 to G7 PASS, 7 of 8 reaches flown; `make sim-test` 150 and the core suite 139 passed                                                                                                |
 | Docs review (2026-10-03)                       | warm on the Jetson, `test_smoke.py`'s 20 GPU tests took 29.1 and 29.6 s and the core suite 42.5 s (pytest's times); in the committed layer files the padded platform tops out at z -0.0071 m in base_link, 0.1016 m below the seat pan's top (0.0945 m), and of the chair world's boxes only `person/torso_head_0` reaches the backrest (from its rear face to the front end of its face's range, 0.2 m either side of the centreline, up to 0.5 m above the pan)                                                                                                                                                                                                                                                                                                                        |
+| Branch review (2026-10-04)                     | the 673 world files on this Jetson (the 656 box-opening worlds in `~/.ros/rammp_box_opening/worlds/`, this repo's 3 packaged worlds and 4 sim configs, box-opening's `world_bench.yaml` in 3 copies, RAMMP-generalized's 5 probe worlds, `~/RAMMP-CuRobo`'s 2), read with `_StrictLoader` and with plain PyYAML: 0 refused, 0 loaded differently                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Consumer world scan                            | 566 consumer worlds (the 563 in `~/.ros/rammp_box_opening/worlds/` on this Jetson, the kitchen, the bench, box-opening's `world_bench.yaml`; §4.6): 0 files newly refused; max 26 boxes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Git                                            | sha256 201ec24a... for the blob at 59d5aef, 80908b9 and 0a94cce and for `~/mebot.urdf`; `branch -r --contains`: 59d5aef only on `origin/feature/106-drive-base-publisher`, 80908b9 on `origin/dev` (= `origin/HEAD`), 0a94cce on `origin/main`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | cuRobo v0.7.8 source read                      | warm-up and early exits (motion_gen.py:1868-1960, 2105-2113, 3007-3015); `update_world` (motion_gen.py:1825-1837); cache init and load (geom/sdf/world.py:716, 724-727, 827-866); mesh `_init_cache` delegation (world_mesh.py:72-81); sphere buffer (cuda_robot_generator.py:759-771); `sum_collisions_` (sphere_obb_kernel.cu:2711); box count from device memory (sphere_obb_kernel.cu:2453); `enable_obstacle` / `enable_obb` / `get_obb_idx` (geom/sdf/world.py:978-1014, 1094-1110); `get_cuboid` and the cylinder trimesh (geom/types.py:99-132, 341); `get_obb_world` (geom/types.py:1096); inverse cube poses in `batch_tensor_cube` (geom/types.py:1309-1312); `normalize_quaternion` (types/math.py:536); MESH-checker traps (world_mesh.py:96-99, 101-117, 103-105, 167-173) |
