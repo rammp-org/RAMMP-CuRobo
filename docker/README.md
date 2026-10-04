@@ -75,6 +75,13 @@ docker run --rm -it --runtime nvidia --network host --ipc host \
   container pays the minutes-long first-plan warmup again.
 - Different world: append the launch invocation with your own args, e.g.
   `... rammp-curobo:jp6 ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml world:=/path/mounted/world.yaml`.
+- The arm on the MEBot wheelchair (an image ≥ 1.1.0):
+  `... rammp-curobo:jp6 ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_mebot.yaml`.
+  The chair and the person in it are then in every world, worlds pushed
+  over `/rammp_curobo/set_world` included, and the node's log says so:
+  `Collision world: 25 boxes: scene 0 | config layers: platform 16, person 8 | scene layers: floor 1`.
+  See INTEGRATION.md, "Planning on the MEBot". A 1.0.0 image has no such
+  config and refuses it.
 - **Verify the bridge on first start** (the container runs as root; mixed
   root/non-root Fast DDS shared memory is a classic silent-delivery
   failure): from a host shell, `ros2 action list | grep rammp_curobo`

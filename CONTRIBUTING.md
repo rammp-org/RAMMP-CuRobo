@@ -105,6 +105,26 @@ uv run ~/.claude/skills/hardware-loop/scripts/hil.py exec -- bash -lc \
 An x86-64 CUDA image — which *could* be functionally tested in CI, unlike the
 Jetson one — is tracked in issue #8.
 
+### The MEBot obstacle layers and their sim
+
+- `make layers` regenerates `core/rammp_curobo/configs/layer_mebot_*.yaml`
+  from `scripts/mebot_layers.yaml` and the MEBot URDF it pins, then fails on
+  any diff. It needs that URDF from the cache
+  (`${XDG_CACHE_HOME:-~/.cache}/rammp_curobo/cad/`), a Demo-Software clone
+  (`$RAMMP_DEMO_SOFTWARE` or `~/Demo-Software`) or the network. On unchanged
+  inputs it must be a no-op; after changing them, commit what it writes. CI
+  asserts the same: `test_layergen.py` regenerates the files from the URDF it
+  fetches from GitHub raw, and with `CI=true` a failed fetch fails the run
+  instead of skipping.
+- `make sim` (Jetson: GPU, ROS 2, MuJoCo) builds the sim stack into the
+  git-ignored `.sim_ws/`, launches it on its own ROS domain (88 unless you
+  choose another from 1 to 232; never 0) and runs its suite: exit 0 only when
+  every gate passes. `make sim-test` runs the sim package's own tests. Both
+  need `SIM_OVERLAY` (default `~/rammp_deps_ws/install/setup.bash`) for
+  `rammp_arm_interfaces`. See `sim/mebot_sim/README.md`; after `make layers`
+  changes a layer, rerun `ros2 run mebot_sim find_pairs` there and commit the
+  `config/scenarios.yaml` it writes.
+
 ## Versioning
 
 Semantic versioning, from **1.0.0** on. **Downstream repos pin an exact tag,
@@ -124,8 +144,8 @@ never a branch.** `kinova_arm_ros2` is the consumer that matters.
   behavioural guarantees this file states — chiefly that `start_joints` is
   required and that nothing here can move the arm.
 
-Not covered: `scripts/`, tests, docs, the tuning inside `configs/`, and the
-internals of any module not exported above.
+Not covered: `scripts/`, `sim/`, tests, docs, the tuning inside `configs/`,
+and the internals of any module not exported above.
 
 ### The rule that is easy to get wrong
 

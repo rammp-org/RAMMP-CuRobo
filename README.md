@@ -16,7 +16,10 @@ rammp_curobo_ros/         Layer 2 — plan-only planner node + tour_demo
                           (the showcase: 4 random points chain-planned
                           into one merged trajectory; nothing moves)
 examples/                 plan_only.py (no ROS)
-scripts/                  config baking
+scripts/                  config baking; generate_layers.py (the MEBot
+                          wheelchair's obstacle layers, from its URDF)
+sim/                      mebot_sim: the planner on the MEBot in a MuJoCo
+                          sim over ROS 2 (`make sim`, Jetson)
 docker/                   the planning service as a container (Jetson/JP6)
 docs/HARDWARE_BRINGUP.md  the real-arm runbook — READ BEFORE TOUCHING HARDWARE
 ```
@@ -91,8 +94,9 @@ python3 -m pytest core/tests -q
 ```
 
 The offline tests run anywhere; the GPU tests plan real collision-free
-trajectories in the sim-kitchen world (first run compiles kernels — takes
-a minute or two; ~20 s warm). Or plan one motion directly:
+trajectories in the sim-kitchen world and on the MEBot wheelchair (first
+run compiles kernels — takes a minute or two; ~20 s warm). Or plan one
+motion directly:
 
 ```bash
 python3 examples/plan_only.py --joints 0.3 0.262 3.142 -2.269 0.0 0.960 1.571
@@ -115,7 +119,9 @@ That's the whole service: `/rammp_curobo/plan_to_pose` and
 `/rammp_curobo/plan_to_joints` take a goal carrying the configuration to
 plan from (`start_joints`, **required** — the planner has no view of any
 arm) and return the trajectory. See **INTEGRATION.md** for client code,
-and **docker/** to run the same thing as a container.
+and **docker/** to run the same thing as a container. With the arm on the
+MEBot wheelchair, run `config:=gen3_mebot.yaml` instead (see **Obstacle
+layers** below).
 
 ## The showcase
 
@@ -153,6 +159,179 @@ Two safety authorities with different rules is worse than either alone —
 that, plus plans made from a joint state up to 2 s stale, is why the
 executor that used to live here was removed (**issue #6**).
 
+## Obstacle layers: the wheelchair and the person
+
+On the MEBot wheelchair the arm works beside the chair it is mounted on and
+the person sitting in it. Both reach the planner as **layers** (issue #19):
+named groups of boxes, each in a file of its own, composed into the
+collision world beside the scene's own obstacles.
+
+- **Config layers** are listed under `layers:` in the planner config and
+  are composed into **every** world the planner builds, `set_world` pushes
+  included. A push replaces the scene, never these, so a consumer that
+  pushes a whole world before every plan cannot drop the chair by leaving
+  it out.
+- **Scene layers** are listed under `layers:` in a world file and belong to
+  that scene: the next push replaces them with its own. Geometry that must
+  never go away belongs in the planner config.
+
+A layer file listed by name is found next to the file that lists it or
+among the packaged configs, never in the current directory. Its boxes are
+named `<layer>/<box>` (`person/lap`), padded by `world_padding` like every
+other box, and count against the same 60-box cache; a world that overflows
+it is refused, naming every source, and nothing is truncated.
+`planner.world_summary()` says where a world's boxes come from and
+`planner.world_boxes` lists them. A failed plan's error, and
+`check_state_valid`, name the boxes a state reaches into, deepest first.
+
+### The chair config
+
+```bash
+ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_mebot.yaml
+```
+
+`gen3_mebot.yaml` is the Gen3 on the MEBot, its base at the RAMMS model
+pose (0.505, -0.265, 0.376) m in the MEBot's frame, square to the chair —
+unverified on the real chair. It starts in a world of 25 boxes:
+
+| Layer      | File                        | Boxes | In the world as                     |
+| ---------- | --------------------------- | ----- | ----------------------------------- |
+| `platform` | `layer_mebot_platform.yaml` | 16    | a config layer, not excludable      |
+| `person`   | `layer_mebot_person.yaml`   | 8     | a config layer, excludable          |
+| `floor`    | `layer_mebot_floor.yaml`    | 1     | a scene layer of `world_mebot.yaml` |
+
+The node logs the world's summary at start-up and in its ready line, and
+returns it with every world SetWorld takes — the visible proof that the
+chair config is active:
+
+```text
+Collision world: 25 boxes: scene 0 | config layers: platform 16, person 8 | scene layers: floor 1
+```
+
+The floor belongs to the start-up scene, so the first push replaces it: a
+pushed scene brings its own floor. The two config layers take 24 of the
+cache's 60 boxes, which leaves 36 for a pushed scene.
+
+**The bench retract is not a valid start on the chair.** The robot
+config's `retract_config`, which is also cuRobo's IK seed, is 154.4 mm
+inside the padded person layer (`person/lap`), and the planner warns about
+it at start-up. Plan from the arm's measured state, as every caller must
+anyway. A start inside a layer fails `INVALID_START`, naming the boxes:
+
+```text
+... [start collides with person/lap (154 mm), person/torso_head_3 (134 mm), person/torso_head_1 (89 mm)] [world: 25 boxes: scene 0 | config layers: platform 16, person 8 | scene layers: floor 1]
+```
+
+### Leaving the person out
+
+A layer marked `excludable: true` may be left out of one world. The person
+is; the platform is not:
+
+```python
+planner.update_world("world_mebot.yaml", ignore={"person"})  # platform untouched
+planner.update_world("world_mebot.yaml")                     # the person is back
+```
+
+`ignore={"platform"}` is refused (`layer 'platform' is not excludable`),
+and so is a name that is both a layer and a prop. This is Python-only:
+SetWorld carries a world name and nothing else, and a field on it would be
+a MAJOR change. It is the hook a later approach to the person's mouth will
+use.
+
+### Generated, with coverage numbers: `make layers`
+
+The three layer files are GENERATED by `scripts/generate_layers.py`. Every
+number in them comes from `scripts/mebot_layers.yaml`, which gives each
+input its source (the mount, the budgets, the anthropometry, the seat, the
+floor), or from the URDF and the robot config it names. The platform is
+the MEBot drive base's URDF in rammp-org/Demo-Software, fetched by commit
+and checked by sha256 — from the cache, a local clone or GitHub raw; no
+copy is committed. The generator runs on the CPU (numpy, PyYAML) and
+writes the same bytes on amd64 and arm64.
+
+```bash
+make layers    # regenerate the three files; fails on any diff
+```
+
+Never hand-edit a layer file: change the inputs, run `make layers` and
+commit what it writes. CI regenerates the files from the pinned URDF and
+fails on any difference.
+
+| Layer      | Boxes | What it holds, and how well                                                                                                                                                                                                                     |
+| ---------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `platform` | 16    | The MEBot drive base: its URDF's 46 collision primitives (40 boxes, 6 cylinders), every joint at zero. Under-coverage 0, by certificate; over-coverage 10.9 % of the primitives' bounding boxes (budget 15 %), about 15 % of their true shapes. |
+| `person`   | 8     | Any seated occupant from the ANSUR II 5th-percentile woman to the 95th-percentile man, plus 0.05 m on every face, in three segments (torso and head, lap, lower legs and feet) carved around the arm's base.                                    |
+| `floor`    | 1     | A 3 × 3 × 0.1 m slab whose top, z -0.4593 m, is the URDF's lowest point.                                                                                                                                                                        |
+
+The platform's under- and over-coverage are in its file's `meta`, which the
+regeneration freezes with the boxes; the share of the true shapes is
+measured on a 1 mm lattice. Every padded box clears the arm's
+joint-independent collision spheres (its base, and the shoulder on the
+joint_1 axis) by at least 4 mm, or the generator writes nothing: the
+platform by 53.4 mm, the person by 5.1 mm.
+
+**What the person costs.** The arm's base is 0.265 m from the occupant's
+centreline, and the person layer is over-sized on purpose, so it confines
+the arm. Of 1,000,000 arm configurations drawn at random (each joint
+uniform over its range, the four continuous ones over two full turns), the
+share whose collision spheres clear the padded boxes:
+
+| World                   | All configurations | Tool high and in front (z > 0.3 m, x > 0.2 m) |
+| ----------------------- | ------------------ | --------------------------------------------- |
+| floor                   | 98.1 %             | 100.0 %                                       |
+| floor, platform         | 88.2 %             | 99.7 %                                        |
+| floor, platform, person | 2.3 %              | 1.3 %                                         |
+
+Plans near the person, and anything handed to them, need the person layer
+excluded. The sizes are data: tuning them is one edit to
+`scripts/mebot_layers.yaml` and `make layers`.
+
+### How it is tested
+
+Every kind of box the planner emits has a pair of tests that fails if
+cuRobo ignores it: with the box on the path the plan detours or fails, and
+without it the same plan goes straight. `core/tests/test_smoke.py` (GPU)
+holds the pairs for plain, rotated and layer boxes and for the generated
+platform, reads cuRobo's collision cache back against the composed boxes,
+and checks cuRobo's spheres against every padded box along the chair's
+plans. `test_layers.py` and `test_layergen.py` run offline, in CI too.
+Among them, every occupant of the person's range — each of its twelve
+sizes at either end of its range, 4096 occupants, with the backrest at
+either end of its own — lies inside the committed person layer or the
+column carved around the arm's base.
+
+```bash
+make sim        # the MEBot sim suite (Jetson): exit 0 only if every gate passes
+make sim-test   # the sim package's own tests (Jetson; no ROS graph, no GPU)
+```
+
+`make sim` flies the planner's plans on a simulated Gen3 beside the exact
+MEBot, from its URDF, and a seated body, over ROS on a domain of its own
+(88 by default, never 0). Planned without a layer, a request hits the
+shape that layer covers; planned with it, the request is refused or flown
+clear. The seated body, at the sitting heights of the 5th-percentile
+woman, the 50th-percentile man and the 95th-percentile man and in three
+postures, lies inside the padded person layer or that column. On the
+Jetson (2026-10-03) it ran 45 cases in about three minutes, every gate
+passed, and the chair planner flew 7 of its 8 ordinary reaches touching
+nothing. See `sim/mebot_sim/README.md`.
+
+### Meshes: not attempted
+
+The issue's stretch goal, mesh layers, was not attempted. cuRobo v0.7.8's
+MESH checker has three silent traps (in `geom/sdf/world_mesh.py`):
+
+- an update with no meshes keeps the old ones (lines 101-117);
+- a mesh whose name is reused keeps its old geometry (lines 167-173);
+- a mesh-cache overflow reallocates the cache even under
+  `fix_cache_reference` (lines 103-105), which by its docstring breaks
+  recorded CUDA graphs (lines 96-99).
+
+cuRobo's own documentation also puts its cuboid checker at 4x the speed of
+its mesh checker (<https://curobo.org/get_started/2c_world_collision.html>).
+So layers are boxes only, and the paired box tests above are the evidence
+that cuRobo honours them.
+
 ## Troubleshooting
 
 | symptom                                                            | cause / fix                                                                                                                                                                                       |
@@ -167,6 +346,8 @@ executor that used to live here was removed (**issue #6**).
 | nodes can't see each other's topics                                | `ROS_LOCALHOST_ONLY=1` must be exported in EVERY shell (non-interactive shells skip `~/.zshrc` — export explicitly; RAMMP-Kinova's `tools/launch_stack.zsh` does)                                 |
 | both bringups fight / controllers flap                             | MuJoCo sim and kortex bringup both claim `/controller_manager` — run exactly one                                                                                                                  |
 | `update_world` seems ignored / obstacles missing                   | cuRobo v0.7.8: cylinders/spheres in a WorldConfig are silently dropped (cuboids only), and an empty world silently keeps the previous one — the library guards both, custom worlds go in as boxes |
+| `INVALID_START` on `gen3_mebot.yaml`                               | the start is inside a layer; the error names the boxes and how deep. The bench retract is inside the person layer — plan from the arm's measured state                                            |
+| set_world refused: "empty apart from the configured layers"        | the pushed scene has no obstacles, objects or layers of its own (a world file cut short?); the planner config's layers alone are never taken as a world                                           |
 | `AttributeError: wp.torch` in mesh collision                       | newer warp needs explicit `import warp.torch` — the library does this; if embedding cuRobo yourself, copy that                                                                                    |
 | `ros2 topic echo` prints "A message was lost!!!"                   | benign QoS depth artifact of echo on a 500 Hz topic                                                                                                                                               |
 

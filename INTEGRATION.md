@@ -32,9 +32,9 @@ the IK seed read from the robot config; it is a planner parameter, not a
 home, and it is not a substitute for a measurement.
 
 Config is one YAML (`core/rammp_curobo/configs/gen3.yaml` — robot file,
-world file, planner knobs). Copy it next to your code and point
-`from_config` at your copy to customize; bare names resolve to the packaged
-defaults. No cuRobo types cross the API.
+world file, obstacle layers, planner knobs). Copy it next to your code and
+point `from_config` at your copy to customize; bare names resolve to the
+packaged defaults. No cuRobo types cross the API.
 
 Requirements: the pinned GPU stack from the README (torch + cuRobo v0.7.8)
 and `pip install --user --no-build-isolation -e <repo>/core`.
@@ -66,8 +66,63 @@ what makes the plan safe to run: its first point *is* where the arm is, so
 there is no stale-plan catch-up sweep to guard against.
 
 `/rammp_curobo/plan_to_pose` takes a `geometry_msgs/Pose`;
-`/rammp_curobo/set_world` swaps the collision world. That is the entire
-public surface — there is nothing here that can move an arm.
+`/rammp_curobo/set_world` swaps the collision world's scene. That is the
+entire public surface — there is nothing here that can move an arm.
+
+## Planning on the MEBot (≥ 1.1.0)
+
+With the arm on the MEBot wheelchair, run the planner with the chair
+config: `config:=gen3_mebot.yaml` for the node, or
+`CuRoboPlanner.from_config("gen3_mebot.yaml")`. The chair's drive base
+(layer `platform`, 16 boxes) and the person in it (layer `person`, 8 boxes)
+are then in every collision world the planner builds. See the README's
+**Obstacle layers** for how they are made and what they cost. For a caller:
+
+- **A pushed scene replaces only your task geometry.** `set_world` and
+  `update_world` replace the scene, as before; the layers the config lists
+  stay in every world. The start-up scene's floor is task geometry too: the
+  first push replaces it, so carry your own floor in the scenes you push.
+  The two layers take 24 of the 60-box cache, which leaves 36 for your
+  scene. A scene with no obstacles, objects or layers of its own is
+  refused, and so is one that overflows the cache; the previous world
+  stays.
+
+- **The SetWorld reply lists the layers.** On success it reads
+  `world set to <world> (<summary>)`, e.g. for an 8-box scene:
+
+  ```text
+  world set to /config/my_world.yaml (32 boxes: scene 8 | config layers: platform 16, person 8 | scene layers: none)
+  ```
+
+  `platform 16, person 8` there is your proof that the chair is in the
+  world. A refused push replies with the reason, as before.
+
+- **The bench retract is not a valid start on the chair.** The robot
+  config's retract (`planner.retract_pose`, also cuRobo's IK seed) is
+  154.4 mm inside the padded person layer, and the planner warns about it
+  at start-up. Start from the arm's measured state, which `start_joints`
+  requires anyway. A failed plan's error now ends with the boxes its start
+  or goal reach into and where the world's boxes come from, e.g.
+  `[start collides with person/lap (154 mm), ...] [world: 25 boxes: ...]`;
+  over ROS it arrives in the result's `message` as `<status>: <error>`.
+
+- **Excluding the person is Python-only.**
+  `planner.update_world(world, ignore={"person"})` leaves the person out of
+  that one world, the platform untouched; the next push without `ignore`
+  brings the person back. SetWorld has no field for it — adding one would
+  be a MAJOR change — and `ignore={"platform"}` is refused.
+
+- **A subclass that overrides `CuRoboPlanner._finish` keeps working.**
+  `_finish(result, t0, q_goal=None)` keeps its v1.0.0 signature and code;
+  the note on which boxes a failure involves is added after it returns, so
+  a failure your override reports still carries it.
+
+- **A 1.0.0 image refuses the chair config.** `gen3_mebot.yaml` and its
+  layer files ship from 1.1.0 on, and a 1.0.0 image answers
+  `config 'gen3_mebot.yaml' not found`. Mounting the files into one does not
+  help: 1.0.0 ignores `layers:`, finds no obstacles in `world_mebot.yaml`
+  and refuses it as an empty world at start-up. It never plans without the
+  chair; pin ≥ 1.1.0.
 
 ## Adopting into a RAMMP module
 

@@ -239,6 +239,8 @@ def pytest_configure(config):
 
 - [ ] **Step 4: Implement attribution**: `_colliding_boxes(q)`, the `check_state_valid` suffix, and `_finish(result, t0, q_goal=None, start=None, goal_point=None)` notes that never raise (§7.4).
 
+  *Later restored (2026-10-03):* `_finish` keeps its v1.0.0 signature, `_finish(result, t0, q_goal=None)`, because a consumer subclass overrides it with that signature; the notes are added after it returns, by `_with_failure_note`. See spec §7.4.
+
 - [ ] **Step 5: planner_node.py** strings (§7.5). No parameter, topic, service or IDL change.
 
 - [ ] **Step 6: Run** the offline suite, then on the Jetson `core/tests/test_smoke.py` (the existing 9 pass on `gen3.yaml`), then a manual check: `CuRoboPlanner.from_config("gen3_mebot.yaml")` logs warm-up in the scene-only world, `world_summary()` reads `23 boxes: scene 0 | config layers: platform 16, person 6 | scene layers: floor 1`, and `check_state_valid(retract)` names `person/lap`.

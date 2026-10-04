@@ -2,24 +2,37 @@
 
 - **Status:** Design approved by the owner 2026-09-30. Revised 2026-10-02 after
   a sim spike: the sim is a ROS 2 stack (decision 1), and the spike's findings
-  are folded in (§8, §13). The owner reviews this spec before the implementation
-  plan is written. Amended 2026-10-02 during implementation, not yet reviewed by
-  the owner: planner configs are read as UTF-8 and refuse a key written twice
-  (§4.3, deviation 13). Amended 2026-10-03, also not yet reviewed: `_finish`
-  keeps its v1.0.0 signature, which a consumer overrides, and the failure notes
-  are added after it (§7.4); the robot config is read as UTF-8 too (deviation
-  13). Amended 2026-10-03 by the lead, not yet reviewed by the owner: the
-  person layer holds every occupant from the 5th-percentile woman to the
-  95th-percentile man, not the 95th percentile alone. Each face takes the end
-  of that range that puts it furthest out; only the legs' back face changes,
-  and the legs, now reaching back under the seat, are carved like the torso:
-  8 person boxes (decision 6, §6.1, §6.2). G1 seats the stand-in at three
-  sizes, the 5th-percentile woman, the 50th-percentile man and the
-  95th-percentile man, not the last alone (§6.4, §8). Amended 2026-10-03 by
-  the lead, not yet reviewed by the owner: a chair planner that refused
-  every request passed every gate of the sim suite, so G7 holds it to at
-  least 6 of the 8 S3 reaches planned and flown with no contact, and G6
-  judges each planner on its own flights (§8, §9).
+  are folded in (§8, §13). Implementation approved by the owner on 2026-10-02
+  ("build it all"), and built on the branch below (Tasks 1 to 10 of the plan).
+  Amended during implementation; **none of these amendments has been reviewed
+  by the owner yet**:
+  - 2026-10-02: planner configs are read as UTF-8 and refuse a key written
+    twice (§4.3, deviation 13).
+  - 2026-10-03: `_finish` keeps its v1.0.0 signature, which a consumer
+    overrides, and the failure notes are added after it (§7.4); the robot
+    config is read as UTF-8 too (deviation 13).
+  - 2026-10-03, by the lead: the person layer holds every occupant from the
+    5th-percentile woman to the 95th-percentile man, not the 95th percentile
+    alone. Each face takes the end of that range that puts it furthest out;
+    only the legs' back face changes, and the legs, now reaching back under
+    the seat, are carved like the torso: 8 person boxes (decision 6, §6.1,
+    §6.2). G1 seats the stand-in at three sizes, the 5th-percentile woman, the
+    50th-percentile man and the 95th-percentile man, not the last alone (§6.4,
+    §8).
+  - 2026-10-03, by the lead: a chair planner that refused every request passed
+    every gate of the sim suite, so G7 holds it to at least 6 of the 8 S3
+    reaches planned and flown with no contact, and G6 judges each planner on
+    its own flights (§8, §9).
+  - 2026-10-03, with the docs (§11): the spec is reconciled with the code as
+    built, which changes no decision. §8 describes the sim's isolation as the
+    code does it (a domain that is not a plain 1 to 232 moves to 88; a second
+    driver is refused; the client flies only beside the sim) and its import
+    guard (in the launch, not the planner); G0, G1 and G2 say what the suite
+    checks beyond their earlier text; §4.5 to §4.7, §5.5 and §7.4 add the
+    refusals and messages the code has; §9 and §10 list what was added; §13
+    risk 1 states how its joint samples are drawn (two full turns for the
+    continuous joints, not cuRobo's ±6.0 rad), which its numbers already
+    followed.
 - **Issue:** <https://github.com/rammp-org/RAMMP-CuRobo/issues/19>
 - **Branch:** `feature/19-platform-layers`, off `origin/dev` (b734928, the
   v1.0.0 content), in the worktree `~/RAMMP-CuRobo-19`. Local commits only,
@@ -303,7 +316,8 @@ extra keys, which makes it a debugging fallback only.
 
 ### 4.5 `ignore=`
 
-`update_world(world, ignore=...)` keeps its signature. For each name:
+`update_world(world, ignore=...)` keeps its signature. A bare string is one
+name (`ignore='person'`), not the set of its letters. For each name:
 
 1. It matches a layer in the composed world (config or scene):
    - if a scene prop has the same raw name, raise
@@ -324,9 +338,15 @@ field is MAJOR (CONTRIBUTING.md:132-140).
 
 ### 4.6 Guards
 
-All of them run before `from curobo.geom.types import WorldConfig`; today that
-import comes first (world.py:50).
+All of them but the fixed-sphere check, which needs the arm's kinematics, run
+in `compose_cuboids`, before `from curobo.geom.types import WorldConfig`; today
+that import comes first (world.py:50). The fixed-sphere check runs before
+cuRobo's world is updated.
 
+- **Padding.** `world_padding` must be finite and at least 0:
+  `ValueError("world_padding must be a finite number >= 0, got ...")`. Below 0
+  it would shrink a thin box past 0, and a NaN or an inf would spread to every
+  box.
 - **Numbers.** Every composed box (scene and layers) must have a finite
   position, finite rpy and finite dims greater than 0. The check runs after prop
   bounding and before padding.
@@ -350,11 +370,12 @@ import comes first (world.py:50).
   the arm's joint-independent spheres is refused, because every state would be
   infeasible.
 - `make_world_config`'s own default `cache_obb=40` (world.py:47) becomes 60.
-  After `WorldConfig.from_dict` the planner asserts exactly `len(cuboids)`
-  cuboids and empty `sphere`, `cylinder`, `capsule` and `mesh` lists. The shape
-  check mirrors world.py:131-137 of 689eb2d, a local-only commit on the earlier
-  branch feature/19-obstacle-avoidance in `~/RAMMP-CuRobo`; the count check is
-  new.
+  `to_world_config` refuses an empty world before it imports cuRobo, and after
+  `WorldConfig.from_dict` it requires exactly `len(cuboids)` cuboids and empty
+  `sphere`, `cylinder`, `capsule` and `mesh` lists, raising a ValueError
+  otherwise. The shape check mirrors world.py:131-137 of 689eb2d, a local-only
+  commit on the earlier branch feature/19-obstacle-avoidance in
+  `~/RAMMP-CuRobo`; the count check is new.
 
 **Box budget:**
 
@@ -382,19 +403,22 @@ boxes), the kitchen, the bench (`world_real_bench.yaml`) and box-opening's
   `rammp_adl/sheppy_backend.py:501-505`) cannot drop the chair.
 - **Consumers on `gen3.yaml` / `gen3_real.yaml` (`layers: []`)** get
   byte-identical worlds. This is tested against the unchanged v1.0.0
-  `world_cuboids`. Only the message strings grow: failure details (§7.4) and the
-  SetWorld success message (§7.5).
+  `world_cuboids`. Only the message strings grow: failure details (§7.4), the
+  SetWorld success message and the node's logs (§7.5).
 - **New refusals** (duplicates, non-finite or non-positive boxes, malformed
   entries) reject none of the 566 known consumer worlds (the same scan: 0
   duplicates, 0 bad numbers, 0 `/` names, 0 props named like a layer).
 - **1.0.0 image.**
   - `gen3_mebot.yaml` and the layer files exist only in images ≥ 1.1.0, so
-    `config:=gen3_mebot.yaml` on 1.0.0 fails with "config not found".
+    `config:=gen3_mebot.yaml` on 1.0.0 fails with
+    `config 'gen3_mebot.yaml' not found; tried: ...` (checked against v1.0.0's
+    `load_planner_config`).
   - If someone mounts the files into a 1.0.0 container anyway, its `load_scene`
     sees `world_mebot.yaml` with **no inline obstacles or objects** (the only
     keys v1.0.0 turns into collision boxes; it ignores `layers:`,
     scene.py:127-132) and refuses the empty world at construction
-    (world.py:56-60). It does not plan without the chair.
+    (world.py:56-60): v1.0.0's code, given the mounted files, raises "collision
+    world is empty; refusing to build it". It does not plan without the chair.
 - **Deployment** (`config:=gen3_mebot.yaml` in a manifest) lands in the consumer
   repos. This repo ships no sheppy fragment.
 
@@ -552,12 +576,22 @@ hashes. Verified bytes are written to the cache atomically (temp file +
 **Gates.** On any failure the generator exits non-zero and writes nothing:
 
 - sha256;
-- unsupported input;
+- unsupported input (§5.3), and a URDF whose links form a loop or define a
+  link twice;
+- data it cannot honour: a `grid_m` other than 0.0001, a `padding_assumed_m`
+  below 0 or not finite, a negative keep-out gate, a rotated mount, an ANSUR
+  size that is not a finite number above 0, a margin below 0, and a keep-out
+  sphere that is not finite or (on `shoulder_link`) off the joint_1 axis;
+- `rammp_curobo` imported from another checkout, whose robot config would set
+  the keep-out;
 - containment;
-- more boxes than `max_boxes`;
+- more boxes than `max_boxes`, or a budget that cannot be met without touching
+  the keep-out;
 - `over_pct` above `max_over_pct`;
+- a box without volume (seat anchors or floor sizes that turn a box inside out
+  or flat);
 - any layer's keep-out clearance below 4 mm;
-- duplicate names;
+- duplicate names, and a name that YAML would not read back as written;
 - non-ASCII output.
 
 **Numbers** (measured with a design-phase CPU prototype of the generator):
@@ -938,12 +972,15 @@ the real chair is a follow-up (§15).
    cuda_robot_generator.py:759-771) at the retract and two seeded in-limit
    configurations. Keep the spheres with r > 0 whose centres agree within 1e-6
    m: the base and on-axis shoulder spheres.
-1. `self._check_fixed_spheres(full)`. Any padded **layer** box that penetrates
-   them raises a ValueError naming the deepest intrusion, for example (at
-   `world_padding` 0.030 the four torso_head boxes and the three legs boxes
-   intrude, torso_head_3 deepest):
+1. `self._check_fixed_spheres(cuboids, sources)` on `full`. Any padded
+   **layer** box that penetrates them raises a ValueError naming the deepest
+   intrusion, for example (at `world_padding` 0.030 the four torso_head boxes
+   and the three legs boxes intrude, torso_head_3 deepest):
    `ValueError("layer box person/torso_head_3 intrudes 4.9 mm into the arm's fixed base/shoulder spheres (world_padding 0.030 m): every start state would be infeasible; the layers were generated for 0.02 m — regenerate them or restore world_padding")`.
-   Scene boxes are not checked, so v1.0.0 behaviour is unchanged.
+   The padding is named as the cause only when it is above the 0.02 m the
+   layers assume and every intruding box clears the spheres at 0.02 m;
+   otherwise the fix offered is "move or shrink that box, or regenerate its
+   layer". Scene boxes are not checked, so v1.0.0 behaviour is unchanged.
 1. `warmup()` (logged: "warming up in the scene-only world (1 box); config
    layers load after warm-up").
 1. If `warm_first`: `self._motion_gen.update_world(to_world_config(full))`.
@@ -980,7 +1017,7 @@ Afterwards:
 1. `self._motion_gen.update_world(to_world_config(cuboids))`.
 1. Only then commit `self._scene`, `self._world_cuboids` and
    `self._world_sources`.
-1. Log the summary and any excluded layers (INFO).
+1. Log the summary and the names ignored (INFO).
 
 **New read-only API (additive, MINOR):**
 
@@ -1004,6 +1041,9 @@ cache and miss collisions that involve several layers.
 retract on the chair,
 `"constraint violation at state; collides with person/lap (154 mm), person/torso_head_3 (134 mm), person/torso_head_1 (89 mm)"`.
 The v1.0.0 prefix is kept, and the suffix is added only when boxes are hit.
+Should the attribution itself fail, the detail is "constraint violation at
+state (attribution unavailable: ...)"; the state is reported infeasible all
+the same.
 
 **`_finish(result, t0, q_goal=None)`, unchanged, and
 `_with_failure_note(res, result, start, q_goal=None, goal_point=None)`.**
@@ -1094,29 +1134,52 @@ now and the worst per group since the last move), `/mebot_sim/teleport`
 (`std_msgs/String`) and `/mebot_sim/reset` (`std_srvs/Trigger`).
 
 **Isolation.** `/mebot_sim` serves the real driver's names, so the stack must
-never share the bench's ROS domain. The launch files and every node switch to
-`ROS_DOMAIN_ID=88` when the domain is unset or 0, and say so. No node here
-imports the Kortex API or opens a connection to an arm. Agents never drive the
-arm (CONTRIBUTING.md:173-177); this stack cannot.
+never share the bench's ROS domain, 0.
+
+- `stack.isolate()` moves a process to `ROS_DOMAIN_ID=88`, and says so,
+  whenever the variable is anything but a plain domain from 1 to 232. rcl
+  reads an unset or empty variable as 0, and `00`, `0x0` and ` 0` too; it
+  reads `-1` and 2^64 - 1 as its default domain, which Cyclone DDS makes 0.
+  Rather than follow every such reading, only a plain number is believed
+  (Cyclone has no domain above 232). A plain domain from 1 to 232 is kept.
+- Both launch files call it for their own process. `sim.launch.py` then gives
+  each node it starts its domain and middleware (`rmw_cyclonedds_cpp` unless
+  one is set) explicitly, and `/mebot_sim` and the test client (`try_goal`,
+  `run_suite`) call it again themselves. `check_layers` and `find_pairs` start
+  no ROS node.
+- `/mebot_sim` refuses to start when anything on its domain already publishes
+  `/joint_states` or serves `/execute_joint_trajectory`: a real driver on a
+  domain chosen by hand.
+- The client flies nothing unless `/mebot_sim` is the only publisher of
+  `/joint_states` and of the driver action's status.
+- The stack runs whole or not at all: when any of its nodes ends, `/mebot_sim`
+  refusing to start included, the launch ends the rest.
+
+No node here imports the Kortex API or opens a connection to an arm. Agents
+never drive the arm (CONTRIBUTING.md:173-177); this stack cannot.
 
 **Where.** `sim/` carries a `COLCON_IGNORE`, like `core/`, so CI's colcon job
 (build.yml:80-101) does not need `rammp_arm_interfaces`. `make sim` builds the
 package by naming it as a base path.
 
-| File                                      | Contents                                                                                                                           |
-| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `sim/mebot_sim/mebot_sim/scene.py`        | MjSpec model builder                                                                                                               |
-| `sim/mebot_sim/mebot_sim/sim_arm.py`      | the `/mebot_sim` node: physics loop, driver interface, contacts, clearance, live view                                              |
-| `sim/mebot_sim/mebot_sim/client.py`       | test client of the planner and driver interfaces                                                                                   |
-| `sim/mebot_sim/mebot_sim/try_goal.py`     | `ros2 run mebot_sim try_goal`: one goal, planned and flown, contacts reported                                                      |
-| `sim/mebot_sim/mebot_sim/run_suite.py`    | `ros2 run mebot_sim run_suite`: the scenarios and gates below                                                                      |
-| `sim/mebot_sim/mebot_sim/check_layers.py` | `ros2 run mebot_sim check_layers`: registration and stand-in coverage (CPU, no ROS graph)                                          |
-| `sim/mebot_sim/mebot_sim/find_pairs.py`   | `ros2 run mebot_sim find_pairs`: seeded GPU search that writes the start/goal pairs (in-process planner)                           |
-| `sim/mebot_sim/launch/sim.launch.py`      | the stack                                                                                                                          |
-| `sim/mebot_sim/launch/suite.launch.py`    | the stack plus `run_suite`; shuts down with its exit status                                                                        |
-| `sim/mebot_sim/config/scenarios.yaml`     | start/goal pairs (generated by `find_pairs`), stand-in postures and sizes, thresholds                                              |
-| `sim/mebot_sim/config/control_*.yaml`     | the control planner's scenes: `layers: [layer_mebot_floor.yaml, layer_mebot_platform.yaml]` and `layers: [layer_mebot_floor.yaml]` |
-| `sim/mebot_sim/README.md`                 | how to run it and read the result                                                                                                  |
+| File                                       | Contents                                                                                                                           |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `sim/mebot_sim/mebot_sim/stack.py`         | what every process shares: the domain rule (`isolate()`), this checkout's `rammp_curobo`, the planner clients                      |
+| `sim/mebot_sim/mebot_sim/scene.py`         | MjSpec model builder                                                                                                               |
+| `sim/mebot_sim/mebot_sim/sim_arm.py`       | the `/mebot_sim` node: physics loop, driver interface, contacts, clearance, live view                                              |
+| `sim/mebot_sim/mebot_sim/view.py`          | the live view's page and stream                                                                                                    |
+| `sim/mebot_sim/mebot_sim/client.py`        | test client of the planner and driver interfaces                                                                                   |
+| `sim/mebot_sim/mebot_sim/try_goal.py`      | `ros2 run mebot_sim try_goal`: one goal, planned and flown, contacts reported                                                      |
+| `sim/mebot_sim/mebot_sim/run_suite.py`     | `ros2 run mebot_sim run_suite`: the scenarios and gates below                                                                      |
+| `sim/mebot_sim/mebot_sim/check_layers.py`  | `ros2 run mebot_sim check_layers`: registration and stand-in coverage (CPU, no ROS graph)                                          |
+| `sim/mebot_sim/mebot_sim/find_pairs.py`    | `ros2 run mebot_sim find_pairs`: seeded GPU search that writes the start/goal pairs (in-process planner)                           |
+| `sim/mebot_sim/launch/sim.launch.py`       | the stack                                                                                                                          |
+| `sim/mebot_sim/launch/suite.launch.py`     | the stack plus `run_suite`; shuts down with its exit status                                                                        |
+| `sim/mebot_sim/config/scenarios.yaml`      | start/goal pairs (generated by `find_pairs`), stand-in postures and sizes, thresholds                                              |
+| `sim/mebot_sim/config/control_*.yaml`      | the control planner's scenes: `layers: [layer_mebot_floor.yaml, layer_mebot_platform.yaml]` and `layers: [layer_mebot_floor.yaml]` |
+| `sim/mebot_sim/config/consumer_world.yaml` | S4's push: 8 boxes, a floor among them, and no layers                                                                              |
+| `sim/mebot_sim/test/`                      | the package's own tests (`make sim-test`): no ROS graph, no GPU                                                                    |
+| `sim/mebot_sim/README.md`                  | how to run it and read the result                                                                                                  |
 
 **Dependencies.** None is added to `core/pyproject.toml`; the sim is not part of
 the package.
@@ -1134,8 +1197,11 @@ the package.
   separate processes: the planners hold CUDA, `/mebot_sim` holds EGL.
 
 **Import guard.** The launch puts this checkout's `core/` first on the planner
-nodes' `PYTHONPATH`, and the planner refuses to start if `rammp_curobo` was
-imported from another checkout's `core/`. On this Jetson the editable install
+nodes' `PYTHONPATH`, and refuses to start them if they would import
+`rammp_curobo` from anywhere but this checkout's `core/`, or `rammp_curobo_ros`
+from outside this checkout (`stack.check_planner_imports`). The sim's own
+processes refuse another checkout's `rammp_curobo` too (`stack.core()`); the
+planner node itself has no such guard. On this Jetson the editable install
 maps `rammp_curobo` to `~/RAMMP-CuRobo/core`, which is on the older branch
 feature/19-obstacle-avoidance.
 
@@ -1185,38 +1251,60 @@ overlays), njnt 15, nu 8.
   or a hull vertex is inside the primitive.
 
 **Live view.** `/mebot_sim` serves a page (default `http://127.0.0.1:8765`;
-`host:=` adds addresses) that streams the EGL render as MJPEG at 20 fps. The
-viewer can orbit, pan and zoom, send a tool goal to either planner, push the
-joints by hand, switch the stand-in's posture, and see contacts and forces. It
-is how a person watches the sim on a headless Jetson; no test depends on it.
+`host:=` lists the addresses it serves, comma-separated, and `port:=` sets the
+port) that streams the EGL render as MJPEG at 20 fps. The viewer can orbit,
+pan and zoom, send a tool goal to either planner, push the joints by hand,
+switch the stand-in's posture, and see contacts and forces. It is how a person
+watches the sim on a headless Jetson; no test depends on it.
 
 **Commands.**
 
 ```sh
 make sim            # build .sim_ws/, launch suite.launch.py, exit with run_suite's status
+make sim SIM_ARGS=port:=8766    # launch arguments, e.g. another live-view port
+make sim-test       # the package's own tests: no ROS graph, no GPU
 
 # or by hand, in two shells, each after:  source .sim_ws/install/setup.bash
-ros2 launch mebot_sim sim.launch.py [posture:=none] [host:=127.0.0.1,<address>]
+ros2 launch mebot_sim sim.launch.py [posture:=none] [host:=127.0.0.1,<address>] [port:=8765]
 ros2 run mebot_sim try_goal --pos 0.45 0.20 0.25 --control      # the same goal on both planners
 ros2 run mebot_sim run_suite [--only S2]
 ros2 run mebot_sim check_layers
+ros2 run mebot_sim find_pairs                                   # rewrite config/scenarios.yaml (GPU)
 ```
 
 `make sim` sources ROS and the interfaces overlay (`SIM_OVERLAY`, default
 `~/rammp_deps_ws/install/setup.bash`), builds `rammp_curobo_interfaces`,
-`rammp_curobo_ros` and `sim/mebot_sim` into the git-ignored `.sim_ws/`, and runs
-with `PYTHONPATH=$(CURDIR)/core` prepended.
+`rammp_curobo_ros` and `sim/mebot_sim` into the git-ignored `.sim_ws/`
+(`make sim-build`, the build alone), and runs with `PYTHONPATH=$(CURDIR)/core`
+prepended. `make sim-test` runs `sim/mebot_sim/test` with this checkout's
+`core/` and `sim/mebot_sim` first on `PYTHONPATH` and `MEBOT_SIM_STRICT=1`,
+which turns a test's skip for a missing outside input (the menagerie, MuJoCo,
+EGL) into a failure.
 
 **Scenarios** (`run_suite`). Start/goal pairs are data in `scenarios.yaml`,
 written by `find_pairs` with fixed seeds and regenerated whenever the layers
-change. A pair whose premise no longer holds fails loudly; nothing is skipped.
+change; `find_pairs` writes the layer files' sha256 beside them. A request
+whose premise no longer holds fails loudly with "premise broken; re-run
+find_pairs", and nothing is skipped: requests found with other layer files, or
+fewer than `find_pairs` finds, a positive control that does not hit, and a
+start or goal that `find_pairs` found valid and the planner refuses. The goal
+of each request planned with its layers that the planner refused or flew is
+checked as a start, in the world it planned in.
 
 - **S0 layers against the true shapes** (`check_layers`, no planning)
   - MuJoCo's parse of the URDF has **0** surface samples outside the platform
-    boxes, and the same layer shrunk by 1 mm leaves >0 outside. Design-phase
-    prototype: 0 of 23,216, and 4,321 after the shrink.
+    boxes, and the same layer shrunk by 1 mm leaves >0 outside. The samples
+    cover only what MuJoCo parsed, so its parse must also hold every collision
+    primitive of the URDF as the generator reads it (46: 40 boxes and 6
+    cylinders), link by link. Design-phase prototype: 0 of 23,216, and 4,321
+    after the shrink; the implementation gives the same.
   - Stand-in gap against the padded person layer is 0 for the three sizes,
-    the three postures and both backrest positions.
+    the three postures and both backrest positions. A column carved too wide,
+    or a body too small, would leave no gap either, so two bounds of
+    `thresholds` in `scenarios.yaml` hold as well: at least `covered_pct` (99)
+    percent of each body lies in the layer itself, not in the arm's column,
+    and each body's volume is within `body_volume_pct` (2) percent of the
+    humanoid's own times its scale cubed. With no size listed, S0 is an error.
 - **S1 platform pairs** (empty chair). The straight path between start and goal
   crosses the true MEBot.
   - *Layer on*: `/rammp_curobo_control` with `[floor, platform]`. Refused, or
@@ -1240,11 +1328,17 @@ change. A pair whose premise no longer holds fails loudly; nothing is skipped.
 
 **Gates** (`run_suite` exits 1 on any failure).
 
-- **G0**: S0 registration and non-vacuity.
+- **G0**: S0 registration, non-vacuity (the 1 mm shrink) and the parse's 46
+  primitives.
 - **G1**: stand-in gap = 0, at every size from the 5th-percentile woman to the
-  95th-percentile man.
+  95th-percentile man, within S0's two bounds.
 - **G2**: no contact with `mebot`, `standin` or `floor` in any flown plan made
-  with the relevant layers.
+  with the relevant layers. A refusal passes: cuRobo finding no plan
+  (`IK_FAIL`, `GRAPH_FAIL`, `TRAJOPT_FAIL`, `FINETUNE_TRAJOPT_FAIL`), or the
+  planner's re-check flagging states of the plan it found
+  (`LIBRARY_VALIDATION_FAILED`, "constraint re-check flagged"). Any other
+  failure (a busy planner, an exception, a re-check that could not run, no
+  answer) judged nothing and fails.
 - **G3**: every positive control is planned, flown and makes contact with the
   shape its missing layer covers.
 - **G4**: the layers survive a push (S4).
@@ -1258,6 +1352,9 @@ change. A pair whose premise no longer holds fails loudly; nothing is skipped.
   `sim/mebot_sim/config/scenarios.yaml`: 6, where the spike flew 7. G2 and G4
   pass a refusal: without G7, and G6 judged per planner, a chair planner that
   refused every request would pass every gate.
+
+A run of every scenario (no `--only`) also fails a gate that none of its cases
+bore on.
 
 Reported, not gated: closest approach per group, plan times, how many of the
 chair planner's requests it flew, and tracking error. MuJoCo mesh hulls and
@@ -1284,9 +1381,12 @@ expected (7 of 8 reaches planned), with `/joint_states` at 50 Hz and plans in
 
 Offline tests run in CI on amd64 and arm64 (numpy, PyYAML, pytest). GPU tests
 run on the Jetson (`test_smoke.py`, which skips without CUDA). The sim runs
-through `make sim` (§8).
+through `make sim` (§8), and its package's own tests through `make sim-test`.
+On the Jetson (2026-10-03) the core suite passes 139 (`test_offline.py` 15,
+`test_layers.py` 86, `test_layergen.py` 18, `test_smoke.py` 20) and
+`make sim-test` 150.
 
-`core/tests/conftest.py` (new, 10 lines) guards against testing the wrong tree.
+`core/tests/conftest.py` (new) guards against testing the wrong tree.
 It raises `pytest.UsageError` only when `rammp_curobo` is imported from a
 `core/` directory **other than this checkout's**, which is the host's editable
 install of `~/RAMMP-CuRobo`. It cannot trip in CI (editable install of the same
@@ -1412,6 +1512,26 @@ the tests that need it.
 (§8); a chair planner that refuses every request fails it (G6, G7). The
 hardware pair on the real chair stays open (deviation 8, §15).
 
+### Added during implementation (offline)
+
+Beyond the tables above. The `test_layers.py` rows that build a planner run
+its own cuRobo code with stand-in modules for cuRobo, torch and warp, so they
+need no GPU.
+
+| Test                                                                        | Proves                                                                                                                                           |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `test_resolve_config_searches_cwd_unless_told_not_to`                       | v1.0.0's search order is the default; `search_cwd=False` never looks in CWD, even for a reference with a directory part                          |
+| `test_strict_loader_changes_nothing_else_about_yaml`                        | the duplicate-key loader reads merge keys and overrides as plain PyYAML does                                                                     |
+| `test_make_world_config_hands_curobo_exactly_the_composed_boxes`            | cuRobo is handed the composed boxes, in v1.0.0's positional order of arguments; a WorldConfig holding another count or kind is refused           |
+| `test_the_chair_warms_up_in_its_scene_and_then_loads_its_layers`            | §7.4's order: built and warmed up in the floor alone, then the full world loaded; the seed warning; at `world_padding` 0.030 it refuses to start |
+| `test_a_layer_box_in_the_arms_fixed_spheres_is_refused_and_the_world_kept`  | the fixed-sphere refusal blames the box when the padding is not the cause; a refused or failed load keeps the previous world                     |
+| `test_attribution_explains_an_answer_and_never_changes_or_hides_it`         | the notes of §7.4, deepest box first; they change no status, and an attribution that fails says so instead of raising                            |
+| `test_a_pose_goal_is_attributed_at_the_tool_point_curobo_is_given`          | the goal-point note uses the tool point cuRobo is asked to reach, after the tool correction                                                      |
+| `test_auto_logs_the_joint_space_failure_it_falls_back_from`                 | `method='auto'` logs the joint-space failure, with the boxes its goal reaches into, before it falls back to the pose                             |
+| `test_cli_writes_only_after_every_gate_and_check_prints_a_diff` (generator) | the CLI writes the three files only when every gate passes, and `--check` exits 1 with a unified diff after a hand edit                          |
+| `test_committed_person_regenerates_without_the_urdf` (generator)            | the committed person file regenerates byte for byte without the URDF, wherever the suite runs                                                    |
+| `test_conftest_refuses_only_another_checkouts_core` (`test_offline.py`)     | the conftest guard trips for another checkout's `core/`, not for an installed package                                                            |
+
 ## 10. File changes
 
 | Path                                                                          | Action          | Purpose                                                                                                                                                                             |
@@ -1435,9 +1555,9 @@ hardware pair on the real chair stays open (deviation 8, §15).
 | `core/tests/test_offline.py`                                                  | modify          | new packaged files; drift test covers `layers`                                                                                                                                      |
 | `core/tests/test_smoke.py`                                                    | modify          | Task-1 pairs; platform pair; read-back; chair fixture tests                                                                                                                         |
 | `rammp_curobo_ros/rammp_curobo_ros/planner_node.py`                           | modify          | summary in the start-up log, the ready log and the SetWorld success message                                                                                                         |
-| `sim/mebot_sim/` (package, launch files, config, README), `sim/COLCON_IGNORE` | add             | the ROS sim stack (§8)                                                                                                                                                              |
+| `sim/mebot_sim/` (package, launch files, config, README), `sim/COLCON_IGNORE` | add             | the ROS sim stack (§8), with the package's own tests in `test/` (`make sim-test`)                                                                                                   |
 | `pytest.ini`                                                                  | modify          | `-p no:launch_testing -p no:launch_ros`                                                                                                                                             |
-| `Makefile`                                                                    | modify          | `layers` and `sim` targets (+ `.PHONY`)                                                                                                                                             |
+| `Makefile`                                                                    | modify          | `layers`, `sim-build`, `sim-test` and `sim` targets (+ `.PHONY`)                                                                                                                    |
 | `.github/workflows/build.yml`                                                 | modify          | guard step: one unpiped pytest invocation per offline test file (`test_offline.py`, `test_layers.py`, `test_layergen.py`)                                                           |
 | `README.md`                                                                   | modify          | "Obstacle layers: the wheelchair and the person" section (includes the Task-1 mesh answer); tree listing adds `scripts/generate_layers.py` and `sim/`                               |
 | `INTEGRATION.md`                                                              | modify          | "Planning on the MEBot (≥ 1.1.0)"                                                                                                                                                   |
@@ -1463,7 +1583,10 @@ them.
   segments (torso and head, lap, lower legs and feet), any occupant from the
   5th-percentile woman to the 95th-percentile man, +0.05 m on every face;
 - the headline workspace numbers (§13, risk 1);
-- `make sim`.
+- the paired tests, `make sim` and `make sim-test`;
+- two Troubleshooting rows (an INVALID_START on the chair, a push refused as
+  empty apart from the configured layers), and `scripts/generate_layers.py`
+  and `sim/` in the tree listing.
 
 **Task-1 mesh answer:** meshes were not attempted. v0.7.8's MESH checker has
 three silent traps:
@@ -1486,7 +1609,10 @@ boxes only, and the paired cuboid tests are the Task-1 acceptance.
 - the bench retract is not a valid start on the chair; start from the measured
   state;
 - excluding the person is Python-only;
-- the SetWorld reply lists the layers;
+- the SetWorld reply lists the layers, and a failed plan's error names the
+  boxes;
+- a subclass that overrides `CuRoboPlanner._finish` keeps its v1.0.0
+  signature, and still gets the note (§7.4);
 - this needs ≥ 1.1.0, and a 1.0.0 image refuses the chair config.
 
 **CLAUDE.md invariants:**
@@ -1497,7 +1623,8 @@ boxes only, and the paired cuboid tests are the Task-1 acceptance.
   them;
 - nothing padded may touch the arm's joint-independent sphere column (z -0.015
   .. 0.383 m);
-- worktree tests need `PYTHONPATH=<worktree>/core`.
+- worktree tests and `make layers` need `PYTHONPATH=<worktree>/core`;
+- the sim stack never runs on ROS domain 0 (§8).
 
 **Versioning (CONTRIBUTING.md:108-171):**
 
@@ -1514,18 +1641,22 @@ boxes only, and the paired cuboid tests are the Task-1 acceptance.
 
 **CHANGELOG, under `[Unreleased]`:**
 
-- **Added**: layers (config and scene); generated MEBot platform, person and
-  floor layers; `gen3_mebot.yaml` and `world_mebot.yaml`;
-  `scripts/generate_layers.py` and `make layers`; `world_boxes` and
-  `world_summary()`; which-layer attribution in failures and
-  `check_state_valid`; the ROS sim stack `sim/mebot_sim` and `make sim`.
-- **Changed**: warm-up runs before config layers load; SetWorld success messages
-  and plan-failure errors carry the world summary.
+- **Added**: layers (config and scene); `ignore=` for an excludable layer;
+  generated MEBot platform, person and floor layers; `gen3_mebot.yaml` and
+  `world_mebot.yaml`; `scripts/generate_layers.py`, `make layers` and the CI
+  regeneration; `world_boxes` and `world_summary()`; which-layer attribution in
+  failures and `check_state_valid`; the fixed-sphere refusal; the ROS sim stack
+  `sim/mebot_sim`, `make sim` and `make sim-test`.
+- **Changed**: warm-up runs before config layers load, and the start-up log
+  warns of an invalid IK seed; SetWorld success messages and plan-failure
+  errors carry the world summary; `_finish` keeps its v1.0.0 signature and the
+  note follows it; `make_world_config`'s default cache is 60.
 - **Fixed**: duplicate box names refused instead of collapsed; non-finite or
-  non-positive boxes refused; guards run without cuRobo; malformed scene entries
-  name file and entry; world files, planner configs and the robot config read as
-  UTF-8; a key written twice in a planner config refused instead of the last
-  one kept.
+  non-positive boxes, and a `world_padding` below 0 or not finite, refused;
+  guards run without cuRobo; malformed scene entries name file and entry; world
+  files, planner configs and the robot config read as UTF-8; a key written
+  twice in a planner config refused instead of the last one kept, and a
+  misplaced `layer:` or `planner.layers` refused.
 
 **Workflow.** Branch `feature/19-platform-layers` off `origin/dev` (b734928,
 equal to the v1.0.0 content) in the worktree `~/RAMMP-CuRobo-19`.
@@ -1601,17 +1732,25 @@ install follows. Local commits only, never pushed. Run tests with
    consequence of the approved size (decision 6), not an open question. The arm
    axis is 0.265 m from the occupant centreline, and a 95th-percentile
    half-bideltoid is 0.283 m. Uniform joint samples free of world collision
-   (joint vectors uniform in cuRobo's limits, seed 0; the arm's buffered spheres
-   against the padded boxes, world collision only). The design phase measured
-   4000 samples with a CPU sphere model. Re-measured on 2026-10-03 with cuRobo's
-   own kinematics on the Jetson's GPU, the same 4000 give the same numbers, and
-   1,000,000 samples the ones in brackets:
+   (seed 0; joint_2, joint_4 and joint_6 uniform in cuRobo's limits, and the
+   four continuous joints over ±6.283 rad, two full turns, so that every angle
+   is equally likely; the arm's buffered spheres against the padded boxes,
+   world collision only). The design phase measured 4000 samples with a CPU
+   sphere model. Re-measured on 2026-10-03 with cuRobo's own kinematics on the
+   Jetson's GPU, the same 4000 give the same numbers, and 1,000,000 samples the
+   ones in brackets; a second script, written for the docs (§11) and checked
+   sample by sample against `world.sphere_box_penetration`, gives them again:
 
    | World      | All samples       | Tool high and in front (z > 0.3, x > 0.2) |
    | ---------- | ----------------- | ----------------------------------------- |
-   | floor      | 98.4 % (98.1 %)   | n/a                                       |
+   | floor      | 98.4 % (98.1 %)   | 100.0 % (100.0 %)                         |
    | + platform | 87.9 % (88.2 %)   | 99.7 % (99.7 %)                           |
    | + person   | **2.2 %** (2.3 %) | **1.2 %** (1.3 %)                         |
+
+   cuRobo's own limits for the continuous joints are ±6.0 rad (its Gen3 URDF),
+   which cover the 0.57 rad around zero once and every other angle twice.
+   Sampled in them, 1,000,000 give 98.1, 88.4 and 2.5 % (100.0, 99.6 and 1.4 %
+   in front).
 
    The legs' reach back under the seat (§6.1) costs none of it: with the legs
    at the 95th-percentile thigh or at the shortest, the same 23,434 of the
@@ -1765,6 +1904,7 @@ are gated.
 | Person layer over the occupant range           | the generator (2026-10-03): 8 person boxes, 5.1 mm clear; at `world_padding` 0.030 torso_head_3 still intrudes deepest (4.9 mm; the legs boxes 4.9 and 3.5 mm); envelope 0.892858 m³, self-overlap 0.000076 m³; the legs 0.014945 m³ inside the platform; the composed chair world's max stack 3. cuRobo's kinematics on the GPU, the design phase's method (§13, risk 1): 4000 samples give 98.4, 87.9 and 2.2 % (99.7 and 1.2 % in front), 1,000,000 give 98.1, 88.2 and 2.3 % (99.7 and 1.3 %), 23,434 free with either legs; the retract -154.4 mm, -134.4 mm at +0.1 rad, platform +53.4 mm. `find_pairs` rerun: the same requests, 22,869 of 1,000,000 valid                                                                                                                       |
 | G1 at three sizes                              | `check_layers` on the Jetson (2026-10-03), the stand-in at the 5th-percentile woman's, the 50th-percentile man's and the 95th-percentile man's sitting height, 3 postures, both backrest ends: 19 cases, 0 failed; padded gap 0 in all 18 stand-in cases, 99.11 to 100 % covered (§6.4). With the legs at the 95th-percentile thigh, 6 of the 18 fail at 0.1587: the woman's shins and feet 0.0013 to 0.0016 m³, the 50th-percentile man's feet 0.00008 to 0.00017 m³. With the legs at the men's 5th-percentile thigh (18.07 in), or only as wide as the men's 95th-percentile hip breadth (15.24 in), 0 fail; with the thigh at 18.4 in 0, at 18.5 in 2 (§6.4)                                                                                                                         |
 | G7, and G6 of each planner                     | `make sim` on the Jetson (2026-10-03), twice, 197 s each: 45 cases, G0 to G7 PASS. The chair planner planned and flew 7 of the 8 S3 reaches with no contact (the first refused, `FINETUNE_TRAJOPT_FAIL`), against `min_chair_reaches` 6, and 13 of its 14 requests; G6 judged 13 flights of the chair planner and 3 of the control planner's (S1 with the platform on). In a scratch copy whose chair planner turned every plan it made into a `TRAJOPT_FAIL` refusal, G0 to G5 passed, G2 and G4 on its refusals; G7 failed (0 of 8), G6 failed for want of a chair planner flight, and the launch exited 1 (§8)                                                                                                                                                                        |
+| Docs (Task 10, 2026-10-03)                     | the platform's true shapes on a 1 mm lattice: 0.133020 m³, so the layer's 0.152908 m³ is 14.95 % over them (14.70 % on a 2 mm lattice); §13 risk 1's samples reproduced exactly, and 98.1, 88.4 and 2.5 % in cuRobo's ±6.0 rad; the retract 154.4 mm into `person/lap` and 53.4 mm clear of the platform; v1.0.0's code (`origin/dev`) given `gen3_mebot.yaml`: "config 'gen3_mebot.yaml' not found", and given the files mounted: "collision world is empty"; a wheel built from `core/` holds the five new configs; `make sim` on domain 88 (about three minutes, the build included): 45 cases, G0 to G7 PASS, 7 of 8 reaches flown; `make sim-test` 150 and the core suite 139 passed                                                                                                |
 | Consumer world scan                            | 566 consumer worlds (the 563 in `~/.ros/rammp_box_opening/worlds/` on this Jetson, the kitchen, the bench, box-opening's `world_bench.yaml`; §4.6): 0 files newly refused; max 26 boxes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Git                                            | sha256 201ec24a... for the blob at 59d5aef, 80908b9 and 0a94cce and for `~/mebot.urdf`; `branch -r --contains`: 59d5aef only on `origin/feature/106-drive-base-publisher`, 80908b9 on `origin/dev` (= `origin/HEAD`), 0a94cce on `origin/main`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | cuRobo v0.7.8 source read                      | warm-up and early exits (motion_gen.py:1868-1960, 2105-2113, 3007-3015); `update_world` (motion_gen.py:1825-1837); cache init and load (geom/sdf/world.py:716, 724-727, 827-866); mesh `_init_cache` delegation (world_mesh.py:72-81); sphere buffer (cuda_robot_generator.py:759-771); `sum_collisions_` (sphere_obb_kernel.cu:2711); box count from device memory (sphere_obb_kernel.cu:2453); `enable_obstacle` / `enable_obb` / `get_obb_idx` (geom/sdf/world.py:978-1014, 1094-1110); `get_cuboid` and the cylinder trimesh (geom/types.py:99-132, 341); `get_obb_world` (geom/types.py:1096); inverse cube poses in `batch_tensor_cube` (geom/types.py:1309-1312); `normalize_quaternion` (types/math.py:536); MESH-checker traps (world_mesh.py:96-99, 101-117, 103-105, 167-173) |
