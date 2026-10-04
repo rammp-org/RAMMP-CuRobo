@@ -22,8 +22,11 @@ import time
 
 from mebot_sim import stack
 
-# How long a flown plan is given to come to rest before its contacts are read.
+# How long a flown plan is given to come to rest before its contacts are read,
+# and how long, after that, a report of it sampled once it ended is waited for:
+# the sim reports every 0.1 s.
 SETTLE_S = 0.5
+REPORT_S = 5.0
 WHO = {"standin": "the person", "mebot": "the wheelchair", "floor": "the floor"}
 
 
@@ -217,19 +220,37 @@ class Tester:
             handle.get_result_async(), times[-1] / speed + 60.0, "flying"
         ).result
         time.sleep(SETTLE_S)
-        if self.sim["move"] <= before:
-            raise RuntimeError("the sim reported no move for the plan it flew")
+        report = self._report_after(before)
         return {
             "executed": result.error_code == 0,
             "exec_error": result.error_string,
-            "contacts": self.sim["worst"],
-            "closest": self.sim["closest"],
+            "contacts": report["worst"],
+            "closest": report["closest"],
             # the driver's final error: measured minus commanded as it ended
             "tracking_rad": max(
                 (abs(v) for v in result.final_error.positions), default=None
             ),
             "end_error_rad": max(abs(a - b) for a, b in zip(self.q, rows[-1])),
         }
+
+    def _report_after(self, move):
+        """The sim's first report of a move after `move` sampled once no flight
+        was under way: its worst contacts and closest approaches cover the
+        whole flight. One sampled during the flight misses what it touched
+        after, and one of `move` or before is not of this flight at all."""
+        deadline = time.monotonic() + REPORT_S
+        while True:
+            report = self.sim  # one message: the spinning thread swaps it whole
+            if report["move"] > move and not report["moving"]:
+                return report
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    "the sim reported no move for the plan it flew"
+                    if report["move"] <= move
+                    else "the sim has not reported the flight since it ended: what "
+                    "it touched at its end is unknown"
+                )
+            time.sleep(0.05)
 
     def _only_the_sim(self):
         """Refuse to fly unless /mebot_sim is the one publisher of

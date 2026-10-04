@@ -12,9 +12,13 @@ nodes, on a ROS domain of its own:
 | `/rammp_curobo_control` | the planner with `config:=gen3.yaml`, which composes no layers: the suite pushes it scenes that list only some, so that the same request is planned without a layer                                  |
 
 Contacts are MuJoCo's, against the true shapes: any arm or gripper contact
-with the MEBot, the stand-in or the floor pressing with more than 1 N. The
-layers the planner was told about are drawn as translucent overlays (blue
-platform, orange person, grey floor) and collide with nothing.
+with the MEBot, the stand-in or the floor pressing with more than 1 N. A
+flight is judged on the sim's first report sampled after it ended, once the
+arm has had 0.5 s to come to rest: one sampled during the flight would miss
+what it touched at its end, and with no later report within 5 s the run
+ends early. The layers the planner was told about are drawn as translucent
+overlays (blue platform, orange person, grey floor) and collide with
+nothing.
 
 ## Safety
 

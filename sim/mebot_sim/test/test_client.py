@@ -1,5 +1,7 @@
 """The test client's own logic (mebot_sim/client.py), without a ROS graph."""
 
+import threading
+import time
 import types
 
 import pytest
@@ -83,7 +85,7 @@ def test_a_flight_says_how_far_the_arm_was_from_its_last_point(monkeypatch):
     )
 
     def finished():
-        tester.sim = {"move": 1, "worst": [], "closest": {}}
+        tester.sim = {"move": 1, "moving": False, "worst": [], "closest": {}}
         tester.q = [0.1] * 6 + [0.14]
         return Done(types.SimpleNamespace(result=result))
 
@@ -93,6 +95,64 @@ def test_a_flight_says_how_far_the_arm_was_from_its_last_point(monkeypatch):
     assert report["executed"] and report["contacts"] == []
     assert report["tracking_rad"] == pytest.approx(0.03)
     assert report["end_error_rad"] == pytest.approx(0.04)
+
+
+def _fly(reports):
+    """Fly a one-point plan on a Tester whose driver flies it at once. The
+    sim's last report before the flight is move 0; from when the result
+    comes back it reports `reports`, 0.1 s apart, as it does at 10 Hz."""
+    traj = msgs.JointTrajectory(joint_names=list(stack.JOINTS))
+    traj.points.append(msgs.JointTrajectoryPoint(positions=[0.0] * 7))
+    sim = ("/", "mebot_sim")
+    tester = _tester({"/joint_states": [sim], STATUS: [sim]})
+    result = types.SimpleNamespace(
+        error_code=0, error_string="", final_error=types.SimpleNamespace(positions=[])
+    )
+
+    def publish():
+        for report in reports[1:]:
+            time.sleep(0.1)
+            tester.sim = report
+
+    def finished():
+        tester.sim = reports[0]
+        threading.Thread(target=publish, daemon=True).start()
+        return Done(types.SimpleNamespace(result=result))
+
+    handle = types.SimpleNamespace(accepted=True, get_result_async=finished)
+    tester.driver = types.SimpleNamespace(send_goal_async=lambda goal: Done(handle))
+    return tester.fly(traj, 1.0)
+
+
+def test_a_flight_is_judged_on_a_report_sampled_after_it_ended(monkeypatch):
+    # The report the client holds when the result comes back may have been
+    # sampled during the flight, before the contact at its end: its worst
+    # contacts are the ones of the report that follows.
+    monkeypatch.setattr(client, "SETTLE_S", 0.0)
+    hit = {"group": "standin", "link": "bracelet_link", "part": "lap", "force_n": 9.0}
+    during = {"move": 1, "moving": True, "worst": [], "closest": {}}
+    after = {"move": 1, "moving": False, "worst": [hit], "closest": {}}
+    assert _fly([during, after])["contacts"] == [hit]
+
+
+def test_a_flight_the_sim_has_not_reported_since_it_ended_is_not_judged(
+    monkeypatch,
+):
+    # a report from before the flight, or one sampled during it, misses what
+    # the flight touched after: G2 would pass a flight on contacts it never saw
+    monkeypatch.setattr(client, "SETTLE_S", 0.0)
+    monkeypatch.setattr(client, "REPORT_S", 0.3)
+    before = {"move": 0, "moving": False, "worst": [], "closest": {}}
+    with pytest.raises(RuntimeError) as exc:
+        _fly([before])
+    assert str(exc.value) == "the sim reported no move for the plan it flew"
+    during = {"move": 1, "moving": True, "worst": [], "closest": {}}
+    with pytest.raises(RuntimeError) as exc:
+        _fly([during, during, during, during, during])
+    assert str(exc.value) == (
+        "the sim has not reported the flight since it ended: what it touched at "
+        "its end is unknown"
+    )
 
 
 def test_a_state_is_checked_by_a_plan_from_it_to_itself():
