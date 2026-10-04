@@ -49,6 +49,11 @@ thresholds:
   # G6 (run_suite): a flight without contact comes to rest this close to its
   # plan's last point on every joint, or the sim did not fly the plan.
   end_error_rad: 0.05
+  # G7 (run_suite): the chair planner plans and flies at least this many of
+  # the 8 S3 reaches touching nothing. G2 and G4 pass a refusal, so without
+  # it a chair planner that refused every request would pass them (the
+  # spike flew 7 of the 8, spec 8).
+  min_chair_reaches: 6
   # G1 (check_layers), beside its gap: this much of the stand-in, in percent,
   # lies in the padded person layer itself, not in the arm's column (spec
   # 6.4 found 99.11 to 100) ...

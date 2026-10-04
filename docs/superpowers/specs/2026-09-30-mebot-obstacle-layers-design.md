@@ -15,7 +15,11 @@
   and the legs, now reaching back under the seat, are carved like the torso:
   8 person boxes (decision 6, §6.1, §6.2). G1 seats the stand-in at three
   sizes, the 5th-percentile woman, the 50th-percentile man and the
-  95th-percentile man, not the last alone (§6.4, §8).
+  95th-percentile man, not the last alone (§6.4, §8). Amended 2026-10-03 by
+  the lead, not yet reviewed by the owner: a chair planner that refused
+  every request passed every gate of the sim suite, so G7 holds it to at
+  least 6 of the 8 S3 reaches planned and flown with no contact, and G6
+  judges each planner on its own flights (§8, §9).
 - **Issue:** <https://github.com/rammp-org/RAMMP-CuRobo/issues/19>
 - **Branch:** `feature/19-platform-layers`, off `origin/dev` (b734928, the
   v1.0.0 content), in the worktree `~/RAMMP-CuRobo-19`. Local commits only,
@@ -34,7 +38,7 @@
 **Conventions.** Measured numbers come from a design-phase CPU prototype of the
 generator and from CPU prototypes of the arm-sphere and MuJoCo checks; the
 implementation's generator, tests and sim recompute them, and §5.5, §8 (G0 to
-G6) and §9 say which are gated. A file:line without a repo name is this repo at
+G7) and §9 say which are gated. A file:line without a repo name is this repo at
 `origin/dev` (b734928): `planner.py`, `world.py`, `scene.py` and `config.py` are
 in `core/rammp_curobo/`, the tests in `core/tests/`, `planner_node.py` in
 `rammp_curobo_ros/rammp_curobo_ros/`, and `build.yml` in `.github/workflows/`.
@@ -1225,8 +1229,8 @@ change. A pair whose premise no longer holds fails loudly; nothing is skipped.
   - *Layer off*: `/rammp_curobo_control` with `[floor, platform]`. Planned and
     flown, and it contacts the stand-in.
 - **S3 ordinary reaches.** Eight joint goals from one valid start on
-  `/rammp_curobo`. The success rate is reported. Every flown plan is
-  contact-free.
+  `/rammp_curobo`. At least `min_chair_reaches` of them (6) are planned and
+  flown, and every flown plan is contact-free.
 - **S4 a consumer's push.** `set_world` on `/rammp_curobo` with an 8-box scene
   that lists no layers. The reply must list platform 16 and person 8 (§7.5), and
   the S2 requests are then run again and must still be refused or avoid the
@@ -1245,14 +1249,20 @@ change. A pair whose premise no longer holds fails loudly; nothing is skipped.
   shape its missing layer covers.
 - **G4**: the layers survive a push (S4).
 - **G5**: diagnostics name `person/` (S5).
-- **G6**: every contact-free flight ends within 0.05 rad of its last waypoint,
-  so the sim really flew the plan.
+- **G6**: each planner flies at least one plan with no contact, and every
+  contact-free flight ends within 0.05 rad of its last waypoint, so the sim
+  really flew the plans. Each planner is judged on its own flights: the
+  control planner's cannot pass it for the chair planner.
+- **G7**: the chair planner plans and flies at least `min_chair_reaches` of the
+  8 S3 reaches with no contact. The threshold is data in
+  `sim/mebot_sim/config/scenarios.yaml`: 6, where the spike flew 7. G2 and G4
+  pass a refusal: without G7, and G6 judged per planner, a chair planner that
+  refused every request would pass every gate.
 
-Reported, not gated: closest approach per group, plan times, the S3 success
-rate, and tracking error. MuJoCo mesh hulls and cuRobo spheres differ by design:
-a design-phase probe found the arm's hulls up to 4.7 mm outside cuRobo's spheres
-
-- buffer.
+Reported, not gated: closest approach per group, plan times, how many of the
+chair planner's requests it flew, and tracking error. MuJoCo mesh hulls and
+cuRobo spheres differ by design: a design-phase probe found the arm's hulls up
+to 4.7 mm outside cuRobo's spheres and their buffer.
 
 What the earlier Python-only design checked inside the sim process moves to the
 GPU tests (§9), where the planner is in-process: the installed world against the
@@ -1398,9 +1408,9 @@ the tests that need it.
 
 ### Task 5: sim (decision 1)
 
-`make sim` launches the ROS sim stack and runs `run_suite`, gating G0 to G6
-(§8). The hardware pair on the real chair stays open
-(deviation 8, §15).
+`make sim` launches the ROS sim stack and runs `run_suite`, gating G0 to G7
+(§8); a chair planner that refuses every request fails it (G6, G7). The
+hardware pair on the real chair stays open (deviation 8, §15).
 
 ## 10. File changes
 
@@ -1742,7 +1752,7 @@ The generator, sphere-model and coverage numbers come from design-phase CPU
 prototypes. The sim rows come from a throwaway spike that ran the v1.0.0 planner
 on the Jetson GPU with the layer boxes loaded as plain scene obstacles, first
 in-process and then as a ROS stack on an isolated domain. No repository was
-changed while measuring them. The implementation recomputes them; §5.5, §8 (G0 to G6) and §9 say which
+changed while measuring them. The implementation recomputes them; §5.5, §8 (G0 to G7) and §9 say which
 are gated.
 
 | Evidence                                       | Result                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
@@ -1754,6 +1764,7 @@ are gated.
 | ROS prototype of the sim stack (2026-10-02)    | 20 of 20 cases as expected over `/rammp_curobo` and `/execute_joint_trajectory` on domain 88 (§8)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Person layer over the occupant range           | the generator (2026-10-03): 8 person boxes, 5.1 mm clear; at `world_padding` 0.030 torso_head_3 still intrudes deepest (4.9 mm; the legs boxes 4.9 and 3.5 mm); envelope 0.892858 m³, self-overlap 0.000076 m³; the legs 0.014945 m³ inside the platform; the composed chair world's max stack 3. cuRobo's kinematics on the GPU, the design phase's method (§13, risk 1): 4000 samples give 98.4, 87.9 and 2.2 % (99.7 and 1.2 % in front), 1,000,000 give 98.1, 88.2 and 2.3 % (99.7 and 1.3 %), 23,434 free with either legs; the retract -154.4 mm, -134.4 mm at +0.1 rad, platform +53.4 mm. `find_pairs` rerun: the same requests, 22,869 of 1,000,000 valid                                                                                                                       |
 | G1 at three sizes                              | `check_layers` on the Jetson (2026-10-03), the stand-in at the 5th-percentile woman's, the 50th-percentile man's and the 95th-percentile man's sitting height, 3 postures, both backrest ends: 19 cases, 0 failed; padded gap 0 in all 18 stand-in cases, 99.11 to 100 % covered (§6.4). With the legs at the 95th-percentile thigh, 6 of the 18 fail at 0.1587: the woman's shins and feet 0.0013 to 0.0016 m³, the 50th-percentile man's feet 0.00008 to 0.00017 m³. With the legs at the men's 5th-percentile thigh (18.07 in), or only as wide as the men's 95th-percentile hip breadth (15.24 in), 0 fail; with the thigh at 18.4 in 0, at 18.5 in 2 (§6.4)                                                                                                                         |
+| G7, and G6 of each planner                     | `make sim` on the Jetson (2026-10-03), twice, 197 s each: 45 cases, G0 to G7 PASS. The chair planner planned and flew 7 of the 8 S3 reaches with no contact (the first refused, `FINETUNE_TRAJOPT_FAIL`), against `min_chair_reaches` 6, and 13 of its 14 requests; G6 judged 13 flights of the chair planner and 3 of the control planner's (S1 with the platform on). In a scratch copy whose chair planner turned every plan it made into a `TRAJOPT_FAIL` refusal, G0 to G5 passed, G2 and G4 on its refusals; G7 failed (0 of 8), G6 failed for want of a chair planner flight, and the launch exited 1 (§8)                                                                                                                                                                        |
 | Consumer world scan                            | 566 consumer worlds (the 563 in `~/.ros/rammp_box_opening/worlds/` on this Jetson, the kitchen, the bench, box-opening's `world_bench.yaml`; §4.6): 0 files newly refused; max 26 boxes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Git                                            | sha256 201ec24a... for the blob at 59d5aef, 80908b9 and 0a94cce and for `~/mebot.urdf`; `branch -r --contains`: 59d5aef only on `origin/feature/106-drive-base-publisher`, 80908b9 on `origin/dev` (= `origin/HEAD`), 0a94cce on `origin/main`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | cuRobo v0.7.8 source read                      | warm-up and early exits (motion_gen.py:1868-1960, 2105-2113, 3007-3015); `update_world` (motion_gen.py:1825-1837); cache init and load (geom/sdf/world.py:716, 724-727, 827-866); mesh `_init_cache` delegation (world_mesh.py:72-81); sphere buffer (cuda_robot_generator.py:759-771); `sum_collisions_` (sphere_obb_kernel.cu:2711); box count from device memory (sphere_obb_kernel.cu:2453); `enable_obstacle` / `enable_obb` / `get_obb_idx` (geom/sdf/world.py:978-1014, 1094-1110); `get_cuboid` and the cylinder trimesh (geom/types.py:99-132, 341); `get_obb_world` (geom/types.py:1096); inverse cube poses in `batch_tensor_cube` (geom/types.py:1309-1312); `normalize_quaternion` (types/math.py:536); MESH-checker traps (world_mesh.py:96-99, 101-117, 103-105, 167-173) |

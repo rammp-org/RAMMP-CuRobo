@@ -77,7 +77,7 @@ Demo-Software clone or GitHub; cuRobo v0.7.8 on the GPU for the planners.
 | S0       | `check_layers`, no planning: MuJoCo's parse of the URDF against the committed platform boxes, and the stand-in at three sizes, in three postures, its back at each end of the backrest's range, against the padded person layer | G0, G1 |
 | S1       | 3 platform pairs, the chair empty. With the floor and the platform, the control planner refuses each or flies it clear; with the floor alone it plans it, and the flight hits the MEBot                                         | G2, G3 |
 | S2       | 3 person pairs, the stand-in seated: the chair planner refuses each or flies it clear; the control planner, with the floor and the platform, plans it, and the flight hits the stand-in                                         | G2, G3 |
-| S3       | 8 joint goals from one start on the chair planner; how many plan is reported                                                                                                                                                    | G2     |
+| S3       | 8 joint goals from one start on the chair planner: every flight clear, and at least `min_chair_reaches` of them planned and flown                                                                                               | G2, G7 |
 | S4       | a consumer's push to the chair planner, `config/consumer_world.yaml` (8 boxes, no layers); then the S2 requests again                                                                                                           | G4, G2 |
 | S5       | a plan from the bench retract on the chair planner, nothing flown                                                                                                                                                               | G5     |
 
@@ -91,7 +91,8 @@ speed (`--speed`), time dilated by the client as consumers do.
 
 `run_suite` exits 1 if any gate fails, or if the run ends early. A run of
 every scenario (no `--only`) also fails a gate that none of its cases bore
-on: nothing is skipped.
+on, and G6 when either planner flew nothing for it to judge: nothing is
+skipped.
 
 - **G0, registration.** Every surface sample of MuJoCo's own parse of the
   MEBot URDF lies inside a box of the committed platform layer, unpadded,
@@ -141,20 +142,26 @@ on: nothing is skipped.
   clear.
 - **G5, diagnostics.** A plan from the bench retract fails, and its error
   names the person box the start is in and how deep.
-- **G6, the sim flew the plan.** Every flight that touched nothing came to
-  rest within `end_error_rad` (0.05 rad) of its plan's last point.
+- **G6, the sim flew the plans.** Each planner flew a plan that touched
+  nothing, and every flight that touched nothing came to rest within
+  `end_error_rad` (0.05 rad) of its plan's last point. Each planner is
+  judged on its own flights: the control planner's show nothing of how the
+  sim flies the chair planner's plans. A run of one scenario judges the
+  flights it made.
+- **G7, the chair planner plans.** It planned and flew at least
+  `min_chair_reaches` (6, in `thresholds` in `scenarios.yaml`) of the 8 S3
+  reaches, touching nothing; the line `S3 reaches` gives the count. G2 and
+  G4 pass a refusal, so a chair planner that refused every request would
+  pass them: G7 fails it, and so does G6 in a run of every scenario. The
+  spike flew 7 of the 8, and so does the suite: the first reach is refused
+  (`FINETUNE_TRAJOPT_FAIL`).
 
-Reported, not gated: how many S3 reaches plan, how many of the requests
-asked of the chair planner it flew, plan times, the closest approach to
-each shape in the flights with the layers on, and how far the arm was from
-a plan's last point as a flight that touched nothing ended. MuJoCo's arm
-meshes and cuRobo's spheres differ by design, by up to a few millimetres,
-so the closest approach is a number to read, not a gate.
-
-G2 and G4 pass a refusal, and G6 needs a flight of either planner, so a
-chair planner that refused every request would pass every gate. A run in
-which it flew none of its requests says so in a `WARNING` line; it still
-exits with the gates' verdict, since spec 8 gates no S3 success rate.
+Reported, not gated: how many of the requests asked of the chair planner
+it flew, plan times, the closest approach to each shape in the flights with
+the layers on, and how far the arm was from a plan's last point as a flight
+that touched nothing ended. MuJoCo's arm meshes and cuRobo's spheres differ
+by design, by up to a few millimetres, so the closest approach is a number
+to read, not a gate.
 
 ## Reading the result
 

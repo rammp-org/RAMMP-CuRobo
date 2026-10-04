@@ -22,8 +22,9 @@ no case to judge.
   S2  Person pairs, the stand-in seated: the same on the chair planner, and
       on the control planner with the floor and the platform, whose flights
       hit the stand-in.
-  S3  Eight reaches from one start on the chair planner: how many plan is
-      reported, and every flight touches nothing (G2).
+  S3  Eight reaches from one start on the chair planner: every flight
+      touches nothing (G2), and at least min_chair_reaches of them are
+      planned and flown (G7).
   S4  A consumer's push, config/consumer_world.yaml: 8 boxes and no layers,
       on the chair planner. Its reply names each layer of its config with
       its boxes, and the S2 requests, asked again, are refused or flown
@@ -31,8 +32,14 @@ no case to judge.
   S5  A plan from the bench retract on the chair planner fails, naming the
       person box the start is in and how deep (G5).
 
-G6: every flight that touched nothing came to rest within end_error_rad of
-its plan's last point, so the sim flew the plan.
+G6: each planner flew a plan that touched nothing, and every flight that
+touched nothing came to rest within end_error_rad of its plan's last point,
+so the sim flew the plans of both. A run of every scenario fails it when
+either planner flew none; a run of one judges the flights it made.
+
+G7: the chair planner planned and flew at least min_chair_reaches of the
+S3 reaches touching nothing (config/scenarios.yaml). G2 and G4 pass a
+refusal; G6 and G7 fail a chair planner that refuses every request.
 
 A refusal is the planner's answer to a request it judged and found no safe
 plan for: cuRobo's IK, graph or trajectory optimisation failed, or the
@@ -44,10 +51,6 @@ that find_pairs found with other layer files than the committed ones, or
 fewer than it finds, fail with "premise broken; re-run find_pairs". The goal
 of each request planned with its layers that the planner refused or flew is
 checked as a start, in the world it planned in (client.Tester.check_state).
-
-A chair planner that refused every request would pass every gate: how many
-of its requests it flew is reported, and a run in which it flew none says
-so in a WARNING line.
 """
 
 import argparse
@@ -73,7 +76,10 @@ GATES = {
     "G3": "every positive control is planned, flown, and hits what its layer covers",
     "G4": "the layers survive a consumer's push",
     "G5": "a plan from the retract names person/ and a depth",
-    "G6": "every flight that touches nothing comes to rest at its last point",
+    "G6": "each planner flies a plan that touches nothing, and every such flight "
+    "comes to rest at its last point",
+    "G7": "the chair planner plans and flies at least min_chair_reaches of the S3 "
+    "reaches, touching nothing",
 }
 PREMISE = "premise broken; re-run find_pairs"
 # The layers the chair config composes into every world, by the layer files
@@ -180,6 +186,23 @@ def without_layer(name, where, report, group):
     return stack.case(name, where, "%s: %s" % (PREMISE, what), {"G3": False}, **report)
 
 
+def chair_reaches(where, cases, least):
+    """S3's count (G7): of the reaches, `cases`, the chair planner planned at
+    least `least` and flew them to their end touching nothing. A refusal
+    passes G2: G7 holds the chair planner to plans of its own."""
+    flown = sum(bool(case.get("executed")) and not case["contacts"] for case in cases)
+    passed = flown >= least
+    return stack.case(
+        "S3 reaches",
+        where,
+        "%d of %d planned and flown, no contact%s"
+        % (flown, len(cases), "" if passed else " (under %d)" % least),
+        {"G7": passed},
+        flown_clear=flown,
+        min_chair_reaches=least,
+    )
+
+
 def pushed(where, ok, reply, expected):
     """S4's push: the chair planner took the consumer's world, and its reply
     names each layer of its config with its boxes, `expected` ({layer:
@@ -224,6 +247,25 @@ def gates(cases):
     for gate in GATES:
         verdicts = [case["gates"][gate] for case in cases if gate in case["gates"]]
         out[gate] = all(verdicts) if verdicts else None
+    return out
+
+
+def unjudged(cases):
+    """What a run of every scenario must judge that `cases` leave unjudged,
+    {gate: in words}: each gate none of them bears on, and G6 while either
+    planner flew none of them that bears on it. G6 judges each planner on
+    its own flights: the other's show nothing of how the sim flies its
+    plans."""
+    flew = {case.get("planner") for case in cases if "G6" in case["gates"]}
+    unflown = [
+        planner for planner in (stack.CHAIR, stack.CONTROL) if planner not in flew
+    ]
+    out = {}
+    for gate, verdict in gates(cases).items():
+        if gate == "G6" and unflown:
+            out[gate] = "G6 for %s" % " and ".join(unflown)
+        elif verdict is None:
+            out[gate] = gate
     return out
 
 
@@ -322,6 +364,14 @@ class Suite:
                 raise RuntimeError(
                     "%s: config/scenarios.yaml holds %s" % (PREMISE, "; ".join(short))
                 )
+            # held to no reach, G7 would pass a chair planner that refused them all
+            least = data["thresholds"]["min_chair_reaches"]
+            if least < 1:
+                raise ValueError(
+                    "config/scenarios.yaml holds thresholds.min_chair_reaches %s: "
+                    "G7 would hold the chair planner to no reach, and judge nothing"
+                    % least
+                )
         if "S0" in selected:
             for case in check_layers.cases(self.assets()):
                 self.add(case)
@@ -382,10 +432,16 @@ class Suite:
     def _s3(self, data):
         self.tester.posture(data["person_pairs"]["posture"])
         planner, world, _ = stack.worlds()["all"]
+        reaches = []
         for k, goal in enumerate(data["reaches"]["goals"]):
             report = self._request(planner, world, data["start"], goal)
             where = planned_in(planner, report["world"], world)
-            self.add(with_layers("S3 reach %d" % (k + 1), where, report, self.limit))
+            reaches.append(
+                with_layers("S3 reach %d" % (k + 1), where, report, self.limit)
+            )
+            self.add(reaches[-1])
+        least = data["thresholds"]["min_chair_reaches"]
+        self.add(chair_reaches(planner, reaches, least))
 
     def _s4(self, data):
         pairs = data["person_pairs"]
@@ -412,22 +468,16 @@ class Suite:
         )
         self.add(from_retract(planned_in(planner, report["world"], world), report))
 
-    def _chair_flights(self):
-        """(flown, asked): of the requests asked of the chair planner with its
-        layers, how many it flew. G2 and G4 pass a refusal, and G6 needs a
-        flight of either planner: a chair planner that refused every request
-        would pass every gate."""
+    def reported(self):
+        """What the suite reports without a gate."""
+        # of the requests asked of the chair planner with its layers, how
+        # many it flew
         asked = [
             case
             for case in self.cases
             if case.get("planner") == stack.CHAIR and "G2" in case["gates"]
         ]
-        return sum(bool(case.get("executed")) for case in asked), len(asked)
-
-    def reported(self):
-        """What the suite reports without a gate."""
-        reaches = [case for case in self.cases if case["case"].startswith("S3 ")]
-        flown, asked = self._chair_flights()
+        flown = sum(bool(case.get("executed")) for case in asked)
         plans = sorted(case["plan_s"] for case in self.cases if "plan_s" in case)
         flights = [case for case in self.cases if case.get("executed")]
         closest = {}
@@ -443,11 +493,7 @@ class Suite:
             if not c["contacts"] and c["tracking_rad"] is not None
         ]
         return {
-            "s3_planned": "%d of %d"
-            % (sum(c["planned"] for c in reaches), len(reaches))
-            if reaches
-            else None,
-            "chair_flown": "%d of %d" % (flown, asked) if asked else None,
+            "chair_flown": "%d of %d" % (flown, len(asked)) if asked else None,
             "plan_s": {
                 "min": plans[0],
                 "median": statistics.median(plans),
@@ -462,13 +508,13 @@ class Suite:
     def finish(self, only):
         """Print the summary, write the result file, and return its path."""
         verdicts = gates(self.cases)
-        idle = [gate for gate, v in verdicts.items() if v is None]
+        idle = unjudged(self.cases)
         if idle and only is None and self.error is None:
-            # nothing is skipped: a gate that every scenario gave no case to
-            # judge is not shown to hold
+            # nothing is skipped: what every scenario gave no case to judge is
+            # not shown to hold
             self.error = (
                 "no case bore on %s, which a run of every scenario must judge"
-                % ", ".join(idle)
+                % ", ".join(idle.values())
             )
             verdicts.update(dict.fromkeys(idle, False))
         failed = sum(not case["passed"] for case in self.cases)
@@ -498,8 +544,6 @@ class Suite:
         for gate, about in GATES.items():
             print("%s %-7s %s" % (gate, result["gates"][gate], about))
         said = []
-        if reported["s3_planned"]:
-            said.append("%s S3 reaches planned" % reported["s3_planned"])
         if reported["chair_flown"]:
             said.append("%s chair planner requests flown" % reported["chair_flown"])
         if reported["plan_s"]:
@@ -522,14 +566,6 @@ class Suite:
             )
         if said:
             print("reported: " + "; ".join(said))
-        flown, asked = self._chair_flights()
-        if asked and not flown:
-            print(
-                "WARNING: the chair planner, %s, flew none of the %d requests "
-                "asked of it with its layers. The gates pass a refusal, so they "
-                "pass a chair planner that refuses everything: this run shows "
-                "none of its plans." % (stack.CHAIR, asked)
-            )
         if self.error:
             print("run_suite: %s" % self.error, file=sys.stderr)
         print("result: %s" % path)

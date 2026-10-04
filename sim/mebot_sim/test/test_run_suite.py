@@ -247,6 +247,7 @@ def test_each_gate_is_the_verdict_of_the_cases_that_bear_on_it():
         "G4": None,
         "G5": None,
         "G6": True,
+        "G7": None,
     }
 
 
@@ -293,8 +294,9 @@ class Scripted:
 
 
 def _answers(planner, world, joints, execute):
-    """Every request with its layers refused or flown clear, every positive
-    control a hit, and the retract refused naming the person."""
+    """As on the Jetson: every request with its layers flown clear, but the
+    first S3 reach, which the chair planner refuses; every positive control
+    a hit; and the retract refused naming the person."""
     if not execute:
         return refused(INVALID_START)
     floor = stack.worlds()["floor_only"][1]
@@ -305,6 +307,7 @@ def _answers(planner, world, joints, execute):
         pairs = DATA["person_pairs"]["pairs"]
         if any(joints == pair["goal"] for pair in pairs):
             return flown(THIGH, tracking=0.6)
+    if joints == DATA["reaches"]["goals"][0]:
         return refused()
     return flown()
 
@@ -383,21 +386,30 @@ def test_each_scenario_plans_in_its_world_with_the_standin_as_found(scripted, ca
     assert tester.calls[-2][3] == run_suite.bench_retract()
     assert result["cases"][-1]["case"] == "S5 retract"
     # one line per case: S0 (as stood in for), 3 pairs on and off in S1 and
-    # S2, 8 reaches, the push and the 3 requests after it, the retract
+    # S2, 8 reaches and how many of them the chair planner flew (G7), the
+    # push and the 3 requests after it, the retract
     lines = [line for line in out.splitlines() if re.match(r"S\d", line)]
-    n = 2 + 2 * 3 + 2 * 3 + 8 + 1 + 3 + 1
+    n = 2 + 2 * 3 + 2 * 3 + 8 + 1 + 1 + 3 + 1
     assert len(lines) == n and all(line.endswith("PASS") for line in lines)
-    assert [c["case"] for c in result["cases"]][:4] == [
+    names = [c["case"] for c in result["cases"]]
+    assert names[:4] == [
         "S0 registration",
         "S0 man_95th upright_lap 0.1587",
         "S1a on",
         "S1a off",
     ]
+    assert names[14:24] == ["S3 reach %d" % k for k in range(1, 9)] + [
+        "S3 reaches",
+        "S4 push",
+    ]
+    # the first reach refused, as on the Jetson: 7 flown, of the 6 G7 needs
+    reaches = result["cases"][22]
+    assert reaches["outcome"] == "7 of 8 planned and flown, no contact"
+    assert reaches["gates"] == {"G7": True}
     assert result["passed"] and result["error"] is None
     assert result["gates"] == {gate: "PASS" for gate in run_suite.GATES}
-    assert result["reported"]["s3_planned"] == "8 of 8"
     # S2 on, S3 and S4: what a consumer on the chair asks
-    assert result["reported"]["chair_flown"] == "14 of 14" and "WARNING" not in out
+    assert result["reported"]["chair_flown"] == "13 of 14"
     # how well the sim tracks, from the flights that touched nothing
     assert result["reported"]["tracking_rad_max"] == 0.012
 
@@ -445,32 +457,99 @@ def test_a_whole_run_fails_a_gate_that_no_case_bore_on(scripted, capsys):
     err = capsys.readouterr().err
     assert status == 1 and not result["passed"]
     assert result["gates"]["G2"] == "PASS" and result["gates"]["G6"] == "FAIL"
-    assert "G6" in result["error"] and "G6" in err
-    # a run of one scenario judges its own gates alone
-    status, _, result = scripted(["--only", "S3"], script=refusing)
+    assert result["error"] == (
+        "no case bore on G6 for /rammp_curobo and /rammp_curobo_control, which "
+        "a run of every scenario must judge"
+    )
+    assert result["error"] in err
+    # a run of one scenario judges its own gates alone: G6 on the flights of
+    # the planner it asks with its layers, when it flew any
+    status, _, result = scripted(["--only", "S1"], script=refusing)
     assert status == 0 and result["gates"]["G6"] == "not run"
+    status, _, result = scripted(["--only", "S3"])
+    assert status == 0 and result["gates"]["G6"] == "PASS"
 
 
-def test_a_run_says_loudly_when_the_chair_planner_flew_nothing(scripted, capsys):
-    # G2 and G4 pass a refusal, and G6 the control planner's flights: a
-    # chair planner that refuses everything passes every gate (spec 8 gates
-    # no S3 success rate), so the run says so
-    platform = [pair["goal"] for pair in DATA["platform_pairs"]["pairs"]]
-
+def test_a_chair_planner_that_refuses_everything_fails_the_suite(scripted, capsys):
+    # G2 and G4 pass a refusal. G7 fails it: it flew none of the reaches it
+    # must fly; and G6, which the control planner's flights cannot pass for it
     def chair_refuses(planner, world, joints, execute):
         if planner == stack.CHAIR and execute:
             return refused()
-        if planner == stack.CONTROL and joints in platform:
-            # S1, as on the Jetson: flown clear with the platform, a hit without
-            return flown() if world == stack.worlds()["no_person"][1] else flown(WHEEL)
         return _answers(planner, world, joints, execute)
 
     status, _, result = scripted([], script=chair_refuses)
     out = capsys.readouterr().out
-    assert status == 0 and result["passed"]
-    assert result["gates"] == {gate: "PASS" for gate in run_suite.GATES}
+    assert status == 1 and not result["passed"]
+    assert result["gates"]["G2"] == result["gates"]["G4"] == "PASS"
+    assert result["gates"]["G7"] == "FAIL" and re.search(r"^G7 FAIL ", out, re.M)
+    reaches = next(c for c in result["cases"] if c["case"] == "S3 reaches")
+    assert reaches["outcome"] == "0 of 8 planned and flown, no contact (under 6)"
+    assert not reaches["passed"]
+    assert result["gates"]["G6"] == "FAIL"
+    assert result["error"] == (
+        "no case bore on G6 for /rammp_curobo, which a run of every scenario "
+        "must judge"
+    )
     assert result["reported"]["chair_flown"] == "0 of 14"
-    assert "WARNING: the chair planner, /rammp_curobo, flew none of the 14" in out
+
+
+def test_g6_needs_a_flight_clear_of_contact_from_each_planner(scripted):
+    # the control planner refuses its S1 requests with the platform on, as
+    # G2 allows, and its positive controls hit: the chair planner's flights
+    # show nothing of how the sim flies the control planner's plans
+    def control_refuses(planner, world, joints, execute):
+        report = _answers(planner, world, joints, execute)
+        if planner == stack.CONTROL and not report.get("contacts"):
+            return refused()
+        return report
+
+    status, _, result = scripted([], script=control_refuses)
+    assert status == 1 and not result["passed"]
+    assert all(case["passed"] for case in result["cases"])
+    assert result["gates"]["G6"] == "FAIL"
+    assert result["error"] == (
+        "no case bore on G6 for /rammp_curobo_control, which a run of every "
+        "scenario must judge"
+    )
+
+
+@pytest.mark.parametrize(
+    "least, verdict, outcome",
+    [
+        (5, "PASS", "5 of 8 planned and flown, no contact"),
+        (6, "FAIL", "5 of 8 planned and flown, no contact (under 6)"),
+    ],
+)
+def test_g7_counts_the_reaches_flown_clear_against_its_threshold(
+    scripted, monkeypatch, least, verdict, outcome
+):
+    # of the 8 reaches the chair planner refuses one, flies one into the
+    # stand-in and one not to its end, and flies five clear
+    goals = DATA["reaches"]["goals"]
+    stopped = dict(flown(), executed=False, exec_error="PREEMPTED by a stop")
+    answers = {0: refused(), 1: flown(THIGH), 2: stopped}
+
+    def five_clear(planner, world, joints, execute):
+        return answers.get(goals.index(joints), flown())
+
+    data = dict(DATA, thresholds=dict(DATA["thresholds"], min_chair_reaches=least))
+    monkeypatch.setattr(stack, "scenarios", lambda: data)
+    _, _, result = scripted(["--only", "S3"], script=five_clear)
+    reaches = result["cases"][-1]
+    assert reaches["case"] == "S3 reaches" and reaches["outcome"] == outcome
+    assert result["gates"]["G7"] == verdict
+
+
+def test_a_g7_that_would_judge_nothing_fails_before_anything_runs(
+    scripted, monkeypatch
+):
+    # held to no reach, G7 would pass a chair planner that refused them all
+    data = dict(DATA, thresholds=dict(DATA["thresholds"], min_chair_reaches=0))
+    monkeypatch.setattr(stack, "scenarios", lambda: data)
+    status, tester, result = scripted([])
+    assert status == 1 and tester is None and result["cases"] == []
+    assert "min_chair_reaches" in result["error"]
 
 
 def test_a_goal_the_planner_no_longer_finds_valid_fails_the_suite(scripted, capsys):
