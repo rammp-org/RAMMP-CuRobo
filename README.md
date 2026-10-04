@@ -99,8 +99,8 @@ python3 -m pytest core/tests -q
 
 The offline tests run anywhere; the GPU tests plan real collision-free
 trajectories in the sim-kitchen world and on the MEBot wheelchair (first
-run compiles kernels — takes a minute or two; ~20 s warm). Or plan one
-motion directly:
+run compiles kernels — takes a minute or two; warm, they take ~30 s and
+the whole suite ~45 s). Or plan one motion directly:
 
 ```bash
 python3 examples/plan_only.py --joints 0.3 0.262 3.142 -2.269 0.0 0.960 1.571
@@ -168,9 +168,10 @@ executor that used to live here was removed (**issue #6**).
 ## Obstacle layers: the wheelchair and the person
 
 On the MEBot wheelchair the arm works beside the chair it is mounted on and
-the person sitting in it. Both reach the planner as **layers** (issue #19):
-named groups of boxes, each in a file of its own, composed into the
-collision world beside the scene's own obstacles.
+the person sitting in it. The chair's drive base and the person reach the
+planner as **layers** (issue #19): named groups of boxes, each in a file of
+its own, composed into the collision world beside the scene's own
+obstacles.
 
 - **Config layers** are listed under `layers:` in the planner config and
   are composed into **every** world the planner builds, `set_world` pushes
@@ -205,6 +206,12 @@ unverified on the real chair. It starts in a world of 25 boxes:
 | `platform` | `layer_mebot_platform.yaml` | 16    | a config layer, not excludable      |
 | `person`   | `layer_mebot_person.yaml`   | 8     | a config layer, excludable          |
 | `floor`    | `layer_mebot_floor.yaml`    | 1     | a scene layer of `world_mebot.yaml` |
+
+The platform is the drive base alone, with every joint at zero, and its
+coverage numbers below are for that pose. Nothing models the rest of
+the chair: its seat, backrest, armrests and footplate, or the plate the arm
+is mounted on. Over the seat and at the backrest the person layer is the
+only geometry.
 
 The node logs the world's summary at start-up and in its ready line, and
 returns it with every world SetWorld takes — the visible proof that the
@@ -243,6 +250,10 @@ and so is a name that is both a layer and a prop. This is Python-only:
 SetWorld carries a world name and nothing else, and a field on it would be
 a MAJOR change. It is the hook a later approach to the person's mouth will
 use.
+
+A world without the person has nothing over the seat or at the backrest
+either, so a plan made in it is free to pass through them. If yours go near
+them, carry boxes for them in the scene you push.
 
 ### Generated, with coverage numbers: `make layers`
 
@@ -289,7 +300,8 @@ share whose collision spheres clear the padded boxes:
 | floor, platform, person | 2.3 %              | 1.3 %                                         |
 
 Plans near the person, and anything handed to them, need the person layer
-excluded. The sizes are data: tuning them is one edit to
+excluded, which leaves the seat and the backrest uncovered too (see
+**Leaving the person out**). The sizes are data: tuning them is one edit to
 `scripts/mebot_layers.yaml` and `make layers`.
 
 ### How it is tested

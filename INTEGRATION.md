@@ -73,10 +73,13 @@ entire public surface — there is nothing here that can move an arm.
 
 With the arm on the MEBot wheelchair, run the planner with the chair
 config: `config:=gen3_mebot.yaml` for the node, or
-`CuRoboPlanner.from_config("gen3_mebot.yaml")`. The chair's drive base
-(layer `platform`, 16 boxes) and the person in it (layer `person`, 8 boxes)
-are then in every collision world the planner builds. See the README's
-**Obstacle layers** for how they are made and what they cost. For a caller:
+`CuRoboPlanner.from_config("gen3_mebot.yaml")`. The chair's drive base,
+modelled with every joint at zero (layer `platform`, 16 boxes), and the
+person in it (layer `person`, 8 boxes) are then in every collision world the
+planner builds. Nothing models the rest of the chair: its seat, backrest,
+armrests and footplate, or the plate the arm is mounted on. See the README's
+**Obstacle layers** for how the layers are made and what they cost. For a
+caller:
 
 - **A pushed scene replaces only your task geometry.** `set_world` and
   `update_world` replace the scene, as before; the layers the config lists
@@ -110,12 +113,18 @@ are then in every collision world the planner builds. See the README's
   `planner.update_world(world, ignore={"person"})` leaves the person out of
   that one world, the platform untouched; the next push without `ignore`
   brings the person back. SetWorld has no field for it — adding one would
-  be a MAJOR change — and `ignore={"platform"}` is refused.
+  be a MAJOR change — and `ignore={"platform"}` is refused. Over the seat
+  and at the backrest the person layer is the only geometry, so that world
+  has none there: if your plans go near them, carry boxes for them in the
+  scene you push.
 
 - **A subclass that overrides `CuRoboPlanner._finish` keeps working.**
   `_finish(result, t0, q_goal=None)` keeps its v1.0.0 signature and code;
-  the note on which boxes a failure involves is added after it returns, so
-  a failure your override reports still carries it.
+  the note on which boxes a failure involves is added after it returns. A
+  failure cuRobo reports carries it whether your override passes it on,
+  relabels it or leaves its error empty. A plan cuRobo found and your
+  override rejects comes back exactly as your override made it, with no
+  note.
 
 - **A 1.0.0 image refuses the chair config.** `gen3_mebot.yaml` and its
   layer files ship from 1.1.0 on, and a 1.0.0 image answers

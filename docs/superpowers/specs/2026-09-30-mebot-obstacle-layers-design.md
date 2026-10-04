@@ -31,10 +31,12 @@
     checks beyond their earlier text; §4.5 to §4.7, §5.5 and §7.4 add the
     refusals and messages the code has; §4.7 and §11 add that a bare-string
     `ignore=`, now one name, changes a v1.0.0 caller's world, and §11 that the
-    sim is the one exception to "this repo never touches the arm"; §9 and §10
-    list what was added; §13 risk 1 states how its joint samples are drawn
-    (two full turns for the continuous joints, not cuRobo's ±6.0 rad), which
-    its numbers already followed.
+    sim is the one exception to "this repo never touches the arm"; §7.4 and
+    §11 add that a plan cuRobo found and an override refused comes back as the
+    override made it, with no note, and §11 that the docs say what the layers
+    leave out (§13, risks 4 and 5); §9 and §10 list what was added; §13 risk 1
+    states how its joint samples are drawn (two full turns for the continuous
+    joints, not cuRobo's ±6.0 rad), which its numbers already followed.
 - **Issue:** <https://github.com/rammp-org/RAMMP-CuRobo/issues/19>
 - **Branch:** `feature/19-platform-layers`, off `origin/dev` (b734928, the
   v1.0.0 content), in the worktree `~/RAMMP-CuRobo-19`. Local commits only,
@@ -1068,12 +1070,15 @@ status, read as `_finish` reads it, not on the status `_finish` returns, so an
 override that reports the failure under a status of its own still gets the
 INVALID_START and IK-failure parts below. An override's failure with no error
 (`error=None`, which `PlanResult` allows) gets the note alone. A success, an
-override's included, and a plan cuRobo found that post-validation refused are
-returned as they are.
+override's included, and a plan cuRobo found that post-validation or an
+override refused are returned as they are. The override in RAMMP-generalized
+`rammp_adl/motion/curobo_stationary.py:123-124` refuses such a plan, as
+`INTERPOLATION_VALIDATION_FAILED`, when the trajectory it builds from it fails
+its own checks.
 `test_a_subclass_overriding_the_v100_finish_plans_and_is_explained` plans
-through a subclass that overrides `_finish` as RAMMP-generalized does, and
-through overrides that report cuRobo's failure with no error or under a status
-of their own. The note:
+through a subclass that overrides `_finish` as RAMMP-generalized does, through
+overrides that report cuRobo's failure with no error or under a status of their
+own, and through one that refuses a plan cuRobo found. The note:
 
 - **INVALID_START:** `" [start collides with person/lap (154 mm), ...]"`, or
   `" [start: no world box penetrated — self-collision or joint limits]"`.
@@ -1588,6 +1593,9 @@ them.
   segments (torso and head, lap, lower legs and feet), any occupant from the
   5th-percentile woman to the 95th-percentile man, +0.05 m on every face;
 - the headline workspace numbers (§13, risk 1);
+- what the layers leave out: the seat, backrest, armrests, footplate and mount
+  plate (the drive base is modelled at all joints zero), and that excluding the
+  person leaves nothing over the seat or at the backrest (§13, risks 4 and 5);
 - the paired tests, `make sim` and `make sim-test`;
 - two Troubleshooting rows (an INVALID_START on the chair, a push refused as
   empty apart from the configured layers), and `scripts/generate_layers.py`
@@ -1610,16 +1618,18 @@ boxes only, and the paired cuboid tests are the Task-1 acceptance.
 
 **INTEGRATION.md**:
 
-- `config:=gen3_mebot.yaml`;
+- `config:=gen3_mebot.yaml`, and what of the chair it leaves out;
 - pushed scenes replace only task geometry, including the start-up floor, so
   carry your own floor;
 - the bench retract is not a valid start on the chair; start from the measured
   state;
-- excluding the person is Python-only;
+- excluding the person is Python-only, and leaves nothing over the seat or at
+  the backrest;
 - the SetWorld reply lists the layers, and a failed plan's error names the
   boxes;
 - a subclass that overrides `CuRoboPlanner._finish` keeps its v1.0.0
-  signature, and still gets the note (§7.4);
+  signature, and a failure cuRobo reports still gets the note; a plan cuRobo
+  found and the override refuses comes back as the override made it (§7.4);
 - this needs ≥ 1.1.0, and a 1.0.0 image refuses the chair config.
 
 **CLAUDE.md invariants:**
@@ -1915,6 +1925,7 @@ are gated.
 | G1 at three sizes                              | `check_layers` on the Jetson (2026-10-03), the stand-in at the 5th-percentile woman's, the 50th-percentile man's and the 95th-percentile man's sitting height, 3 postures, both backrest ends: 19 cases, 0 failed; padded gap 0 in all 18 stand-in cases, 99.11 to 100 % covered (§6.4). With the legs at the 95th-percentile thigh, 6 of the 18 fail at 0.1587: the woman's shins and feet 0.0013 to 0.0016 m³, the 50th-percentile man's feet 0.00008 to 0.00017 m³. With the legs at the men's 5th-percentile thigh (18.07 in), or only as wide as the men's 95th-percentile hip breadth (15.24 in), 0 fail; with the thigh at 18.4 in 0, at 18.5 in 2 (§6.4)                                                                                                                         |
 | G7, and G6 of each planner                     | `make sim` on the Jetson (2026-10-03), twice, 197 s each: 45 cases, G0 to G7 PASS. The chair planner planned and flew 7 of the 8 S3 reaches with no contact (the first refused, `FINETUNE_TRAJOPT_FAIL`), against `min_chair_reaches` 6, and 13 of its 14 requests; G6 judged 13 flights of the chair planner and 3 of the control planner's (S1 with the platform on). In a scratch copy whose chair planner turned every plan it made into a `TRAJOPT_FAIL` refusal, G0 to G5 passed, G2 and G4 on its refusals; G7 failed (0 of 8), G6 failed for want of a chair planner flight, and the launch exited 1 (§8)                                                                                                                                                                        |
 | Docs (Task 10, 2026-10-03)                     | the platform's true shapes on a 1 mm lattice: 0.133020 m³, so the layer's 0.152908 m³ is 14.95 % over them (14.70 % on a 2 mm lattice); §13 risk 1's samples reproduced exactly, and 98.1, 88.4 and 2.5 % in cuRobo's ±6.0 rad; the retract 154.4 mm into `person/lap` and 53.4 mm clear of the platform; v1.0.0's code (`origin/dev`) given `gen3_mebot.yaml`: "config 'gen3_mebot.yaml' not found", and given the files mounted: "collision world is empty"; a wheel built from `core/` holds the five new configs; `make sim` on domain 88 (about three minutes, the build included): 45 cases, G0 to G7 PASS, 7 of 8 reaches flown; `make sim-test` 150 and the core suite 139 passed                                                                                                |
+| Docs review (2026-10-03)                       | warm on the Jetson, `test_smoke.py`'s 20 GPU tests took 29.1 and 29.6 s and the core suite 42.5 s (pytest's times); in the committed layer files the padded platform tops out at z -0.0071 m in base_link, 0.1016 m below the seat pan's top (0.0945 m), and of the chair world's boxes only `person/torso_head_0` reaches the backrest (from its rear face to the front end of its face's range, 0.2 m either side of the centreline, up to 0.5 m above the pan)                                                                                                                                                                                                                                                                                                                        |
 | Consumer world scan                            | 566 consumer worlds (the 563 in `~/.ros/rammp_box_opening/worlds/` on this Jetson, the kitchen, the bench, box-opening's `world_bench.yaml`; §4.6): 0 files newly refused; max 26 boxes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Git                                            | sha256 201ec24a... for the blob at 59d5aef, 80908b9 and 0a94cce and for `~/mebot.urdf`; `branch -r --contains`: 59d5aef only on `origin/feature/106-drive-base-publisher`, 80908b9 on `origin/dev` (= `origin/HEAD`), 0a94cce on `origin/main`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | cuRobo v0.7.8 source read                      | warm-up and early exits (motion_gen.py:1868-1960, 2105-2113, 3007-3015); `update_world` (motion_gen.py:1825-1837); cache init and load (geom/sdf/world.py:716, 724-727, 827-866); mesh `_init_cache` delegation (world_mesh.py:72-81); sphere buffer (cuda_robot_generator.py:759-771); `sum_collisions_` (sphere_obb_kernel.cu:2711); box count from device memory (sphere_obb_kernel.cu:2453); `enable_obstacle` / `enable_obb` / `get_obb_idx` (geom/sdf/world.py:978-1014, 1094-1110); `get_cuboid` and the cylinder trimesh (geom/types.py:99-132, 341); `get_obb_world` (geom/types.py:1096); inverse cube poses in `batch_tensor_cube` (geom/types.py:1309-1312); `normalize_quaternion` (types/math.py:536); MESH-checker traps (world_mesh.py:96-99, 101-117, 103-105, 167-173) |

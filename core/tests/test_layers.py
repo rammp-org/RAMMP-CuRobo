@@ -2448,3 +2448,21 @@ def test_a_subclass_overriding_the_v100_finish_plans_and_is_explained(monkeypatc
             "ADL_PLAN_FAILED",
             planner._explain(status) + note + world,
         ), name
+
+    # but a plan cuRobo found and the override refuses, as RAMMP-generalized's
+    # does when the trajectory it builds fails its own checks, comes back as
+    # the override made it: cuRobo failed nothing the world could explain
+    def refusing(self, result, t0, q_goal=None):
+        assert super(Stationary, self)._finish(result, t0, q_goal=q_goal).success
+        return PlanResult.failure("INTERPOLATION_VALIDATION_FAILED", "jerk")
+
+    monkeypatch.setattr(Stationary, "_finish", refusing)
+    planner._motion_gen.plan_single = lambda *_: planned
+    planner._motion_gen.plan_single_js = lambda *_: planned
+    for name in plans:
+        res = plans[name]()
+        assert (res.success, res.status, res.error) == (
+            False,
+            "INTERPOLATION_VALIDATION_FAILED",
+            "jerk",
+        ), name

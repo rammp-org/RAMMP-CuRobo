@@ -742,8 +742,8 @@ class CuRoboPlanner:
         and where the world's boxes come from. Added after _finish, so an
         override of _finish cannot leave it out."""
         if res.success or (result is not None and bool(result.success.item())):
-            # nothing failed, or post-validation refused a plan cuRobo found
-            # and its error says why
+            # nothing failed, or post-validation or an override refused a
+            # plan cuRobo found and its error says why
             return res
         # cuRobo's status, read as _finish reads it: an override may report
         # the failure under a status of its own, which names neither the
