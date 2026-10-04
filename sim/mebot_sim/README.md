@@ -110,15 +110,16 @@ skipped.
   `standin.sizes` in `scenarios.yaml`, the sitting heights of the
   5th-percentile woman, the 50th-percentile man and the 95th-percentile man
   (ANSUR II row 8), in each posture, with its back at either end of the
-  backrest face's range: 18 bodies. Every point of each, sampled through
-  its volume on a 6 mm grid, lies in the person layer as the chair planner
-  pads it, or in the arm's carved column where the arm's own base is: no
-  part of the seated body is a place the planner would send the arm. The
-  column comes from the generator, as the layer does, and a column carved
-  too wide, or a body too small, would leave no gap to fail on. So two
-  bounds of `thresholds` in `scenarios.yaml` hold as well: at least
-  `covered_pct` percent of the body (99) lies in the layer itself, and the
-  body is the whole humanoid at the scale that seats it at its size, its
+  backrest face's range: 18 bodies. Every point of each, sampled through its
+  volume on a 6 mm grid, lies in the person layer as the chair planner pads
+  it, or in the arm's carved column, which holds the arm's base and the
+  space around it that no box may fill. The arm can move in that space, so a
+  part of the body there is not kept from it (the main README's **The chair
+  config**). The column comes from the generator, as the layer does, and a
+  column carved too wide, or a body too small, would leave no gap to fail
+  on. So two bounds of `thresholds` in `scenarios.yaml` hold as well: at
+  least `covered_pct` percent of the body (99) lies in the layer itself, and
+  the body is the whole humanoid at the scale that seats it at its size, its
   volume within `body_volume_pct` percent (2) of the humanoid's own times
   the scale cubed. The sizes are this suite's data, not the occupant
   `scripts/mebot_layers.yaml` sizes the layer for, so a layer that holds

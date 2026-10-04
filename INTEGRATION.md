@@ -77,9 +77,13 @@ config: `config:=gen3_mebot.yaml` for the node, or
 modelled with every joint at zero (layer `platform`, 16 boxes), and the
 person in it (layer `person`, 8 boxes) are then in every collision world the
 planner builds. Nothing models the rest of the chair: its seat, backrest,
-armrests and footplate, or the plate the arm is mounted on. See the README's
-**Obstacle layers** for how the layers are made and what they cost. For a
-caller:
+armrests and footplate, or the plate the arm is mounted on. Nor does the
+person layer cover the column carved around the arm's base (±0.105 m about
+its axis in x and y, z -0.040 to 0.409 m in `base_link`): most of it is open
+space beside the shoulder that the arm can move through, so the occupant's
+right hip, elbow or forearm beside the mount is not kept from the arm there.
+See the README's **Obstacle layers** for how the layers are made and what
+they cost. For a caller:
 
 - **A pushed scene replaces only your task geometry.** `set_world` and
   `update_world` replace the scene, as before; the layers the config lists

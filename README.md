@@ -216,6 +216,14 @@ the chair: its seat, backrest, armrests and footplate, or the plate the arm
 is mounted on. Over the seat and at the backrest the person layer is the
 only geometry.
 
+The person layer leaves a gap of its own: the column carved around the
+arm's base, ±0.105 m about the arm's axis in x and y and from z -0.040 to
+0.409 m (`base_link`), which no person box enters, since a padded box there
+would put every start state in collision. The arm's base and shoulder fill
+the middle of it; nearly two thirds of what the carve takes out of the
+person lies beside them, where the arm can move. So a part of the occupant
+beside the mount, the right hip, elbow or forearm, is not kept from the arm.
+
 The node logs the world's summary at start-up and in its ready line, and
 returns it with every world SetWorld takes — the visible proof that the
 chair config is active:

@@ -42,7 +42,8 @@
     without `layers`, as v1.0.0's constructor took, builds a planner with none
     (§7.4); with `RAMMP_CUROBO_GPU=1`, which `make verify` sets, a skip of the
     GPU tests fails (§9); the sim's client judges a flight on a report sampled
-    after it ended (§8).
+    after it ended (§8); the docs say that the person layer leaves the arm's
+    column open to the arm (§6.2, §6.4, §11; §13, risk 4).
 - **Issue:** <https://github.com/rammp-org/RAMMP-CuRobo/issues/19>
 - **Branch:** `feature/19-platform-layers`, off `origin/dev` (b734928, the
   v1.0.0 content), in the worktree `~/RAMMP-CuRobo-19`. Local commits only,
@@ -784,6 +785,15 @@ them `<segment>_<k>`.
 
 - This is physically forced. A person cannot occupy the arm's base, and any
   padded box there makes every state INVALID_START.
+- The column is a box around round spheres, so it holds more than the arm's base
+  and shoulder. Of the 0.013747 m³ carved from the person, 0.0086 m³ lies
+  outside the fixed spheres (2 mm grid), mostly beside the shoulder, and the
+  moving arm goes there: in 16,141 of 20,000 states drawn uniformly within the
+  limits, the centre of a moving sphere lies in the column outside the fixed
+  spheres (half_arm_1's mostly, the wrist's and the gripper's in some; cuRobo's
+  kinematics). The layer does not keep the arm from a body part there, the
+  occupant's right hip, elbow or forearm beside the mount, and the docs say so
+  (§11; §13, risk 4).
 - The carve stops at the column top. A full-height corridor would under-size the
   person exactly where the arm works.
 - The margin is 5 mm (`keep_out_margin_m`). It leaves the padded person 5.1 mm
@@ -882,7 +892,7 @@ backrest face 0.1587 and 0.2733:
   cases.** 99.11 to 100 % of the body is covered (0.042 to 0.045 m³ for the
   5th-percentile woman, 0.063 to 0.067 m³ for the 50th-percentile man, 0.076 to
   0.0805 m³ for the 95th-percentile man); the rest, up to 0.0007 m³, is inside
-  the arm's column, where the arm's own base is.
+  the arm's column, which the layer leaves open (§6.2).
 - Unpadded: 0, except the 95th-percentile man's `lean_lap` at 0.2733 (0.0001
   m³; the head passes the chest-front face), which lies inside the 0.02 m
   padding. Against the unpadded layer, 0.0006 to 0.0018 m³ of him lies inside
@@ -1627,8 +1637,10 @@ them.
   5th-percentile woman to the 95th-percentile man, +0.05 m on every face;
 - the headline workspace numbers (§13, risk 1);
 - what the layers leave out: the seat, backrest, armrests, footplate and mount
-  plate (the drive base is modelled at all joints zero), and that excluding the
-  person leaves nothing over the seat or at the backrest (§13, risks 4 and 5);
+  plate (the drive base is modelled at all joints zero), the arm's column, which
+  the person layer leaves open beside the shoulder (§6.2), and that excluding
+  the person leaves nothing over the seat or at the backrest (§13, risks 4 and
+  5);
 - the paired tests, `make sim` and `make sim-test`;
 - two Troubleshooting rows (an INVALID_START on the chair, a push refused as
   empty apart from the configured layers), and `scripts/generate_layers.py`
@@ -1653,7 +1665,8 @@ boxes only, and the paired cuboid tests are the Task-1 acceptance.
 
 **INTEGRATION.md**:
 
-- `config:=gen3_mebot.yaml`, and what of the chair it leaves out;
+- `config:=gen3_mebot.yaml`, and what of the chair and the occupant it leaves
+  out, the arm's column included;
 - pushed scenes replace only task geometry, including the start-up floor, so
   carry your own floor;
 - the bench retract is not a valid start on the chair; start from the measured
@@ -1841,6 +1854,8 @@ install follows. Local commits only, never pushed. Run tests with
 
    - Seat, armrests, footplate and mount plate are unmodelled.
    - Excluding the person also removes the only coverage of the backrest region.
+   - The person layer leaves the arm's column open (§6.2): beside the shoulder,
+     the occupant's right hip, elbow or forearm is not kept from the arm.
 
 1. **The MEBot is modelled at all joints zero.** The elevator and carriage move
    the envelope by up to about 0.2 m in x and 0.3 m in z. Under-coverage is zero
@@ -1967,6 +1982,7 @@ are gated.
 | Branch review (2026-10-04)                     | the 673 world files on this Jetson (the 656 box-opening worlds in `~/.ros/rammp_box_opening/worlds/`, this repo's 3 packaged worlds and 4 sim configs, box-opening's `world_bench.yaml` in 3 copies, RAMMP-generalized's 5 probe worlds, `~/RAMMP-CuRobo`'s 2), read with `_StrictLoader` and with plain PyYAML: 0 refused, 0 loaded differently; v1.0.0's `gen3.yaml` (`origin/dev`) read with `yaml.safe_load` and given to `CuRoboPlanner`: `KeyError: 'layers'` before any GPU work, until `__init__` read the key with a default                                                                                                                                                                                                                                                    |
 | Branch review: GPU skips                       | the core suite with `CUDA_VISIBLE_DEVICES=""`: 122 passed, 1 skipped ("CUDA is not available") and exit 0; with `RAMMP_CUROBO_GPU=1`, a collection error giving that reason, and exit 2. A run without torch does the same under Ubuntu's pytest 6.2.5                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | Branch review: a flight's report               | `client.Tester.fly` with the stubs of `test_client.py`, the result coming back while the client holds a report sampled mid-flight (`move` 5, `moving` true, no contact): before, the flight was judged on it ("flown, contacts \[\]"); after, `RuntimeError`, and a report from before the flight is refused as before. With that check deleted the old `test_client.py` still passed, 5 of 5 (the review's mutant M15 passed all 150 sim tests); the new tests fail on the new check deleted, or reduced to `move` alone                                                                                                                                                                                                                                                                |
+| Branch review: the arm's column                | the generator's column (x, y ±0.1051, z -0.0401 .. 0.4085) and its 5 fixed spheres, on a 2 mm grid: 0.019757 m³ of column, 0.013754 m³ of it in the person's envelope (the carve; the generator's 0.013747), 0.008622 m³ of that outside the fixed spheres. cuRobo's kinematics on the Jetson, 20,000 states drawn uniformly within the limits (seed 0): in 16,141 the centre of a moving sphere lies in the column outside the fixed spheres, half_arm_1's in most, the wrist's and the gripper's in some                                                                                                                                                                                                                                                                               |
 | Consumer world scan                            | 566 consumer worlds (the 563 in `~/.ros/rammp_box_opening/worlds/` on this Jetson, the kitchen, the bench, box-opening's `world_bench.yaml`; §4.6): 0 files newly refused; max 26 boxes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Git                                            | sha256 201ec24a... for the blob at 59d5aef, 80908b9 and 0a94cce and for `~/mebot.urdf`; `branch -r --contains`: 59d5aef only on `origin/feature/106-drive-base-publisher`, 80908b9 on `origin/dev` (= `origin/HEAD`), 0a94cce on `origin/main`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | cuRobo v0.7.8 source read                      | warm-up and early exits (motion_gen.py:1868-1960, 2105-2113, 3007-3015); `update_world` (motion_gen.py:1825-1837); cache init and load (geom/sdf/world.py:716, 724-727, 827-866); mesh `_init_cache` delegation (world_mesh.py:72-81); sphere buffer (cuda_robot_generator.py:759-771); `sum_collisions_` (sphere_obb_kernel.cu:2711); box count from device memory (sphere_obb_kernel.cu:2453); `enable_obstacle` / `enable_obb` / `get_obb_idx` (geom/sdf/world.py:978-1014, 1094-1110); `get_cuboid` and the cylinder trimesh (geom/types.py:99-132, 341); `get_obb_world` (geom/types.py:1096); inverse cube poses in `batch_tensor_cube` (geom/types.py:1309-1312); `normalize_quaternion` (types/math.py:536); MESH-checker traps (world_mesh.py:96-99, 101-117, 103-105, 167-173) |

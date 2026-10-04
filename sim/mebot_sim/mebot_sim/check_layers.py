@@ -16,20 +16,21 @@ and the layer files the generator writes, as the planner loads them.
   * G1, stand-in coverage. The seated stand-in, at each size of
     config/scenarios.yaml (standin.sizes: from the 5th-percentile woman to
     the 95th-percentile man), in each posture and with its back at either
-    end of the backrest face's CAD range, is sampled through its volume on
-    a 6 mm grid. Every point must lie in the person layer as the chair
-    planner pads it, or in the arm's carved column, where the arm's own
-    base is: any other point is a gap, a part of the body the planner does
-    not keep the arm out of. The gap of the unpadded layer is reported
-    beside it. The column is the generator's, and a column carved too wide,
-    or a body too small, leaves no gap either. So, with bounds from
-    config/scenarios.yaml's thresholds, covered_pct of the body or more must
-    lie in the layer itself, and the body must be the whole humanoid at the
-    scale that seats it at its size: its volume within body_volume_pct of
-    the humanoid's own times the scale cubed. The sizes are the scenarios',
-    not the occupant scripts/mebot_layers.yaml sizes the layer for, so a
-    layer that holds a smaller range of bodies than they span fails; with
-    no size, G1 would judge no body, and S0 is an error.
+    end of the backrest face's CAD range, is sampled through its volume on a
+    6 mm grid. Every point must lie in the person layer as the chair planner
+    pads it, or in the arm's carved column, which holds the arm's base and
+    the space around it that no box may fill: any other point is a gap. The
+    arm can move in that space too, so a part of the body in the column is
+    not kept from it either (README.md, The chair config). The gap of the
+    unpadded layer is reported beside it. The column is the generator's, and
+    a column carved too wide, or a body too small, leaves no gap either. So,
+    with bounds from config/scenarios.yaml's thresholds, covered_pct of the
+    body or more must lie in the layer itself, and the body must be the
+    whole humanoid at the scale that seats it at its size: its volume within
+    body_volume_pct of the humanoid's own times the scale cubed. The sizes
+    are the scenarios', not the occupant scripts/mebot_layers.yaml sizes the
+    layer for, so a layer that holds a smaller range of bodies than they
+    span fails; with no size, G1 would judge no body, and S0 is an error.
 
 Exit status 1 if a gate fails.
 """

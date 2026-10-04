@@ -226,7 +226,7 @@ def test_the_standin_is_inside_the_padded_person_layer(
 ):
     # spec 6.4: from the 5th-percentile woman to the 95th-percentile man, and
     # wherever the backrest face is in its CAD range, the body is in the
-    # padded person layer, or in the arm's column where the arm's base is
+    # padded person layer, or in the arm's column, which no box may fill
     seat = assets.data["person"]["seat"]
     face = (max if back == "front" else min)(seat["backrest_face_x"])
     height = SIZES[size] * 0.0254

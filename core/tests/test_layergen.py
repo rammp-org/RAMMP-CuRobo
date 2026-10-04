@@ -1834,8 +1834,8 @@ def test_committed_platform_covers_every_urdf_primitive():
 def test_committed_person_holds_every_occupant_of_its_range():
     # The committed boxes as the planner loads them, against every occupant
     # of spec 6.1 seated as scripts/mebot_layers.yaml seats the person (its
-    # mount, seat and margin): with the arm's column, where no occupant can
-    # be, they hold each one, margin and all. A size tuned in the data file
+    # mount, seat and margin): with the arm's column, which no box may fill,
+    # they hold each one, margin and all. A size tuned in the data file
     # may grow the person, never shrink it below that range. The sim's G1
     # cannot see that on the back of the knees: its three stand-ins pass the
     # layer below, and first fail near a thigh of 18.5 in.
