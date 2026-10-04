@@ -10,13 +10,18 @@ containerized for other RAMMP codebases), `sim/mebot_sim/` (the MEBot
 wheelchair sim stack, ROS 2 + MuJoCo; not part of the package, and
 COLCON_IGNOREd like `core/`).
 
-**This repo NEVER touches the arm** (issue #6, 2026-08-24): no executor, no
-`/joint_states` subscription, no controller or controller-manager client, no
-gripper client, no `execute` parameter, and no arm-package dependency in
-`package.xml`. `start_joints` is REQUIRED on both plan actions — the caller
-owns the robot and its state. The consumer is `kinova_arm_ros2`, which
-plans here and executes under its own gates; the dependency arrow points
-only that way. Do not add an edge back.
+**This repo NEVER touches the arm** (issue #6, 2026-08-24): outside `sim/`
+there is no executor, no `/joint_states` subscription, no controller or
+controller-manager client, no gripper client, no `execute` parameter, and
+no arm-package dependency in a `package.xml`. `start_joints` is REQUIRED on
+both plan actions — the caller owns the robot and its state. The consumer
+is `kinova_arm_ros2`, which plans here and executes under its own gates;
+the dependency arrow points only that way. Do not add an edge back. The
+sim, `sim/mebot_sim`, is a test kit outside the package: it depends on
+`rammp_arm_interfaces`, its simulated arm serves the driver's names, and
+its client subscribes `/joint_states` and sends `/execute_joint_trajectory`
+goals, to the sim arm only and never on the bench's domain, 0 (see
+Safety). None of it may leave `sim/`.
 
 Removed deliberately, git history has it — don't reintroduce casually: the
 camera-scanning and palm-demo code (2026-08-14), and `executor.py`,

@@ -121,8 +121,7 @@ skipped.
   fewer bodies than they span fails: with the legs sized by the
   95th-percentile thigh alone, the shins and feet of the two smaller bodies
   hang behind them, and 6 of the 18 fail. With no size listed, S0 is an
-  error: G1 would judge no body. Spec 8's G1 is the gap alone; the two
-  bounds are this suite's.
+  error: G1 would judge no body.
 - **G2, no contact with the layers on.** No flight planned with the layers
   that cover the scene touches the MEBot, the stand-in or the floor. A
   refusal passes: the planner may decline a request it cannot do safely.

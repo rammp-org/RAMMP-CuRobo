@@ -199,4 +199,8 @@ Nothing in this repo can move the arm, and that is the safety model — one
 execution authority, not two with different rules. `kinova_arm_ros2` owns
 execution and its own gates. Do not add an edge back: no executor, no
 `/joint_states` subscription, no controller client, no arm-package dependency in
-`package.xml`.
+`package.xml`. The one exception is a test kit, the MEBot sim
+(`sim/mebot_sim`): its client reads `/joint_states` and flies
+`/execute_joint_trajectory` on the sim's own arm only, never on the bench's ROS
+domain, 0, and never beside a real driver (see its README's Safety). Keep all
+of that inside `sim/`.

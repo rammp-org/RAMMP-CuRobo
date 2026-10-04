@@ -29,8 +29,7 @@ and the layer files the generator writes, as the planner loads them.
     the humanoid's own times the scale cubed. The sizes are the scenarios',
     not the occupant scripts/mebot_layers.yaml sizes the layer for, so a
     layer that holds a smaller range of bodies than they span fails; with
-    no size, G1 would judge no body, and S0 is an error. Spec 8's G1 is the
-    gap alone.
+    no size, G1 would judge no body, and S0 is an error.
 
 Exit status 1 if a gate fails.
 """

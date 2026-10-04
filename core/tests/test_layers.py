@@ -1556,6 +1556,10 @@ def test_ignore_drops_only_an_excludable_layer(tmp_path):
     assert list(kept) == [
         key for key, source in sources.items() if source != "block" and key != "obj_son"
     ]
+    # a bare string names one prop too: 1.0.0 read 'son' as its letters and
+    # kept the prop
+    _, kept = compose_cuboids(scene, ignore="son", layers=config)
+    assert list(kept) == [key for key in sources if key != "obj_son"]
     # a name that is no layer and no prop changes nothing, though it is an
     # obstacle's or a layer box's: the obstacle stays, the safe direction
     unknown = {"nothing", "table", "deck", "person/lap"}

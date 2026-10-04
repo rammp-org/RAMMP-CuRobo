@@ -29,10 +29,12 @@
     driver is refused; the client flies only beside the sim) and its import
     guard (in the launch, not the planner); G0, G1 and G2 say what the suite
     checks beyond their earlier text; §4.5 to §4.7, §5.5 and §7.4 add the
-    refusals and messages the code has; §9 and §10 list what was added; §13
-    risk 1 states how its joint samples are drawn (two full turns for the
-    continuous joints, not cuRobo's ±6.0 rad), which its numbers already
-    followed.
+    refusals and messages the code has; §4.7 and §11 add that a bare-string
+    `ignore=`, now one name, changes a v1.0.0 caller's world, and §11 that the
+    sim is the one exception to "this repo never touches the arm"; §9 and §10
+    list what was added; §13 risk 1 states how its joint samples are drawn
+    (two full turns for the continuous joints, not cuRobo's ±6.0 rad), which
+    its numbers already followed.
 - **Issue:** <https://github.com/rammp-org/RAMMP-CuRobo/issues/19>
 - **Branch:** `feature/19-platform-layers`, off `origin/dev` (b734928, the
   v1.0.0 content), in the worktree `~/RAMMP-CuRobo-19`. Local commits only,
@@ -403,8 +405,11 @@ boxes), the kitchen, the bench (`world_real_bench.yaml`) and box-opening's
   `rammp_adl/sheppy_backend.py:501-505`) cannot drop the chair.
 - **Consumers on `gen3.yaml` / `gen3_real.yaml` (`layers: []`)** get
   byte-identical worlds. This is tested against the unchanged v1.0.0
-  `world_cuboids`. Only the message strings grow: failure details (§7.4), the
-  SetWorld success message and the node's logs (§7.5).
+  `world_cuboids`. The one exception is a bare-string `ignore=` (§4.5):
+  `ignore='mug'` now leaves out the prop `mug`, which v1.0.0 kept, reading the
+  string as the set of its letters. Otherwise only the message strings grow:
+  failure details (§7.4), the SetWorld success message and the node's logs
+  (§7.5).
 - **New refusals** (duplicates, non-finite or non-positive boxes, malformed
   entries) reject none of the 566 known consumer worlds (the same scan: 0
   duplicates, 0 bad numbers, 0 `/` names, 0 props named like a layer).
@@ -1586,7 +1591,9 @@ them.
 - the paired tests, `make sim` and `make sim-test`;
 - two Troubleshooting rows (an INVALID_START on the chair, a push refused as
   empty apart from the configured layers), and `scripts/generate_layers.py`
-  and `sim/` in the tree listing.
+  and `sim/` in the tree listing;
+- the sim as the one thing here that flies a plan, on its simulated arm only,
+  where the README says nothing here can move the arm.
 
 **Task-1 mesh answer:** meshes were not attempted. v0.7.8's MESH checker has
 three silent traps:
@@ -1624,7 +1631,9 @@ boxes only, and the paired cuboid tests are the Task-1 acceptance.
 - nothing padded may touch the arm's joint-independent sphere column (z -0.015
   .. 0.383 m);
 - worktree tests and `make layers` need `PYTHONPATH=<worktree>/core`;
-- the sim stack never runs on ROS domain 0 (§8).
+- the sim stack never runs on ROS domain 0 (§8), and it is the one exception to
+  "this repo never touches the arm": its client reads `/joint_states` and
+  flies `/execute_joint_trajectory`, on the sim arm only.
 
 **Versioning (CONTRIBUTING.md:108-171):**
 
@@ -1651,8 +1660,9 @@ boxes only, and the paired cuboid tests are the Task-1 acceptance.
   warns of an invalid IK seed; SetWorld success messages and plan-failure
   errors carry the world summary; `_finish` keeps its v1.0.0 signature and the
   note follows it; `make_world_config`'s default cache is 60.
-- **Fixed**: duplicate box names refused instead of collapsed; non-finite or
-  non-positive boxes, and a `world_padding` below 0 or not finite, refused;
+- **Fixed**: a bare-string `ignore=` read as one name, not the set of its
+  letters (§4.5); duplicate box names refused instead of collapsed; non-finite
+  or non-positive boxes, and a `world_padding` below 0 or not finite, refused;
   guards run without cuRobo; malformed scene entries name file and entry; world
   files, planner configs and the robot config read as UTF-8; a key written
   twice in a planner config refused instead of the last one kept, and a

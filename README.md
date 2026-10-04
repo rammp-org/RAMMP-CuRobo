@@ -17,7 +17,8 @@ rammp_curobo_ros/         Layer 2 — plan-only planner node + tour_demo
                           into one merged trajectory; nothing moves)
 examples/                 plan_only.py (no ROS)
 scripts/                  config baking; generate_layers.py (the MEBot
-                          wheelchair's obstacle layers, from its URDF)
+                          layers: the chair and floor from its URDF, the
+                          person from ANSUR II sizes)
 sim/                      mebot_sim: the planner on the MEBot in a MuJoCo
                           sim over ROS 2 (`make sim`, Jetson)
 docker/                   the planning service as a container (Jetson/JP6)
@@ -27,8 +28,11 @@ docs/HARDWARE_BRINGUP.md  the real-arm runbook — READ BEFORE TOUCHING HARDWARE
 > **Nothing in this repo can move the arm.** There is no executor, no
 > controller client and no execute flag — a plan is data until whoever
 > owns the robot chooses to run it, under their gates (on this bench,
-> `kinova_arm_ros2`). A human still holds the physical e-stop during ALL
-> hardware runs. See **issue #6** for why the boundary is drawn here.
+> `kinova_arm_ros2`). The one exception is a test kit: the MEBot sim
+> (`sim/`) flies plans through the arm driver's interface, but only on its
+> simulated arm, never on the bench's ROS domain (0) and never beside a
+> real driver. A human still holds the physical e-stop during ALL hardware
+> runs. See **issue #6** for why the boundary is drawn here.
 
 ## Install (Jetson AGX Orin)
 
@@ -146,7 +150,9 @@ the arm layer's call, not the planner's.
 This repo plans. It does not execute, and it cannot: there is no
 `ExecuteTrajectory` action, no `FollowJointTrajectory` client, no
 `/joint_states` subscription, no controller-manager client, no gripper
-client, no `execute` parameter.
+client, no `execute` parameter. Only the MEBot sim's test client reads
+`/joint_states` and sends trajectories, and only to its simulated arm (see
+**How it is tested**).
 
 Executing a plan means handing the returned `trajectory_msgs/JointTrajectory`
 to whoever owns the robot, with their gates and their e-stop discipline.
