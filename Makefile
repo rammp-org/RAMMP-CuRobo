@@ -29,7 +29,8 @@ lint:                      ## pre-commit run --all-files
 
 # test_smoke.py importorskips torch/cuRobo and needs a live CUDA device, so off
 # the Jetson this runs the offline half and skips the rest. That is expected;
-# `make verify` is the one that exercises the GPU path.
+# `make verify` is the one that exercises the GPU path. On the Jetson,
+# RAMMP_CUROBO_GPU=1 make test fails where the GPU half would skip.
 test:                      ## Core tests (offline everywhere, GPU on the Jetson)
 	python3 -m pytest core/tests -q
 	python3 -m pytest rammp_curobo_ros/test -q -p no:anyio
@@ -44,8 +45,11 @@ colcon:                    ## Build the interfaces and the node
 build:                     ## Build the Jetson image (~1 h, ~15 GB)
 	docker build -f docker/Dockerfile -t $(IMAGE) .
 
+# RAMMP_CUROBO_GPU=1: the GPU half is the point here, so where it would skip
+# (no device passed through, a torch or cuRobo that does not import) the run
+# fails instead of passing on the offline half.
 verify:                    ## Run the core suite inside the image (needs a GPU)
-	docker run --rm --runtime nvidia $(IMAGE) \
+	docker run --rm --runtime nvidia -e RAMMP_CUROBO_GPU=1 $(IMAGE) \
 	  python3 -m pytest /opt/rammp_curobo_src/core/tests -q
 
 run:                       ## Run the planner node from the image

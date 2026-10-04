@@ -49,6 +49,8 @@ Fixed says otherwise: a world 1.0.0 built wrong is refused, and a bare-string
 - The ROS 2 sim stack `sim/mebot_sim`: a MuJoCo Gen3 serving the arm driver's
   names beside the exact MEBot and a seated body, two planner nodes, and a
   paired suite; `make sim` and `make sim-test` (Jetson).
+- `RAMMP_CUROBO_GPU=1` makes a GPU test that would skip fail the core suite
+  instead, so it cannot pass on its offline tests alone; `make verify` sets it.
 
 ### Changed
 

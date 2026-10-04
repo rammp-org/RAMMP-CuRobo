@@ -5,6 +5,8 @@ These run anywhere (CI, a laptop) — no torch, no cuRobo, no ROS.
 
 import importlib.util
 import math
+import os
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -53,6 +55,46 @@ def test_conftest_refuses_only_another_checkouts_core(tmp_path, monkeypatch):
     )
     # a non-editable install (the image) is not another checkout
     imported_from(tmp_path / "site-packages")
+
+
+def test_the_gpu_tests_cannot_skip_where_they_must_run():
+    # On the Jetson they are the gate, and a run that skipped them would pass
+    # on the offline tests alone: with RAMMP_CUROBO_GPU=1, which make verify
+    # sets, a skip of test_smoke.py fails. Without it, as in CI, they skip.
+    # The child pytest runs an offline test and test_smoke.py, as a machine
+    # without torch would
+    repo = Path(__file__).resolve().parents[2]
+    env = {k: v for k, v in os.environ.items() if k != "RAMMP_CUROBO_GPU"}
+    env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [str(repo / "core"), env.get("PYTHONPATH")])
+    )
+    code = (
+        "import sys; sys.modules['torch'] = None; import pytest; "
+        "sys.exit(pytest.main(sys.argv[1:]))"
+    )
+    tests = ["core/tests/test_offline.py::test_packaged_configs_exist"]
+    tests += ["core/tests/test_smoke.py"]
+
+    def run(**switch):
+        return subprocess.run(
+            [sys.executable, "-c", code, *tests, "-q", "-p", "no:cacheprovider"],
+            cwd=repo,
+            env=dict(env, **switch),
+            capture_output=True,
+            text=True,
+        )
+
+    skipped = run()
+    assert skipped.returncode == 0, skipped.stdout + skipped.stderr
+    assert "1 passed, 1 skipped" in skipped.stdout
+    # a module that cannot be collected stops the whole run
+    failed = run(RAMMP_CUROBO_GPU="1")
+    assert failed.returncode != 0
+    assert "1 error" in failed.stdout and "passed" not in failed.stdout
+    assert (
+        "RAMMP_CUROBO_GPU=1 skips no GPU test: Skipped: could not import 'torch'"
+        in failed.stdout
+    ), failed.stdout
 
 
 def test_packaged_configs_exist():

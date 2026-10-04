@@ -100,7 +100,10 @@ python3 -m pytest core/tests -q
 The offline tests run anywhere; the GPU tests plan real collision-free
 trajectories in the sim-kitchen world and on the MEBot wheelchair (first
 run compiles kernels — takes a minute or two; warm, they take ~30 s and
-the whole suite ~45 s). Or plan one motion directly:
+the whole suite ~45 s). Without CUDA, torch or cuRobo the GPU tests skip,
+and the suite passes on the offline tests alone; where they must run, as
+on the Jetson, set `RAMMP_CUROBO_GPU=1` and a skip fails instead.
+`make verify` sets it. Or plan one motion directly:
 
 ```bash
 python3 examples/plan_only.py --joints 0.3 0.262 3.142 -2.269 0.0 0.960 1.571

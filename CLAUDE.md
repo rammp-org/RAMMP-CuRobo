@@ -130,13 +130,17 @@ the sim alone serves them. Keep all three.
 python3 -m pip install --user --no-build-isolation -e ./core   # pip quirks: see README
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install --packages-select rammp_curobo_interfaces rammp_curobo_ros
-python3 -m pytest core/tests -q          # offline + GPU smoke
+RAMMP_CUROBO_GPU=1 python3 -m pytest core/tests -q   # offline + GPU smoke
 python3 -m pytest rammp_curobo_ros/test -q -p no:anyio
 ros2 run rammp_curobo_ros tour_demo      # live end-to-end plan check
 make layers                              # regenerate the MEBot layers: no diff
 make sim-test                            # the sim package's tests (Jetson)
 make sim                                 # the MEBot sim suite (Jetson; GPU + ROS)
 ```
+
+`RAMMP_CUROBO_GPU=1` turns a skip of the GPU tests (no CUDA, no torch or
+cuRobo) into a failure, so on the Jetson the core suite cannot pass on its
+offline tests alone; `make verify` sets it, CI does not.
 
 pytest needs the repo-root `pytest.ini` (`-p no:anyio` — user-site anyio
 plugin clashes with system pytest; `-p no:launch_testing -p no:launch_ros`

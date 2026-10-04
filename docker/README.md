@@ -136,6 +136,10 @@ including merging chained plans into one continuous trajectory).
 ## Verify the image (no arm needed)
 
 ```bash
-docker run --rm --runtime nvidia rammp-curobo:jp6 \
+docker run --rm --runtime nvidia -e RAMMP_CUROBO_GPU=1 rammp-curobo:jp6 \
     python3 -m pytest /opt/rammp_curobo_src/core/tests -q
 ```
+
+`RAMMP_CUROBO_GPU=1` fails the run where the GPU tests would skip (no GPU
+passed through, a torch or cuRobo that does not import), instead of
+passing it on the offline tests alone.

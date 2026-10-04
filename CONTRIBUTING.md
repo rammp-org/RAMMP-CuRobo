@@ -100,6 +100,9 @@ uv run ~/.claude/skills/hardware-loop/scripts/hil.py exec -- bash -lc \
   'cd RAMMP-CuRobo && make verify'
 ```
 
+`make verify` runs it with `RAMMP_CUROBO_GPU=1`, under which a GPU test that
+would skip fails instead: the gate cannot pass on the offline half alone.
+
 `ros2 run rammp_curobo_ros tour_demo` is the live end-to-end plan check.
 
 An x86-64 CUDA image — which *could* be functionally tested in CI, unlike the

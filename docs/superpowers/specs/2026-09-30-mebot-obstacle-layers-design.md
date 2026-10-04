@@ -40,7 +40,8 @@
   - 2026-10-04, after the whole-branch review: world files refuse a key written
     twice, as planner configs do (§4.2, §7.1, deviation 13); a config dict
     without `layers`, as v1.0.0's constructor took, builds a planner with none
-    (§7.4).
+    (§7.4); with `RAMMP_CUROBO_GPU=1`, which `make verify` sets, a skip of the
+    GPU tests fails (§9).
 - **Issue:** <https://github.com/rammp-org/RAMMP-CuRobo/issues/19>
 - **Branch:** `feature/19-platform-layers`, off `origin/dev` (b734928, the
   v1.0.0 content), in the worktree `~/RAMMP-CuRobo-19`. Local commits only,
@@ -1406,7 +1407,8 @@ expected (7 of 8 reaches planned), with `/joint_states` at 50 Hz and plans in
 ## 9. Tests (mapped to the issue's tasks)
 
 Offline tests run in CI on amd64 and arm64 (numpy, PyYAML, pytest). GPU tests
-run on the Jetson (`test_smoke.py`, which skips without CUDA). The sim runs
+run on the Jetson (`test_smoke.py`, which skips without CUDA; with
+`RAMMP_CUROBO_GPU=1`, which `make verify` sets, that skip fails). The sim runs
 through `make sim` (§8), and its package's own tests through `make sim-test`.
 On the Jetson (2026-10-03) the core suite passes 139 (`test_offline.py` 15,
 `test_layers.py` 86, `test_layergen.py` 18, `test_smoke.py` 20) and
@@ -1416,7 +1418,12 @@ On the Jetson (2026-10-03) the core suite passes 139 (`test_offline.py` 15,
 It raises `pytest.UsageError` only when `rammp_curobo` is imported from a
 `core/` directory **other than this checkout's**, which is the host's editable
 install of `~/RAMMP-CuRobo`. It cannot trip in CI (editable install of the same
-checkout) or in the image (non-editable, site-packages).
+checkout) or in the image (non-editable, site-packages). With
+`RAMMP_CUROBO_GPU=1` it also turns a skip in `test_smoke.py` into a failure
+that gives the skip's reason, as `MEBOT_SIM_STRICT=1` does for the sim's tests
+(§8): the GPU tests are the issue's paired acceptance tests, and without it a
+Jetson whose torch, cuRobo or CUDA device is missing passes the core suite on
+its offline tests alone. CI leaves it unset and skips them.
 
 `pytest.ini` addopts become `-p no:anyio -p no:launch_testing -p no:launch_ros`.
 That is required on this Jetson with ROS on PYTHONPATH: pytest 9.1.1 then fails
@@ -1557,6 +1564,7 @@ need no GPU.
 | `test_cli_writes_only_after_every_gate_and_check_prints_a_diff` (generator) | the CLI writes the three files only when every gate passes, and `--check` exits 1 with a unified diff after a hand edit                          |
 | `test_committed_person_regenerates_without_the_urdf` (generator)            | the committed person file regenerates byte for byte without the URDF, wherever the suite runs                                                    |
 | `test_conftest_refuses_only_another_checkouts_core` (`test_offline.py`)     | the conftest guard trips for another checkout's `core/`, not for an installed package                                                            |
+| `test_the_gpu_tests_cannot_skip_where_they_must_run` (`test_offline.py`)    | a child pytest without torch skips `test_smoke.py` and passes; with `RAMMP_CUROBO_GPU=1` the skip is a collection error giving its reason        |
 
 ## 10. File changes
 
@@ -1575,7 +1583,7 @@ need no GPU.
 | `core/rammp_curobo/configs/layer_mebot_floor.yaml`                            | add (generated) | floor slab at the URDF ground                                                                                                                                                       |
 | `scripts/generate_layers.py`                                                  | add             | the CPU generator and CLI (`--check`, `--offline`, `--clone`, `--cache`)                                                                                                            |
 | `scripts/mebot_layers.yaml`                                                   | add             | generator inputs with provenance                                                                                                                                                    |
-| `core/tests/conftest.py`                                                      | add             | wrong-tree import guard                                                                                                                                                             |
+| `core/tests/conftest.py`                                                      | add             | wrong-tree import guard; with `RAMMP_CUROBO_GPU=1`, a skip of the GPU tests fails                                                                                                   |
 | `core/tests/test_layers.py`                                                   | add             | composition and loading tests (Task 2 and 4)                                                                                                                                        |
 | `core/tests/test_layergen.py`                                                 | add             | generator tests including regen diff-assert and independent sampler (Task 3 and 4)                                                                                                  |
 | `core/tests/test_offline.py`                                                  | modify          | new packaged files; drift test covers `layers`                                                                                                                                      |
@@ -1583,14 +1591,14 @@ need no GPU.
 | `rammp_curobo_ros/rammp_curobo_ros/planner_node.py`                           | modify          | summary in the start-up log, the ready log and the SetWorld success message                                                                                                         |
 | `sim/mebot_sim/` (package, launch files, config, README), `sim/COLCON_IGNORE` | add             | the ROS sim stack (§8), with the package's own tests in `test/` (`make sim-test`)                                                                                                   |
 | `pytest.ini`                                                                  | modify          | `-p no:launch_testing -p no:launch_ros`                                                                                                                                             |
-| `Makefile`                                                                    | modify          | `layers`, `sim-build`, `sim-test` and `sim` targets (+ `.PHONY`)                                                                                                                    |
+| `Makefile`                                                                    | modify          | `layers`, `sim-build`, `sim-test` and `sim` targets (+ `.PHONY`); `verify` sets `RAMMP_CUROBO_GPU=1`                                                                                |
 | `.github/workflows/build.yml`                                                 | modify          | guard step: one unpiped pytest invocation per offline test file (`test_offline.py`, `test_layers.py`, `test_layergen.py`)                                                           |
-| `README.md`                                                                   | modify          | "Obstacle layers: the wheelchair and the person" section (includes the Task-1 mesh answer); tree listing adds `scripts/generate_layers.py` and `sim/`                               |
+| `README.md`                                                                   | modify          | "Obstacle layers: the wheelchair and the person" section (includes the Task-1 mesh answer); tree listing adds `scripts/generate_layers.py` and `sim/`; `RAMMP_CUROBO_GPU=1`         |
 | `INTEGRATION.md`                                                              | modify          | "Planning on the MEBot (≥ 1.1.0)"                                                                                                                                                   |
-| `CLAUDE.md`                                                                   | modify          | invariants (§11)                                                                                                                                                                    |
-| `CONTRIBUTING.md`                                                             | modify          | building and testing: `make layers` (clone or network, must be a no-op), `make sim` (Jetson); `sim/` added to the "Not covered" line (:127)                                         |
+| `CLAUDE.md`                                                                   | modify          | invariants (§11); `RAMMP_CUROBO_GPU=1` in the core test command                                                                                                                     |
+| `CONTRIBUTING.md`                                                             | modify          | building and testing: `make layers` (clone or network, must be a no-op), `make sim` (Jetson), `make verify`'s `RAMMP_CUROBO_GPU=1`; `sim/` added to the "Not covered" line (:127)   |
 | `CHANGELOG.md`                                                                | modify          | `[Unreleased]`: Added / Changed / Fixed                                                                                                                                             |
-| `docker/README.md`                                                            | modify          | `config:=gen3_mebot.yaml` example                                                                                                                                                   |
+| `docker/README.md`                                                            | modify          | `config:=gen3_mebot.yaml` example; `RAMMP_CUROBO_GPU=1` in the image's test command                                                                                                 |
 
 `rammp_curobo_interfaces/` and `core/pyproject.toml` are **unchanged**.
 `.gitignore` and `.dockerignore` gain `.sim_ws/`. The sim's results live outside
@@ -1617,7 +1625,9 @@ them.
   empty apart from the configured layers), and `scripts/generate_layers.py`
   and `sim/` in the tree listing;
 - the sim as the one thing here that flies a plan, on its simulated arm only,
-  where the README says nothing here can move the arm.
+  where the README says nothing here can move the arm;
+- beside the smoke test, `RAMMP_CUROBO_GPU=1`, which fails a skip of the GPU
+  tests and which `make verify` sets (§9).
 
 **Task-1 mesh answer:** meshes were not attempted. v0.7.8's MESH checker has
 three silent traps:
@@ -1681,7 +1691,8 @@ boxes only, and the paired cuboid tests are the Task-1 acceptance.
   `world_mebot.yaml`; `scripts/generate_layers.py`, `make layers` and the CI
   regeneration; `world_boxes` and `world_summary()`; which-layer attribution in
   failures and `check_state_valid`; the fixed-sphere refusal; the ROS sim stack
-  `sim/mebot_sim`, `make sim` and `make sim-test`.
+  `sim/mebot_sim`, `make sim` and `make sim-test`; `RAMMP_CUROBO_GPU=1`, which
+  `make verify` sets.
 - **Changed**: warm-up runs before config layers load, and the start-up log
   warns of an invalid IK seed; SetWorld success messages and plan-failure
   errors carry the world summary; `_finish` keeps its v1.0.0 signature and the
@@ -1945,6 +1956,7 @@ are gated.
 | Docs (Task 10, 2026-10-03)                     | the platform's true shapes on a 1 mm lattice: 0.133020 m³, so the layer's 0.152908 m³ is 14.95 % over them (14.70 % on a 2 mm lattice); §13 risk 1's samples reproduced exactly, and 98.1, 88.4 and 2.5 % in cuRobo's ±6.0 rad; the retract 154.4 mm into `person/lap` and 53.4 mm clear of the platform; v1.0.0's code (`origin/dev`) given `gen3_mebot.yaml`: "config 'gen3_mebot.yaml' not found", and given the files mounted: "collision world is empty"; a wheel built from `core/` holds the five new configs; `make sim` on domain 88 (about three minutes, the build included): 45 cases, G0 to G7 PASS, 7 of 8 reaches flown; `make sim-test` 150 and the core suite 139 passed                                                                                                |
 | Docs review (2026-10-03)                       | warm on the Jetson, `test_smoke.py`'s 20 GPU tests took 29.1 and 29.6 s and the core suite 42.5 s (pytest's times); in the committed layer files the padded platform tops out at z -0.0071 m in base_link, 0.1016 m below the seat pan's top (0.0945 m), and of the chair world's boxes only `person/torso_head_0` reaches the backrest (from its rear face to the front end of its face's range, 0.2 m either side of the centreline, up to 0.5 m above the pan)                                                                                                                                                                                                                                                                                                                        |
 | Branch review (2026-10-04)                     | the 673 world files on this Jetson (the 656 box-opening worlds in `~/.ros/rammp_box_opening/worlds/`, this repo's 3 packaged worlds and 4 sim configs, box-opening's `world_bench.yaml` in 3 copies, RAMMP-generalized's 5 probe worlds, `~/RAMMP-CuRobo`'s 2), read with `_StrictLoader` and with plain PyYAML: 0 refused, 0 loaded differently; v1.0.0's `gen3.yaml` (`origin/dev`) read with `yaml.safe_load` and given to `CuRoboPlanner`: `KeyError: 'layers'` before any GPU work, until `__init__` read the key with a default                                                                                                                                                                                                                                                    |
+| Branch review: GPU skips                       | the core suite with `CUDA_VISIBLE_DEVICES=""`: 122 passed, 1 skipped ("CUDA is not available") and exit 0; with `RAMMP_CUROBO_GPU=1`, a collection error giving that reason, and exit 2. A run without torch does the same under Ubuntu's pytest 6.2.5                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | Consumer world scan                            | 566 consumer worlds (the 563 in `~/.ros/rammp_box_opening/worlds/` on this Jetson, the kitchen, the bench, box-opening's `world_bench.yaml`; §4.6): 0 files newly refused; max 26 boxes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Git                                            | sha256 201ec24a... for the blob at 59d5aef, 80908b9 and 0a94cce and for `~/mebot.urdf`; `branch -r --contains`: 59d5aef only on `origin/feature/106-drive-base-publisher`, 80908b9 on `origin/dev` (= `origin/HEAD`), 0a94cce on `origin/main`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | cuRobo v0.7.8 source read                      | warm-up and early exits (motion_gen.py:1868-1960, 2105-2113, 3007-3015); `update_world` (motion_gen.py:1825-1837); cache init and load (geom/sdf/world.py:716, 724-727, 827-866); mesh `_init_cache` delegation (world_mesh.py:72-81); sphere buffer (cuda_robot_generator.py:759-771); `sum_collisions_` (sphere_obb_kernel.cu:2711); box count from device memory (sphere_obb_kernel.cu:2453); `enable_obstacle` / `enable_obb` / `get_obb_idx` (geom/sdf/world.py:978-1014, 1094-1110); `get_cuboid` and the cylinder trimesh (geom/types.py:99-132, 341); `get_obb_world` (geom/types.py:1096); inverse cube poses in `batch_tensor_cube` (geom/types.py:1309-1312); `normalize_quaternion` (types/math.py:536); MESH-checker traps (world_mesh.py:96-99, 101-117, 103-105, 167-173) |
