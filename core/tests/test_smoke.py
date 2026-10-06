@@ -763,6 +763,73 @@ def test_plans_keep_curobo_spheres_outside_every_padded_box(
     assert not deep, "mm into a padded box, by (goal, box): %s" % deep
 
 
+def test_held_and_via_plans_on_the_chair_keep_out_of_its_layers(
+    chair_planner, chair_states
+):
+    # #16's orientation hold and #17's via point plan through plan_to_pose's
+    # own paths. On the chair they must plan in the world with its layers:
+    # a held or via plan from the retract, which is inside the padded person,
+    # is refused and its error names the person box; and the plans that do
+    # come back keep cuRobo's spheres out of every padded box
+    from rammp_curobo.constraints import HOLD_FIXED, PoseConstraint, ViaPoint
+
+    fixed = PoseConstraint(hold=HOLD_FIXED)
+    via = ViaPoint(offset_m=0.05)
+    world = re.compile(
+        r" \[world: \d+ boxes: .*config layers: platform 16, person 8 .*\]$"
+    )
+    retract = chair_planner.retract_pose
+    pos, quat = chair_planner.fk(retract)
+    for kind, kw in (("hold", dict(constraint=fixed)), ("via", dict(via=via))):
+        res = chair_planner.plan_to_pose(pos, quat, retract, **kw)
+        assert not res.success, kind
+        assert "INVALID_START" in res.status, (kind, res.status)
+        assert re.search(r"\[start collides with person/\w+ \(\d+ mm\)", res.error), (
+            kind,
+            res.error,
+        )
+        assert world.search(res.error), (kind, res.error)
+
+    # from a valid start to the seeded valid goals' tool points: held, at the
+    # start's own orientation, and approached through a via point at the
+    # goal's
+    start, goals = chair_states
+    _, start_quat = chair_planner.fk(start)
+    boxes = _cuboids(chair_planner)
+    planned, deep, failed = Counter(), {}, []
+    for i, goal in enumerate(goals):
+        goal_pos, goal_quat = chair_planner.fk(goal)
+        requests = (
+            ("hold", goal_pos, start_quat, dict(constraint=fixed)),
+            ("via", goal_pos, goal_quat, dict(via=via)),
+        )
+        for kind, p, q, kw in requests:
+            res = chair_planner.plan_to_pose(p, q, start, **kw)
+            if not res.success:
+                failed.append((kind, i, res.status, res.error))
+                continue
+            planned[kind] += 1
+            spheres = _spheres(chair_planner, _path(res, start))
+            hits = sphere_box_penetration(spheres[spheres[..., 3] > 0], boxes)
+            deep.update(
+                {(kind, i, key): 1e3 * d for key, d in hits.items() if d > 0.0005}
+            )
+    # a failure cuRobo reports says where the world's boxes come from; one the
+    # planner refuses after a plan cuRobo found (the hold check) has its own
+    for kind, i, status, error in failed:
+        if status not in ("CONSTRAINT_VIOLATED", "CONSTRAINT_UNSATISFIABLE"):
+            assert world.search(error), (kind, i, status, error)
+    print(
+        "\n  chair: %d held and %d via plans of 8 each; failures: %s"
+        % (planned["hold"], planned["via"], [(k, i, s) for k, i, s, _ in failed])
+    )
+    assert planned["via"] >= 1 and planned["hold"] >= 1, (
+        "too few plans to check: %s; failures: %s"
+        % (dict(planned), [(k, i, s) for k, i, s, _ in failed])
+    )
+    assert not deep, "mm into a padded box, by (kind, goal, box): %s" % deep
+
+
 def _rotmat(q_xyzw):
     x, y, z, w = q_xyzw
     return np.array(

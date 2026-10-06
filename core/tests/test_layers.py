@@ -2516,3 +2516,124 @@ def test_a_subclass_overriding_the_v100_finish_plans_and_is_explained(monkeypatc
             "INTERPOLATION_VALIDATION_FAILED",
             "jerk",
         ), name
+
+
+def _pose_cost_stand_in(monkeypatch):
+    """cuRobo's PoseCostMetric, as far as _plan_config and the reset after a
+    raise use it: each metric records how it was made, a hold as ("hold",
+    kwargs) and a via point as ("via", kwargs)."""
+
+    class PoseCostMetric:
+        def __init__(self, **kw):
+            self.made = ("hold", kw)
+
+        @classmethod
+        def create_grasp_approach_metric(cls, **kw):
+            metric = cls.__new__(cls)
+            metric.made = ("via", kw)
+            return metric
+
+        @classmethod
+        def reset_metric(cls):
+            metric = cls.__new__(cls)
+            metric.made = ("reset", {})
+            return metric
+
+    module = types.ModuleType("curobo.rollout.cost.pose_cost")
+    module.PoseCostMetric = PoseCostMetric
+    monkeypatch.setitem(sys.modules, "curobo.rollout.cost.pose_cost", module)
+
+
+def test_held_and_via_plans_on_the_chair_plan_in_its_layers_and_are_explained(
+    monkeypatch,
+):
+    # #16's orientation hold and #17's via point take plan_to_pose's own
+    # paths: each must plan in the world with the chair's layers in it, and a
+    # failure on either must still say what the layers have to do with it
+    from rammp_curobo.constraints import HOLD_LEVEL, PoseConstraint, ViaPoint
+
+    stand_in = _curobo_stand_in(monkeypatch)
+    _pose_cost_stand_in(monkeypatch)
+    planner = CuRoboPlanner.from_config("gen3_mebot.yaml")
+    # the world cuRobo holds is the whole chair, scene and both layers
+    assert stand_in.events[-1] == (
+        "loaded",
+        [box["name"] for box in planner.world_boxes],
+    )
+    assert Counter(box["layer"] for box in planner.world_boxes) == {
+        "platform": 16,
+        "person": 8,
+        "floor": 1,
+    }
+    world = (
+        " [world: 25 boxes: scene 0 | config layers: platform 16, person 8 "
+        "| scene layers: floor 1]"
+    )
+    # the start's tool is level, as the goal's is, so the hold can be asked
+    planner.fk = lambda q, quat_order="xyzw": ([0.5, 0.0, 0.5], [0, 0, 0, 1])
+    sent, answer = [], {}
+
+    def plan_single(start_state, goal, config):
+        sent.append(config["pose_cost_metric"].made[0])
+        return answer["result"]
+
+    planner._motion_gen.plan_single = plan_single
+    level = PoseConstraint(hold=HOLD_LEVEL)
+    via = ViaPoint(offset_m=0.1)
+    lap = next(box for box in planner.world_boxes if box["name"] == "person/lap")
+    platform = max(
+        (box for box in planner.world_boxes if box["layer"] == "platform"),
+        key=lambda box: min(box["dims"]),
+    )
+
+    def plan(position, **kw):
+        return planner.plan_to_pose(
+            position, [0, 0, 0, 1], [0.0] * 7, apply_tool_correction=False, **kw
+        )
+
+    # the start, joint_1 at 0, puts the stand-in's 5 cm sphere at the centre
+    # of the person's lap: cuRobo refuses it, and either plan's error names
+    # the person box the start reaches into
+    refused = "MotionGenStatus.INVALID_START_STATE_WORLD_COLLISION"
+    answer["result"] = _failed(refused)
+    start = " [start collides with person/lap (%.0f mm)]" % (
+        1e3 * (0.05 + min(lap["dims"]) / 2)
+    )
+    for kind, kw in (("hold", dict(constraint=level)), ("via", dict(via=via))):
+        res = plan([0.5, 0.0, 0.5], **kw)
+        assert sent[-1] == kind
+        assert (res.success, res.status, res.error) == (
+            False,
+            refused,
+            planner._explain(refused) + start + world,
+        ), kind
+
+    # a goal no arm can hold, in the person or in the platform: the error
+    # names the layer box the tool point is in
+    ik = "MotionGenStatus.IK_FAIL"
+    answer["result"] = _failed(ik)
+    for box in (lap, platform):
+        for kind, kw in (("hold", dict(constraint=level)), ("via", dict(via=via))):
+            res = plan(box["pose"][:3], **kw)
+            assert sent[-1] == kind
+            assert (res.success, res.status) == (False, ik), (box["name"], kind)
+            assert res.error.startswith(planner._explain(ik)), res.error
+            assert res.error.endswith(world), res.error
+            assert "[goal point inside %s" % box["name"] in res.error, res.error
+
+    # a held plan cuRobo finds is still checked against the hold, and one that
+    # bends it is refused as #16 refuses it: cuRobo failed nothing the world
+    # could explain, so its error is the hold check's alone
+    answer["result"] = _planned(np.linspace([0.0] * 7, [0.01] * 7, 5))
+    monkeypatch.setattr(planner, "_verify_hold", lambda *_: "the hold bent")
+    res = plan([0.5, 0.0, 0.5], constraint=level)
+    assert (res.success, res.status, res.error) == (
+        False,
+        "CONSTRAINT_VIOLATED",
+        "the hold bent",
+    )
+    monkeypatch.setattr(planner, "_verify_hold", lambda *_: None)
+    for kind, kw in (("hold", dict(constraint=level)), ("via", dict(via=via))):
+        res = plan([0.5, 0.0, 0.5], **kw)
+        assert sent[-1] == kind
+        assert (res.success, res.status, res.error) == (True, "OK", None), kind
