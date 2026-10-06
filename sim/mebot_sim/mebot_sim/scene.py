@@ -134,8 +134,7 @@ def standin(assets, posture, backrest_face_x=None, sitting_height=None):
     with the butt on the seat pan and on the occupant's centreline and the
     back against the backrest face. That face lies somewhere in a CAD range
     (mebot frame); the default is the rear of it, since at the front a
-    95th-percentile body and the arm's bench retract interpenetrate (spec
-    6.4).
+    95th-percentile body and the arm's bench retract interpenetrate.
 
     Returns ([{name, type, size, pos, mat}], scale), `mat` being the geom's
     orientation as a flattened 3x3 matrix.

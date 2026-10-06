@@ -17,7 +17,7 @@ stack.core()
 from rammp_curobo.scene import Layer, Obstacle, load_layer  # noqa: E402
 
 POSTURES = ("upright_lap", "lean_lap", "forearms_forward")
-# G1's bodies, config/scenarios.yaml's standin.sizes (spec 6.4): their sitting
+# G1's bodies, config/scenarios.yaml's standin.sizes: their sitting
 # heights in inches, ANSUR II row 8 of the NCSU table
 SIZES = {"woman_5th": 31.61, "man_50th": 36.14, "man_95th": 38.46}
 # the humanoid's lower legs and feet
@@ -224,7 +224,7 @@ def person(assets):
 def test_the_standin_is_inside_the_padded_person_layer(
     assets, person, size, posture, back
 ):
-    # spec 6.4: from the 5th-percentile woman to the 95th-percentile man, and
+    # from the 5th-percentile woman to the 95th-percentile man, and
     # wherever the backrest face is in its CAD range, the body is in the
     # padded person layer, or in the arm's column, which no box may fill
     seat = assets.data["person"]["seat"]
@@ -253,7 +253,7 @@ def test_a_person_layer_without_its_lap_leaves_a_gap(assets, person):
 def test_s0_is_one_registration_and_eighteen_standins_each_gated(assets):
     cases = check_layers.cases(assets)
     faces = sorted(assets.data["person"]["seat"]["backrest_face_x"])
-    # the three bodies of spec 6.4, at row 8's sitting heights: an edit to
+    # G1's three bodies, at row 8's sitting heights: an edit to
     # config/scenarios.yaml that seats any other body fails here
     sizes = stack.scenarios()["standin"]["sizes"]
     assert {size: row["inches"] for size, row in sizes.items()} == SIZES

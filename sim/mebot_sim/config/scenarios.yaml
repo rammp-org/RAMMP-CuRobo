@@ -14,7 +14,7 @@ standin:
   seated: {hip_y_right: -90, knee_right: -90, hip_y_left: -90, knee_left: -90}
   postures:
     # Hands on the thighs. The arm angles are the best of a seeded posture
-    # search of the design phase.
+    # search.
     upright_lap:
       joints: {shoulder1_right: 44.4, shoulder2_right: -32.7, elbow_right: -21.0, shoulder1_left: 45.3, shoulder2_left: -27.5, elbow_left: -28.6}
     # The same hands, leaning 15 degrees forward: the whole body pitches
@@ -30,7 +30,7 @@ standin:
       joints: {shoulder1_right: 49.7, shoulder2_right: -25.1, elbow_right: -24.0, shoulder1_left: 49.9, shoulder2_left: -24.8, elbow_left: -14.0}
   # G1 (check_layers) seats it at each of these sizes, in every posture: the
   # person layer holds every occupant from the 5th-percentile woman to the
-  # 95th-percentile man (spec 6.1), whose shins hang the nearer the seat the
+  # 95th-percentile man, whose shins hang the nearer the seat the
   # smaller they are. Sitting heights in inches as tabulated, with the table
   # row: ANSUR II 2012 (Gordon et al. 2014), via The Ergonomics Center
   # (NCSU), "Anthropometric Data for U.S. Adults", 11/2024.
@@ -51,12 +51,12 @@ thresholds:
   end_error_rad: 0.05
   # G7 (run_suite): the chair planner plans and flies at least this many of
   # the 8 S3 reaches touching nothing. G2 and G4 pass a refusal, so without
-  # it a chair planner that refused every request would pass them (the
-  # spike flew 7 of the 8, spec 8).
+  # it a chair planner that refused every request would pass them (a
+  # prototype of this suite flew 7 of the 8).
   min_chair_reaches: 6
   # G1 (check_layers), beside its gap: this much of the stand-in, in percent,
-  # lies in the padded person layer itself, not in the arm's column (spec
-  # 6.4 found 99.11 to 100) ...
+  # lies in the padded person layer itself, not in the arm's column (the
+  # three sizes measured 99.11 to 100 when this was set) ...
   covered_pct: 99.0
   # ... and its volume is within this many percent of the humanoid's own
   # times its scale cubed: it is the whole humanoid, at its size.

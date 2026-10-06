@@ -53,7 +53,7 @@ QUARTER = "1.5707963267948966"
 X, Y, Z = 0, 1, 2
 LO, HI = 0, 1
 SEGMENTS = ("torso_head", "lap", "legs")
-# The occupants the person layer holds (spec 6.1): each ANSUR II size, in
+# The occupants the person layer holds: each ANSUR II size, in
 # inches, from the smaller sex's 5th percentile to the larger sex's 95th, with
 # its row in the NCSU table.
 OCCUPANTS_IN = {
@@ -70,15 +70,16 @@ OCCUPANTS_IN = {
     "hand_breadth": (2.83, 3.78),  # row 29
     "foot_length": (8.90, 11.54),  # row 30
 }
-# The spec's envelope: each size at the end of its range that puts its face
-# furthest out. That is the 95th percentile, but for the back of the knees,
-# which the shortest thigh brings nearest the seat.
+# The envelope the layer is built for: each size at the end of its range that
+# puts its face furthest out. That is the 95th percentile, but for the back of
+# the knees, which the shortest thigh brings nearest the seat.
 OCCUPANT_IN = {key: high for key, (_, high) in OCCUPANTS_IN.items()}
 OCCUPANT_IN["buttock_popliteal_length"] = OCCUPANTS_IN["buttock_popliteal_length"][0]
 
 
 def _inputs():
-    """The generator's inputs, with the geometry the spec tabulates (5.1, 6.1).
+    """The generator's inputs, with the geometry the layers were designed for:
+    the RAMMS mount, 0.02 m of padding and the ANSUR II occupant range.
 
     scripts/mebot_layers.yaml gives only their shape. It is where a measured
     mount or a tuned size goes, and such an edit must not turn these tests red.
@@ -1203,7 +1204,7 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
     assert radii == pytest.approx([s["radius"] + buffer for s in base + shoulder])
 
     margin = data["keep_out_margin_m"]
-    # The spec's mount and padding, where the column stands in the torso and
+    # The RAMMS mount and 0.02 m padding, where the column stands in the torso and
     # the legs, and a mount that stands it in all three segments, with more
     # padding.
     for mount, pad in (([0.505, -0.265, 0.376], 0.02), ([0.65, 0.1, 0.30], 0.03)):
@@ -1272,8 +1273,8 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
             abs=1e-6,
         )
 
-    # Where the boxes are, which the deltas below cannot see: the spec's
-    # occupant at the spec's mount is its table of eight boxes (6.2). The
+    # Where the boxes are, which the deltas below cannot see: the design
+    # occupant at the RAMMS mount is these eight boxes. The
     # legs reach back under the seat to the arm's column, which carves them.
     files = _generate(_inputs(), FAR_BOX)["files"]
     assert _obstacle_lines(files[data["outputs"]["person"]]) == _box_lines(
@@ -1409,7 +1410,7 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
     }
 
     # Carved back by only 1 mm, the padded person comes within 4 mm of the
-    # arm: such a layer is not written. Nor is the spec's (5.1 mm clear)
+    # arm: such a layer is not written. Nor is the default one (5.1 mm clear)
     # under a 6 mm gate.
     tight = _inputs()
     tight["keep_out_margin_m"] = 0.001
@@ -1456,7 +1457,7 @@ def _segments(data, sizes, backrest):
 
 
 def _occupants(data):
-    """Every occupant the person layer holds (spec 6.1), seated as `data`
+    """Every occupant the person layer holds (OCCUPANTS_IN), seated as `data`
     seats the person: each size at either end of its range (4096 occupants),
     with its back at either end of the backrest face's range. Yields (sizes,
     face, segments)."""
@@ -1833,7 +1834,7 @@ def test_committed_platform_covers_every_urdf_primitive():
 
 def test_committed_person_holds_every_occupant_of_its_range():
     # The committed boxes as the planner loads them, against every occupant
-    # of spec 6.1 seated as scripts/mebot_layers.yaml seats the person (its
+    # of OCCUPANTS_IN seated as scripts/mebot_layers.yaml seats the person (its
     # mount, seat and margin): with the arm's column, which no box may fill,
     # they hold each one, margin and all. A size tuned in the data file
     # may grow the person, never shrink it below that range. The sim's G1

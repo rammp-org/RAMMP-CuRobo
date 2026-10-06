@@ -156,8 +156,8 @@ skipped.
   `min_chair_reaches` (6, in `thresholds` in `scenarios.yaml`) of the 8 S3
   reaches, touching nothing; the line `S3 reaches` gives the count. G2 and
   G4 pass a refusal, so a chair planner that refused every request would
-  pass them: G7 fails it, and so does G6 in a run of every scenario. The
-  spike flew 7 of the 8, and so does the suite: the first reach is refused
+  pass them: G7 fails it, and so does G6 in a run of every scenario. A
+  prototype of the suite flew 7 of the 8, and so does the suite: the first reach is refused
   (`FINETUNE_TRAJOPT_FAIL`).
 
 Reported, not gated: how many of the requests asked of the chair planner

@@ -31,7 +31,7 @@ def _geoms(m, prefix):
 def test_the_scene_follows_the_recipe(model):
     m = model
     overlays = _geoms(m, "overlay/")
-    # the design-phase prototype's counts (spec 8)
+    # the counts of the scene the recipe builds: a change to it shows here
     assert (m.nbody, m.ngeom - len(overlays), m.njnt, m.nu) == (69, 108, 15, 8)
     assert m.opt.impratio == 10 and m.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC
     # the gripper is in the bracelet, as g_
@@ -112,12 +112,13 @@ def test_the_standin_sits_in_the_seat(assets, posture):
     assert extent(butt, 2, -1) == pytest.approx(pan)
     assert extent(head, 2, +1) - pan == pytest.approx(SITTING)
     assert butt["pos"][1] == pytest.approx(SEAT["centreline_y"] - MOUNT[1])
-    # its back against the rear of the backrest's CAD range (spec 6.4)
+    # its back against the rear of the backrest's CAD range
     back = min(
         extent(named[n], 0, -1) for n in ("butt", "torso", "waist_upper", "waist_lower")
     )
     assert back == pytest.approx(min(SEAT["backrest_face_x"]) - MOUNT[0])
-    # spec 6.4: x1.229 upright, x1.254 leaning
+    # the scale that gives the occupant's sitting height: x1.229 upright,
+    # x1.254 leaning
     assert scale == pytest.approx(1.254 if posture == "lean_lap" else 1.229, abs=5e-4)
 
 

@@ -300,7 +300,7 @@ def _search_box(planner, around=None, radius=math.inf):
 
 
 def _free_plan(planner, tmp_path):
-    """The request the Task-1 tests block, from the retract to the retract
+    """The request the box-on-the-path tests block, from the retract to the retract
     turned 1 rad on joint_1, planned in a free world (one far box), where it
     goes straight. Returns the start, the goal and the free plan's path."""
     start = list(planner.retract_pose)

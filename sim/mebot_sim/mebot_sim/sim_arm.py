@@ -28,8 +28,8 @@ it is sent; slowing a plan down is the client's job.
 
 A contact is any MuJoCo contact between an arm or gripper geom and a
 group's shape (scene.GROUPS) pressing with more than 1 N, sampled every
-10 ms of sim time. Penetration depth decides nothing: in the design-phase
-spike the arm pressed into the stand-in for 4.8 s at 744 N while soft
+10 ms of sim time. Penetration depth decides nothing: in a prototype of this
+sim the arm pressed into the stand-in for 4.8 s at 744 N while soft
 contacts held it within a millimetre of the surface. The closest approach
 of the moving arm to each group is reported beside, never gated.
 
@@ -450,7 +450,7 @@ class Sim:
         """mj_geomDistance between arm geom `a` and shape `g`, guarded.
 
         In MuJoCo 3.10 it returns false zeros and flipped signs for some pairs
-        of an arm mesh and a MEBot primitive: the design-phase spike saw 237
+        of an arm mesh and a MEBot primitive: a prototype of this sim saw 237
         to 584 false zeros per trajectory, and -346 mm for a pair 346 mm
         apart. So a value at or below zero counts only when the pair is in
         contact or a vertex of the arm's hull is inside the shape. Otherwise
