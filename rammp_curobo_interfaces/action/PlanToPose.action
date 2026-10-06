@@ -6,6 +6,74 @@ geometry_msgs/Pose target
 # keeps this planner decoupled from the robot. An empty or wrong-length
 # vector is rejected — there is no "look at /joint_states" fallback.
 float64[] start_joints
+# --- appended 2026-09-26. An older client sends neither, and an absent
+# trailing field deserialises to its default: no hold, no via point, i.e.
+# exactly today's behaviour. Appended-at-the-end is a MINOR bump under this
+# repo's CONTRIBUTING.md carve-out (Humble + Cyclone DDS only); inserting
+# either of these earlier would corrupt every field after it.
+#
+# `hold`: how much of the tool's ORIENTATION to keep for the whole trajectory.
+#
+# Two modes, and no frame field — see RAMMP-CuRobo#16. Per-axis holds expressed
+# a mechanism ("hold rx and ry in the base frame") rather than a request, in a
+# frame whose axes mean nothing to a caller. Position holds are gone entirely:
+# they could only express "travel along one base axis", and a straight line in
+# an arbitrary direction is not expressible through cuRobo's DIAGONAL
+# hold_vec_weight at all. A Cartesian linear move is a different operation.
+#
+# NOTHING IN THE GOAL IS IGNORED. A hold constrains the path, not the
+# destination: the plan must END at the goal's full orientation, yaw included,
+# under every mode. HOLD_LEVEL frees spin about base Z only IN TRANSIT.
+#
+# HOLD_LEVEL PRESERVES TILT, IT DOES NOT CREATE LEVEL. Roll and pitch are
+# pinned at the GOAL's values, so a gripper that starts 20 degrees off stays
+# 20 degrees off for the whole motion — faithfully, just not level. "Level"
+# means "as level as you already are".
+#
+# Consequently a goal whose orientation disagrees with the start on the held
+# components is REFUSED (CONSTRAINT_UNSATISFIABLE, with the measured deviation
+# and the limit in the message), not quietly re-aimed: it is asking for two
+# different orientations at once. Pass the start's orientation as the goal's,
+# or get there with an unconstrained move first. Under HOLD_LEVEL a yaw
+# difference is not a disagreement; under HOLD_FIXED it is.
+#
+# "LEVEL WITH THE WORLD" MEANS "LEVEL WITH BASE Z". True while the arm is
+# mounted level, and silently false the moment it is not: HOLD_LEVEL frees
+# rotation about base Z, so on a tilted mount that freedom is about a tilted
+# axis and tips the very object the hold was asked to protect. The fix is
+# declaring the mount transform so base_link IS gravity-aligned (#20), not a
+# field here — an undeclared tilt breaks gravity compensation in the driver
+# too.
+#
+# WHICH AXIS IS FREE IS AN ASSUMPTION ABOUT THE GRASP. HOLD_LEVEL frees the
+# spin about base Z in transit, which is right for something rotationally symmetric
+# about its upright axis — a cup, a bottle, a plate. A spoon is not symmetric:
+# the bowl has to face a particular way, so no spin is free and it needs
+# HOLD_FIXED. When the planner can see the held object (#23) the free axis
+# should become a property of that object rather than this assumption.
+#
+# IT IS A COST, NOT A CLAMP. cuRobo penalises deviation without forbidding it,
+# so the planner VERIFIES the returned trajectory and refuses it
+# (CONSTRAINT_VIOLATED) if any waypoint breaks the hold or the last waypoint
+# misses the goal's full orientation, rather than handing over something that
+# quietly tipped. All checks use constraint_tolerance_deg (default 2 deg).
+# cuRobo's own success test alone would let ~5.7 deg of final yaw through,
+# so a held plan meets a stricter end tolerance than the same goal unheld:
+# adding a hold can turn a plan that would succeed into a refusal.
+#
+# An unknown `hold` value fails the goal ("invalid constraint: unknown hold
+# ...") and is never treated as HOLD_NONE.
+uint8 HOLD_NONE=0     # orientation free
+uint8 HOLD_LEVEL=1    # keep the tool's tilt; spin about base Z free in transit
+uint8 HOLD_FIXED=2    # keep the orientation entirely
+uint8 hold 0
+# SHELVED and not exposed on the arm interface — see kinova-gen3-ros2#40.
+# Cannot be combined with `hold` (refused as BAD_CONSTRAINT): before
+# at_fraction cuRobo applies no per-step pose cost, so the hold would lapse. The
+# capability stays here; nothing currently drives it, and what it does to a
+# trajectory is not understood. Its hold engages at at_fraction, NOT at the
+# start, so unlike `hold` it does not constrain the start pose.
+ApproachVia approach_via
 ---
 bool success
 string message                              # failure explanation when !success

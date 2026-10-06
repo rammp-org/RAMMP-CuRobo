@@ -84,6 +84,28 @@ def tool_axis(wxyz):
     ]
 
 
+def rotvec_between(a_xyzw, b_xyzw):
+    """Rotation taking quaternion a to b, as an axis*angle 3-vector (rad).
+
+    Components are about the base frame's x, y, z — the same ordering
+    PoseConstraint.hold_vec_weight() uses for its first three entries.
+    """
+    ax, ay, az, aw = [float(v) for v in a_xyzw]
+    bx, by, bz, bw = [float(v) for v in b_xyzw]
+    # r = b * conj(a)
+    rw = bw * aw + bx * ax + by * ay + bz * az
+    rx = bx * aw - bw * ax - by * az + bz * ay
+    ry = by * aw - bw * ay - bz * ax + bx * az
+    rz = bz * aw - bw * az - bx * ay + by * ax
+    n = math.sqrt(rx * rx + ry * ry + rz * rz)
+    if n < 1e-12:
+        return [0.0, 0.0, 0.0]
+    if rw < 0.0:  # shortest arc
+        rw, rx, ry, rz = -rw, -rx, -ry, -rz
+    angle = 2.0 * math.atan2(n, rw)
+    return [angle * rx / n, angle * ry / n, angle * rz / n]
+
+
 def tip_to_tool(xyz, wxyz, offset):
     """A FINGERTIP goal -> the cuRobo tool-frame goal that realizes it.
 
