@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Generate the MEBot obstacle layers from the pinned Demo-Software URDF.
+"""Generate the MEBot obstacle layers from the pinned RAMMP Gen1.2 URDF
+(available in Demo-Software; scripts/mebot_layers.yaml holds the pin and a
+link, plus the to-do to move to the Gen1.5 specs).
 
 The planner's collision world is boxes only (cuRobo v0.7.8 silently drops
 everything else), so the wheelchair and its occupant reach it as box layers.

@@ -7,8 +7,12 @@
 # Metres unless a key says otherwise. The "mebot frame" is the root link of
 # the pinned URDF (x forward, y left, z up); base_link is the Gen3's.
 
-# The MEBot drive base. The URDF is fetched by commit and checked by sha256
-# (cache, a local Demo-Software clone, then GitHub raw); no copy lives here.
+# The MEBot drive base: the RAMMP Gen1.2 URDF (available in Demo-Software),
+# https://github.com/rammp-org/Demo-Software/blob/80908b9f73f02e094106c0b82640a23c3cd6f41c/core/rammp_prototype_description/urdf/rammp_prototype_base.urdf
+# It is fetched by commit and checked by sha256 (cache, a local Demo-Software
+# clone, then GitHub raw); no copy lives here.
+# TODO: everything below is Gen1.2 measurements — repin to the Gen1.5 URDF and
+# update the parameters to the Gen1.5 specs, then `make layers`.
 source:
   repo: rammp-org/Demo-Software
   # The commit that added the file on origin/dev (= origin/HEAD).
