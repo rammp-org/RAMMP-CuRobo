@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mebot_sim</name>
+  <version>0.0.0</version>
+  <description>The MEBot sim stack for issue #19: a MuJoCo Gen3 that stands
+    in for the arm driver (its ROS names, physics, the exact MEBot, a seated
+    stand-in and the floor), run beside this repo's planner node on a ROS
+    domain of its own. A test kit, not part of the planning service: no node
+    here can reach an arm.</description>
+  <maintainer email="chrisman4247@gmail.com">RAMMP</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>builtin_interfaces</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>trajectory_msgs</exec_depend>
+  <exec_depend>rammp_arm_interfaces</exec_depend>
+  <exec_depend>rammp_curobo_interfaces</exec_depend>
+  <exec_depend>rammp_curobo_ros</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

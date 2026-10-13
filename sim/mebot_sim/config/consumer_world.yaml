@@ -1,0 +1,23 @@
+# S4 of the sim suite (run_suite): a consumer's push to the chair planner,
+# which knows nothing of the chair and lists no layers. Eight boxes, as
+# box-opening's largest world: under the chair's platform and person layers,
+# 32 boxes in all.
+#
+# The first box is a floor where the chair's start-up world has one (the top
+# of layer_mebot_floor.yaml): a push replaces that world, floor included, so
+# a consumer brings its own. The seven others stand for the task's boxes but
+# lie out of the arm's reach, so that near the arm this world is the chair's
+# start-up world: what keeps the S2 requests off the stand-in after this push
+# is the person layer alone.
+
+base_frame: base_link
+
+obstacles:
+  - {name: floor, position: [0.0, 0.0, -0.5093], dims: [3.0, 3.0, 0.1]}
+  - {name: far_front, position: [2.0, 0.0, 0.0], dims: [0.4, 0.4, 0.4]}
+  - {name: far_back, position: [-2.0, 0.0, 0.0], dims: [0.4, 0.4, 0.4]}
+  - {name: far_right, position: [0.0, -2.0, 0.0], dims: [0.4, 0.4, 0.4]}
+  - {name: far_left, position: [0.0, 2.0, 0.0], dims: [0.4, 0.4, 0.4]}
+  - {name: far_front_right, position: [1.5, -1.5, 0.5], dims: [0.4, 0.4, 0.4]}
+  - {name: far_back_right, position: [-1.5, -1.5, 0.5], dims: [0.4, 0.4, 0.4]}
+  - {name: far_above, position: [0.0, 0.0, 2.2], dims: [0.4, 0.4, 0.4]}

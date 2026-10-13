@@ -12,6 +12,82 @@ that heading to the new version and bumps the five places the number lives.
 
 ## [Unreleased]
 
+Obstacle layers, and the first of them: the MEBot wheelchair and the person in
+it (issue #19). No interface change: the `rammp_curobo_interfaces` definitions
+are untouched, and a consumer on `gen3.yaml` or `gen3_real.yaml`, which list no
+layers, gets the collision worlds it got before, box for box, except where
+Fixed says otherwise: a world 1.0.0 built wrong is refused, and a bare-string
+`ignore=` leaves out the prop it names. The release is MINOR.
+
+### Added
+
+- Obstacle layers: named groups of boxes, each in a file of its own. The
+  planner config's new `layers:` key lists layers composed into every world,
+  `set_world` pushes included; a world file's new `layers:` key lists layers
+  that belong to that scene and are replaced with it. Layer boxes are named
+  `<layer>/<box>` and padded like every other box. `Scene(layers=)` carries a
+  scene's layers.
+- `ignore={"person"}` on `update_world` leaves an `excludable: true` layer out
+  of that one world (Python only); ignoring a layer that is not excludable is
+  refused.
+- The MEBot layers, in `configs/layer_mebot_*.yaml`. `platform` (16 boxes) and
+  `floor` (1 box, its top at the URDF's lowest point) come from the drive
+  base's URDF in rammp-org/Demo-Software, pinned by commit and sha256;
+  `person` (8 boxes, excludable) from the ANSUR II sizes and the seat in
+  `scripts/mebot_layers.yaml`: any occupant from the 5th-percentile woman to
+  the 95th-percentile man, plus 0.05 m.
+- The chair config `gen3_mebot.yaml` and its start-up world `world_mebot.yaml`.
+- `scripts/generate_layers.py` with its inputs `scripts/mebot_layers.yaml`, and
+  `make layers`. CI regenerates the committed layers from those inputs and the
+  pinned URDF on amd64 and arm64 and fails on any difference.
+- `CuRoboPlanner.world_boxes` and `CuRoboPlanner.world_summary()`.
+- Which layer, which box: a failed plan's error and `check_state_valid` name
+  the world boxes the start or goal reach into, with depths, and a failed
+  plan's error ends with the world's summary.
+- A layer box that reaches into the arm's joint-independent spheres is refused:
+  every start state would be in collision.
+- The ROS 2 sim stack `sim/mebot_sim`: a MuJoCo Gen3 serving the arm driver's
+  names beside the exact MEBot and a seated body, two planner nodes, and a
+  paired suite; `make sim` and `make sim-test` (Jetson).
+- `RAMMP_CUROBO_GPU=1` makes a GPU test that would skip fail the core suite
+  instead, so it cannot pass on its offline tests alone; `make verify` sets it.
+
+### Changed
+
+- With config layers, cuRobo warms up in the scene's own world and the layers
+  load after: warm-up plans from the retract, which on the chair is inside the
+  person layer. The planner warns at start-up when the retract is not a valid
+  state in its world.
+- The SetWorld success message is `world set to <world> (<summary>)`, and the
+  node logs the summary at start-up and in its ready line.
+- A failed plan's error is cuRobo's reason followed by the boxes and the
+  summary above. `_finish` keeps its v1.0.0 signature, so a subclass that
+  overrides it keeps working: the boxes and the summary are added after it
+  returns.
+- `make_world_config`'s default `cache_obb` is 60, the planner's (was 40).
+
+### Fixed
+
+- `update_world(world, ignore="mug")` leaves out the prop `mug`: a bare string
+  is one name. 1.0.0 read it as the set of its letters, so it kept `mug` and
+  left out any prop named `m`, `u` or `g`.
+- Two boxes of one name are refused, naming both, instead of collapsing into
+  one.
+- A box with a non-finite position or rpy, or dims that are not finite and
+  above 0, is refused: cuRobo loaded it as a box that never collides. So is a
+  `world_padding` below 0 or not finite.
+- The world guards (empty world, cache overflow and the above) run before
+  cuRobo is imported, so they hold without it.
+- A malformed world entry is a `ValueError` naming the file and the entry
+  (`obstacles[3] (table): missing 'dims'`), not a bare `KeyError`.
+- World files, planner configs and the robot config are read as UTF-8 whatever
+  the locale.
+- A key written twice in a planner config or a world file is refused, naming the
+  file, the key and its line, instead of the last one silently winning: a second
+  `layers:` would have dropped the layers of the first. A top-level `layer:` or
+  a `layers:` under `planner:` is refused too: either would have left the chair
+  out.
+
 ## [1.1.0] — 2026-10-02
 
 ### Added

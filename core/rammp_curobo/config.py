@@ -27,6 +27,7 @@ PLANNER_DEFAULTS = {
         "joint_6",
         "joint_7",
     ],
+    "layers": [],
     "planner": {
         "interpolation_dt": 0.02,
         "max_attempts": 8,
@@ -63,12 +64,16 @@ PLANNER_DEFAULTS = {
 }
 
 
-def resolve_config(name_or_path, relative_to=None):
+def resolve_config(name_or_path, relative_to=None, search_cwd=True):
     """Resolve a config reference to an existing file path.
 
     Search order: absolute path -> relative to `relative_to` -> relative to
     the current directory -> packaged defaults. Raises FileNotFoundError
     naming every location tried.
+
+    `search_cwd=False` skips the current directory. Layer references use it:
+    a file that merely shares a packaged layer's name in whatever directory
+    the planner was started from must not replace that layer.
     """
     p = Path(os.path.expanduser(str(name_or_path)))
     tried = []
@@ -80,7 +85,8 @@ def resolve_config(name_or_path, relative_to=None):
         candidates = []
         if relative_to is not None:
             candidates.append(Path(relative_to) / p)
-        candidates.append(Path.cwd() / p)
+        if search_cwd:
+            candidates.append(Path.cwd() / p)
         candidates.append(PACKAGED_CONFIG_DIR / p)
         for c in candidates:
             if c.is_file():
@@ -106,13 +112,34 @@ def load_planner_config(name_or_path):
     """Load a planner YAML merged over the defaults.
 
     Returns (config dict, config directory) — the directory anchors
-    resolution of the robot/world files the config references.
+    resolution of the robot/world/layer files the config references.
+
+    Read as a layer file is: as UTF-8 whatever the locale (gen3.yaml has
+    non-ASCII comments), and with a key written twice refused. Plain PyYAML
+    keeps the last one, so an empty second `layers:` would drop the chair.
     """
+    # scene imports this module, so its loader is imported when it is used
+    from rammp_curobo.scene import _StrictLoader
+
     path = resolve_config(name_or_path)
-    with open(path, "r") as f:
-        data = yaml.safe_load(f) or {}
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.load(f, Loader=_StrictLoader) or {}
     cfg = _merge(PLANNER_DEFAULTS, data)
     for key in ("robot", "world"):
         if key not in cfg:
             raise KeyError("planner config %s is missing the %r entry" % (path, key))
+    # _merge keeps any key, so these two near misses of `layers` would load
+    # and be ignored: the planner would start without the layers the file
+    # asks for. No other unknown key is refused.
+    planner = cfg["planner"]
+    if "layer" in cfg or (isinstance(planner, dict) and "layers" in planner):
+        raise ValueError(
+            "%s: 'layer' is not a planner-config key; "
+            "did you mean the top-level 'layers:'?" % path
+        )
+    layers = cfg["layers"]
+    if not isinstance(layers, list) or not all(isinstance(r, str) for r in layers):
+        raise ValueError(
+            "%s: 'layers' must be a list of layer file names, got %r" % (path, layers)
+        )
     return cfg, path.parent

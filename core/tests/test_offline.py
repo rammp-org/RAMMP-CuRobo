@@ -3,7 +3,13 @@
 These run anywhere (CI, a laptop) — no torch, no cuRobo, no ROS.
 """
 
+import importlib.util
 import math
+import os
+import subprocess
+import sys
+import types
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -32,12 +38,83 @@ from rammp_curobo.validate import start_state_matches, validate_trajectory
 from rammp_curobo.world import world_cuboids
 
 
+def test_conftest_refuses_only_another_checkouts_core(tmp_path, monkeypatch):
+    # loaded by path: `import conftest` names whichever conftest.py pytest
+    # imported last
+    spec = importlib.util.spec_from_file_location(
+        "wrong_tree_guard", Path(__file__).with_name("conftest.py")
+    )
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+
+    def imported_from(parent):
+        stub = types.ModuleType("rammp_curobo")
+        stub.__file__ = str(parent / "rammp_curobo" / "__init__.py")
+        monkeypatch.setitem(sys.modules, "rammp_curobo", stub)
+        guard.pytest_configure(None)
+
+    here = Path(__file__).resolve().parents[1]
+    with pytest.raises(pytest.UsageError) as exc:
+        imported_from(tmp_path / "core")
+    assert str(exc.value) == (
+        "rammp_curobo is imported from %s, not this checkout (%s); "
+        "run with PYTHONPATH=%s" % (tmp_path / "core", here, here)
+    )
+    # a non-editable install (the image) is not another checkout
+    imported_from(tmp_path / "site-packages")
+
+
+def test_the_gpu_tests_cannot_skip_where_they_must_run():
+    # On the Jetson they are the gate, and a run that skipped them would pass
+    # on the offline tests alone: with RAMMP_CUROBO_GPU=1, which make verify
+    # sets, a skip of test_smoke.py fails. Without it, as in CI, they skip.
+    # The child pytest runs an offline test and test_smoke.py, as a machine
+    # without torch would
+    repo = Path(__file__).resolve().parents[2]
+    env = {k: v for k, v in os.environ.items() if k != "RAMMP_CUROBO_GPU"}
+    env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [str(repo / "core"), env.get("PYTHONPATH")])
+    )
+    code = (
+        "import sys; sys.modules['torch'] = None; import pytest; "
+        "sys.exit(pytest.main(sys.argv[1:]))"
+    )
+    tests = ["core/tests/test_offline.py::test_packaged_configs_exist"]
+    tests += ["core/tests/test_smoke.py"]
+
+    def run(**switch):
+        return subprocess.run(
+            [sys.executable, "-c", code, *tests, "-q", "-p", "no:cacheprovider"],
+            cwd=repo,
+            env=dict(env, **switch),
+            capture_output=True,
+            text=True,
+        )
+
+    skipped = run()
+    assert skipped.returncode == 0, skipped.stdout + skipped.stderr
+    assert "1 passed, 1 skipped" in skipped.stdout
+    # a module that cannot be collected stops the whole run
+    failed = run(RAMMP_CUROBO_GPU="1")
+    assert failed.returncode != 0
+    assert "1 error" in failed.stdout and "passed" not in failed.stdout
+    assert (
+        "RAMMP_CUROBO_GPU=1 skips no GPU test: Skipped: could not import 'torch'"
+        in failed.stdout
+    ), failed.stdout
+
+
 def test_packaged_configs_exist():
     for name in (
         "gen3.yaml",
         "robot_gen3_2f85.yaml",
         "world_sim_kitchen.yaml",
         "world_real_bench.yaml",
+        "gen3_mebot.yaml",
+        "world_mebot.yaml",
+        "layer_mebot_platform.yaml",
+        "layer_mebot_person.yaml",
+        "layer_mebot_floor.yaml",
     ):
         assert (PACKAGED_CONFIG_DIR / name).is_file(), name
 
@@ -63,6 +140,11 @@ def test_gen3_yaml_matches_planner_defaults():
     for section in ("planner", "tool", "execution"):
         assert cfg[section] == PLANNER_DEFAULTS[section], section
     assert cfg["joint_names"] == PLANNER_DEFAULTS["joint_names"]
+    assert cfg["layers"] == PLANNER_DEFAULTS["layers"]
+    # merged, a line deleted from the file reads as its default: `layers` is
+    # also read from the file itself, where its comment explains the key
+    text = (PACKAGED_CONFIG_DIR / "gen3.yaml").read_text(encoding="utf-8")
+    assert yaml.safe_load(text)["layers"] == []
 
 
 def test_baked_robot_config_carries_the_patches():
