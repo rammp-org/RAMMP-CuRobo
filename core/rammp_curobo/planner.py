@@ -91,10 +91,11 @@ class CuRoboPlanner:
         self._init_curobo(warmup=bool(p["warmup"]))
 
     @classmethod
-    def from_config(cls, name_or_path):
+    def from_config(cls, name_or_path, overrides=None):
         """Build from a planner YAML (packaged name like 'gen3.yaml' or a
-        filesystem path). See configs/gen3.yaml for the schema."""
-        cfg, cfg_dir = load_planner_config(name_or_path)
+        filesystem path), with `overrides` merged over it (the same schema).
+        See configs/gen3.yaml for the schema."""
+        cfg, cfg_dir = load_planner_config(name_or_path, overrides)
         return cls(cfg, config_dir=cfg_dir)
 
     # ------------------------------------------------------------ cuRobo setup
