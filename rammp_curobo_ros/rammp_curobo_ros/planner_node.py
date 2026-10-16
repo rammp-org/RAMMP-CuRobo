@@ -7,6 +7,7 @@ Actions (node name rammp_curobo):
     /rammp_curobo/plan_to_joints      rammp_curobo_interfaces/PlanToJoints
 Services:
     /rammp_curobo/set_world           rammp_curobo_interfaces/srv/SetWorld
+    /rammp_curobo/attach_spheres      rammp_curobo_interfaces/srv/AttachSpheres
 
 World in, plan out. This node NEVER interacts with the arm: it holds no
 driver, no controller client, no gripper client, and no /joint_states
@@ -32,8 +33,23 @@ from rclpy.node import Node
 
 from rammp_curobo import PoseConstraint, ViaPoint
 from rammp_curobo_interfaces.action import PlanToJoints, PlanToPose
-from rammp_curobo_interfaces.srv import SetWorld
+from rammp_curobo_interfaces.srv import AttachSpheres, SetWorld
 from rammp_curobo_ros.conversions import trajectory_to_msg
+
+
+def spheres_from_request(request):
+    """[[x, y, z, r], ...] from an AttachSpheres request, or (None, why) when it is malformed."""
+    if len(request.centers) != len(request.radii):
+        return None, "%d centres for %d radii" % (
+            len(request.centers),
+            len(request.radii),
+        )
+    spheres = [
+        [c.x, c.y, c.z, float(r)] for c, r in zip(request.centers, request.radii)
+    ]
+    if any(not all(math.isfinite(v) for v in s) or s[3] <= 0 for s in spheres):
+        return None, "every centre finite and every radius > 0"
+    return spheres, None
 
 
 def check_start_joints(start_joints, joint_names):
@@ -159,6 +175,12 @@ class RammpCuroboNode(Node):
         self.create_service(
             SetWorld, "~/set_world", self._set_world_cb, callback_group=self._cb
         )
+        self.create_service(
+            AttachSpheres,
+            "~/attach_spheres",
+            self._attach_spheres_cb,
+            callback_group=self._cb,
+        )
 
         # Real-arm misconfiguration tripwire: without sim time this node is
         # presumably planning for the REAL Gen3, and the sim kitchen's
@@ -283,6 +305,25 @@ class RammpCuroboNode(Node):
             except Exception as exc:
                 response.success = False
                 response.message = str(exc)
+        return response
+
+    def _attach_spheres_cb(self, request, response):
+        response.capacity = int(self.planner.attached_capacity)
+        spheres, why = spheres_from_request(request)
+        if why is not None:
+            response.success, response.message = False, why
+            return response
+        with self._plan_lock:  # never between a plan's steps
+            try:
+                self.planner.attach_spheres(spheres)
+                response.success = True
+                response.message = (
+                    "attached %d sphere(s)" % len(spheres) if spheres else "detached"
+                )
+            except Exception as exc:
+                response.success = False
+                response.message = str(exc)
+        self.get_logger().info("attach_spheres: " + response.message)
         return response
 
 

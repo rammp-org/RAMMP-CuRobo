@@ -79,6 +79,31 @@ def test_baked_robot_config_carries_the_patches():
         [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571], abs=1e-6
     )
     assert kin["ee_link"] == "tool_frame"
+    assert (
+        "attached_object" not in kin["collision_link_names"]
+    )  # the default model: no held-object link
+
+
+def test_held_robot_config_is_the_default_plus_the_attached_link():
+    base = yaml.safe_load(resolve_config("robot_gen3_2f85.yaml").read_text())[
+        "robot_cfg"
+    ]["kinematics"]
+    kin = yaml.safe_load(resolve_config("robot_gen3_2f85_held.yaml").read_text())[
+        "robot_cfg"
+    ]["kinematics"]
+    assert kin["collision_link_names"] == base["collision_link_names"] + [
+        "attached_object"
+    ]
+    assert kin["collision_spheres"] == base["collision_spheres"]
+    assert kin["cspace"] == base["cspace"]
+    assert kin["extra_collision_spheres"] == {"attached_object": 8}
+    assert kin["extra_links"]["attached_object"]["parent_link_name"] == "tool_frame"
+    assert "robotiq_arg2f_base_link" in kin["self_collision_ignore"]["attached_object"]
+    held = load_planner_config("gen3_real_held.yaml")[0]
+    assert (
+        held["robot"] == "robot_gen3_2f85_held.yaml"
+        and held["world"] == load_planner_config("gen3_real.yaml")[0]["world"]
+    )
 
 
 def test_sim_kitchen_scene_parses():

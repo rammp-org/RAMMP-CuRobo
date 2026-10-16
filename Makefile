@@ -44,9 +44,10 @@ run:                       ## Run the planner node from the image
 shell:                     ## Interactive shell in the image
 	docker run --rm -it --runtime nvidia --network host --ipc host $(IMAGE) bash
 
-# Regenerating the baked robot config must be a no-op — RETRACT_POSE in that
+# Regenerating the baked robot configs must be a no-op — RETRACT_POSE in that
 # script is the only place the retract pose is defined. A diff here means
-# someone hand-edited configs/robot_gen3_2f85.yaml.
-bake:                      ## Regenerate the robot config (expect no diff)
+# someone hand-edited configs/robot_gen3_2f85.yaml or its held-object variant.
+bake:                      ## Regenerate the robot configs (expect no diff)
 	python3 scripts/bake_robot_config.py
-	git diff --exit-code core/rammp_curobo/configs/robot_gen3_2f85.yaml
+	git diff --exit-code core/rammp_curobo/configs/robot_gen3_2f85.yaml \
+	  core/rammp_curobo/configs/robot_gen3_2f85_held.yaml

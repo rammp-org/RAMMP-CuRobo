@@ -1,0 +1,11 @@
+# Carry an object the arm holds: spheres in the tool frame (the robot config's ee_link, tool_frame) join the robot's
+# collision model on its attached_object link -- checked against the world, and against the arm except the gripper
+# holding them -- until replaced or detached (issue #23). An empty request detaches. Planning only, as everything here:
+# this changes what the planner avoids, never the arm.
+geometry_msgs/Point[] centers   # m, tool frame
+float64[] radii                 # m, > 0; one per centre; at most `capacity`. As given: the robot config's
+                                # collision_sphere_buffer (which grows the arm's own spheres) is not added
+---
+bool success
+string message
+uint32 capacity                 # the attached_object link's sphere budget (0: the robot config has no such link)
