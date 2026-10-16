@@ -184,6 +184,10 @@ obstacles.
 - **Scene layers** are listed under `layers:` in a world file and belong to
   that scene: the next push replaces them with its own. Geometry that must
   never go away belongs in the planner config.
+- **Runtime layers** are set over ROS by a client, with no file (issue #32):
+  what it measures while it runs. They are composed after the config's
+  layers and stay through every push until the client replaces or removes
+  them (**Runtime layers** below).
 
 A layer file listed by name is found next to the file that lists it or
 among the packaged configs, never in the current directory. Its boxes are
@@ -265,6 +269,32 @@ use.
 A world without the person has nothing over the seat or at the backrest
 either, so a plan made in it is free to pass through them. If yours go near
 them, carry boxes for them in the scene you push.
+
+### Runtime layers: what a client measures
+
+A client that measures its workspace while it runs (a table and a bowl from a
+camera, a person's head from their face) sends it as **runtime layers**
+rather than writing a world file the planner must be able to open:
+
+```python
+planner.update_world("world_mount.yaml")   # the scene: the arm's pedestal alone
+planner.set_layer("room", [{"name": "table", "position": [0.42, 0.25, 0.05], "dims": [0.63, 1.1, 0.05]}],
+                  padding_m=0.01)          # per side; None (the default) is world_padding
+planner.set_layer("bowl", bowl_boxes, padding_m=0.0)   # exact: a utensil works over and into it
+planner.set_layer("bowl", [])              # removed
+```
+
+Over ROS it is `/rammp_curobo/set_layer` (`SetLayer`, a list of `Obstacle`
+and a `padding_m`, negative for `world_padding`). A runtime layer's boxes are
+a layer file's entries (`name`, `position`, `rpy_deg`, `dims`; no
+quaternions), checked as strictly, and named `<layer>/<box>`. A runtime layer
+is excludable, may not take a config layer's name, and is refused as a whole,
+leaving the installed world as it was, when any box is malformed, the world
+would overflow the cache or a box reaches into the arm's fixed spheres.
+`world_mount.yaml` is the scene for a client whose whole workspace arrives
+this way, so that no authored geometry (`world_real_bench.yaml`'s guessed
+table) sits under what it measured. `world_summary()` lists them last:
+`18 boxes: scene 1 | config layers: none | scene layers: none | runtime layers: bowl 13, room 4`.
 
 ### Generated, with coverage numbers: `make layers`
 

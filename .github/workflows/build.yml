@@ -122,8 +122,9 @@ jobs:
           . install/setup.sh
           python3 -c "
           from rammp_curobo_interfaces.action import PlanToJoints, PlanToPose
-          from rammp_curobo_interfaces.srv import SetWorld
-          print('IDL OK:', PlanToPose, PlanToJoints, SetWorld)
+          from rammp_curobo_interfaces.msg import Obstacle
+          from rammp_curobo_interfaces.srv import SetLayer, SetWorld
+          print('IDL OK:', PlanToPose, PlanToJoints, SetWorld, SetLayer, Obstacle)
           "
 
       - name: Node tests

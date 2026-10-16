@@ -7,6 +7,7 @@ Actions (node name rammp_curobo):
     /rammp_curobo/plan_to_joints      rammp_curobo_interfaces/PlanToJoints
 Services:
     /rammp_curobo/set_world           rammp_curobo_interfaces/srv/SetWorld
+    /rammp_curobo/set_layer           rammp_curobo_interfaces/srv/SetLayer
 
 World in, plan out. This node NEVER interacts with the arm: it holds no
 driver, no controller client, no gripper client, and no /joint_states
@@ -32,8 +33,25 @@ from rclpy.node import Node
 
 from rammp_curobo import PoseConstraint, ViaPoint
 from rammp_curobo_interfaces.action import PlanToJoints, PlanToPose
-from rammp_curobo_interfaces.srv import SetWorld
+from rammp_curobo_interfaces.srv import SetLayer, SetWorld
 from rammp_curobo_ros.conversions import trajectory_to_msg
+
+
+def layer_from_request(request):
+    """(name, obstacle entries, padding_m) of a SetLayer request, in the core's
+    terms: entries as a layer file writes them, and padding_m None for the
+    planner's own (a negative request value). The core checks them."""
+    entries = [
+        {
+            "name": o.name,
+            "position": [float(v) for v in o.position],
+            "rpy_deg": [float(v) for v in o.rpy_deg],
+            "dims": [float(v) for v in o.dims],
+        }
+        for o in request.obstacles
+    ]
+    padding = float(request.padding_m)
+    return request.layer, entries, (None if padding < 0 else padding)
 
 
 def check_start_joints(start_joints, joint_names):
@@ -162,6 +180,9 @@ class RammpCuroboNode(Node):
         )
         self.create_service(
             SetWorld, "~/set_world", self._set_world_cb, callback_group=self._cb
+        )
+        self.create_service(
+            SetLayer, "~/set_layer", self._set_layer_cb, callback_group=self._cb
         )
 
         # Real-arm misconfiguration tripwire: without sim time this node is
@@ -295,6 +316,24 @@ class RammpCuroboNode(Node):
             except Exception as exc:
                 response.success = False
                 response.message = str(exc)
+        return response
+
+    def _set_layer_cb(self, request, response):
+        name, entries, padding = layer_from_request(request)
+        with self._plan_lock:  # never between a plan's steps
+            try:
+                self.planner.set_layer(name, entries, padding_m=padding)
+                response.success = True
+                response.message = "%s (%s)" % (
+                    "layer %s: %d box(es)" % (name, len(entries))
+                    if entries
+                    else "layer %s removed" % name,
+                    self.planner.world_summary(),
+                )
+            except Exception as exc:
+                response.success = False
+                response.message = str(exc)
+        self.get_logger().info("set_layer: " + response.message)
         return response
 
 

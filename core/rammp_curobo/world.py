@@ -1,7 +1,9 @@
 """Scene + layers -> cuRobo collision world, with the v0.7.8 guard rails.
 
 A world is composed in pure Python (compose_cuboids): the scene's own boxes,
-then the layers the planner config lists, then the layers the scene lists.
+then the layers the planner config lists (and after them any runtime layers a
+client has set over ROS, which the planner passes alongside), then the layers
+the scene lists.
 Its guards all run there, before cuRobo is imported; to_world_config then
 refuses an empty world again, before its own import, and checks that
 cuRobo holds exactly the boxes composed. A refused world is never loaded,
@@ -85,9 +87,10 @@ def compose_cuboids(
     the order scene obstacles, scene props, config layers, scene layers;
     `sources` maps each key to 'scene' or to its layer's name, so that a
     box's layer is never read off its key. Scene boxes keep their v1.0.0
-    keys, and a layer box is '<layer>/<box>'. Every layer box is padded:
-    `no_pad_names` exempts scene obstacles only (the pedestal), as in
-    v1.0.0. A file that the config and the scene both list is one layer,
+    keys, and a layer box is '<layer>/<box>'. Every layer box is padded, by
+    `padding` or by the layer's own `padding` where it has one (a runtime
+    layer): `no_pad_names` exempts scene obstacles only (the pedestal), as
+    in v1.0.0. A file that the config and the scene both list is one layer,
     in the config's place and as the config loaded it. world_cuboids is
     v1.0.0's composition, kept as it was: a world without layers composes
     exactly as it did.
@@ -123,7 +126,7 @@ def compose_cuboids(
             if other.name == layer.name:
                 raise ValueError(
                     "layer %r is defined by two files: %s and %s"
-                    % (layer.name, other.path, layer.path)
+                    % (layer.name, _origin(other), _origin(layer))
                 )
         chosen.append(layer)
     props = {o.name for o in scene.objects}
@@ -180,9 +183,11 @@ def compose_cuboids(
     for layer in chosen:
         if layer.name in ignore:
             continue
+        own_pad = getattr(layer, "padding", None)
+        p = pad if own_pad is None else 2.0 * float(own_pad)
         for i, o in enumerate(layer.obstacles):
-            owner = "layer %r obstacles[%d] in %s" % (layer.name, i, layer.path)
-            add("%s/%s" % (layer.name, o.name), layer.name, owner, o, o.dims, pad)
+            owner = "layer %r obstacles[%d] in %s" % (layer.name, i, _origin(layer))
+            add("%s/%s" % (layer.name, o.name), layer.name, owner, o, o.dims, p)
 
     # The scene must bring content of its own, whatever the config adds: a
     # push cut short would otherwise plan as the configured layers alone. A
@@ -217,6 +222,12 @@ def compose_cuboids(
             % (n, cache_obb, ", ".join("%s %d" % c for c in counts.items()))
         )
     return cuboids, sources
+
+
+def _origin(layer):
+    """Where a layer came from, for messages: its file, or the client that
+    set it over ROS (a runtime layer has no file)."""
+    return layer.path if layer.path is not None else "a runtime layer (set_layer)"
 
 
 def to_world_config(cuboids):
@@ -319,24 +330,31 @@ def _signed_distances(points, cuboids):
     return outside + np.minimum(q.max(axis=2), 0.0)
 
 
-def summarize(sources, config_layer_names):
+def summarize(sources, config_layer_names, runtime_layer_names=()):
     """Where the boxes of a composed world come from, on one line, e.g.
     "25 boxes: scene 0 | config layers: platform 16, person 8 | scene
     layers: floor 1". `sources` is compose_cuboids' map, and
     `config_layer_names` the layers the planner config lists: one that
-    this world leaves out (ignore=) is still named, with 0."""
+    this world leaves out (ignore=) is still named, with 0. With runtime
+    layers set (`runtime_layer_names`), they follow as "| runtime layers:
+    feeding 4, feeding_bowl 13", named the same way; without, the line is
+    as it was."""
     counts = Counter(sources.values())
     config = ["%s %d" % (name, counts[name]) for name in config_layer_names]
+    runtime = ["%s %d" % (name, counts[name]) for name in runtime_layer_names]
     scene = [
         "%s %d" % (name, n)
         for name, n in counts.items()
-        if name != "scene" and name not in config_layer_names
+        if name != "scene"
+        and name not in config_layer_names
+        and name not in runtime_layer_names
     ]
     n = len(sources)
-    return "%d %s: scene %d | config layers: %s | scene layers: %s" % (
+    line = "%d %s: scene %d | config layers: %s | scene layers: %s" % (
         n,
         "box" if n == 1 else "boxes",
         counts["scene"],
         ", ".join(config) or "none",
         ", ".join(scene) or "none",
     )
+    return line + (" | runtime layers: %s" % ", ".join(runtime) if runtime else "")

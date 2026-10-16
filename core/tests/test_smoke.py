@@ -408,6 +408,40 @@ def test_a_layer_box_on_the_path_is_honoured_and_ignore_removes_it(planner, tmp_
         planner.update_world("world_sim_kitchen.yaml")
 
 
+def test_a_runtime_layer_box_on_the_path_is_honoured_kept_and_removed(
+    planner, tmp_path
+):
+    try:
+        start, goal, free = _free_plan(planner, tmp_path)
+        # the first test's box, sent as a runtime layer over the free world
+        tool = planner.fk(free[len(free) // 2])[0]
+        box = {"name": "box", "position": list(tool), "dims": [0.08] * 3}
+        planner.set_layer("block", [box])
+        assert _feasible(planner, [start, goal]).all(), "premise: start and goal valid"
+        assert not _feasible(
+            planner, free
+        ).all(), "premise: the box is on the free path"
+        res = planner.plan_to_joints(goal, start, method="js")
+        assert not res.success or _dev(_path(res, start), start, goal) > 0.10
+        # a push replaces the scene and keeps the runtime layer
+        planner.update_world(_scene(tmp_path / "free.yaml", obstacles=[FAR]))
+        assert not _feasible(planner, free).all()
+        # removing it restores the free plan
+        planner.set_layer("block", [])
+        assert [b["name"] for b in planner.world_boxes] == ["far"]
+        res = planner.plan_to_joints(goal, start, method="js")
+        assert res.success, res.error
+        assert _dev(_path(res, start), start, goal) < 0.05
+        # padding_m 0 installs the box exactly as sent; the default pads it
+        planner.set_layer("block", [box], padding_m=0.0)
+        dims = {b["name"]: b["dims"] for b in planner.world_boxes}
+        assert dims["block/box"] == [0.08] * 3
+        assert dims["far"] == pytest.approx([0.2 + 2 * planner.world_padding] * 3)
+    finally:
+        planner.set_layer("block", [])
+        planner.update_world("world_sim_kitchen.yaml")
+
+
 def _platform_pair(planner, with_platform, without):
     """Seeded and capped: a goal near the retract whose straight joint path
     from the retract the platform alone blocks. cuRobo finds the goal valid

@@ -1,0 +1,16 @@
+# The arm's own mount and nothing else: the scene for a client whose whole
+# workspace arrives as runtime layers (set_world world_mount.yaml, then
+# ~/set_layer), so that no authored geometry -- world_real_bench.yaml's
+# guessed table, the sim kitchen -- sits under what the client measured.
+# The planner config's layers, if it lists any, are composed in as always.
+
+base_frame: base_link
+
+obstacles:
+  - name: pedestal                   # world_real_bench.yaml's: top 2 cm below the
+    position: [0.0, 0.0, -0.05]      # base collision sphere, sized to the baked
+    dims: [0.14, 0.14, 0.04]         # base_link spheres (unpadded: no_pad_names).
+
+objects: []
+
+targets: []

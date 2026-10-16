@@ -115,17 +115,21 @@ class Target:
 
 
 class Layer:
-    """One layer file: its name, its boxes (Obstacles) and the file they
-    came from, as a resolved absolute path. `excludable` says whether a
-    caller may leave the whole layer out of a world."""
+    """One layer: its name, its boxes (Obstacles) and the file they came
+    from, as a resolved absolute path (None for a runtime layer, which a
+    client sets over ROS: runtime_layer). `excludable` says whether a caller
+    may leave the whole layer out of a world. `padding` is the layer's own
+    padding per side in metres, or None for the planner's world_padding:
+    only a runtime layer has one."""
 
-    __slots__ = ("name", "excludable", "obstacles", "path")
+    __slots__ = ("name", "excludable", "obstacles", "path", "padding")
 
-    def __init__(self, name, excludable, obstacles, path):
+    def __init__(self, name, excludable, obstacles, path, padding=None):
         self.name = name
         self.excludable = excludable
         self.obstacles = obstacles
         self.path = path
+        self.padding = padding
 
 
 class Scene:
@@ -354,6 +358,64 @@ def load_layer(path):
         Obstacle, entries, where, "obstacles", check=_check_layer_entry
     )
     return Layer(name, excludable, obstacles, path)
+
+
+def check_runtime_layer_name(name):
+    """Refuse a name no runtime layer may have: one a layer file could not
+    declare either (a lower-case identifier, not 'scene')."""
+    if not isinstance(name, str) or not _LAYER_NAME.fullmatch(name) or name == "scene":
+        raise ValueError(
+            "runtime layer: the name must match %s and not be 'scene', got %r"
+            % (_LAYER_NAME.pattern, name)
+        )
+
+
+def runtime_layer(name, entries, padding_m=None):
+    """A runtime layer: boxes a client measures while it runs (a table, a
+    bowl, a person's head), sent over ROS rather than read from a file.
+
+    `entries` are a layer file's obstacle entries (name, position, dims and
+    optionally rpy_deg and color), checked as strictly as load_layer checks
+    them; `padding_m` is the layer's padding per side (0 keeps its boxes
+    exact), or None for the planner's world_padding. A runtime layer is
+    excludable. Every refusal is a ValueError naming the layer and the
+    entry. An empty layer is refused here: removing one is the planner's
+    set_layer with no obstacles.
+    """
+    check_runtime_layer_name(name)
+    where = "runtime layer %r" % name
+    if padding_m is not None:
+        if not _is_number(padding_m) or padding_m < 0:
+            raise ValueError(
+                "%s: padding_m must be a finite number >= 0 (or None), got %r"
+                % (where, padding_m)
+            )
+        padding_m = float(padding_m)
+    if not isinstance(entries, (list, tuple)) or not entries:
+        raise ValueError(
+            "%s: 'obstacles' must be a non-empty list, got %r" % (where, entries)
+        )
+    # a tuple or an array as a list, as YAML gives it; the numbers in it are
+    # still checked as a layer file's are
+    entries = [
+        {
+            k: (
+                v.tolist()
+                if hasattr(v, "tolist")
+                else list(v)
+                if isinstance(v, tuple)
+                else v
+            )
+            for k, v in dict(e).items()
+        }
+        if isinstance(e, dict)
+        else e
+        for e in entries
+    ]
+    obstacles = _entries(
+        Obstacle, entries, where, "obstacles", check=_check_layer_entry
+    )
+    return Layer(name, True, obstacles, None, padding=padding_m)
 
 
 def load_layers(refs, relative_to, listed_in):
