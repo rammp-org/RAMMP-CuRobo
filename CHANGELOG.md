@@ -12,6 +12,19 @@ that heading to the new version and bumps the five places the number lives.
 
 ## [Unreleased]
 
+### Added
+
+- A held object joins the collision model (#23), opt-in: a second baked robot model `robot_gen3_2f85_held.yaml`
+  (the default one plus an `attached_object` link on `tool_frame`, 8 pre-allocated spheres, disabled until used,
+  ignored against the gripper holding them) and the planner config `gen3_real_held.yaml` that selects it; core
+  `CuRoboPlanner.attach_spheres` / `detach_spheres` / `attached` / `attached_capacity`; a new service
+  `~/attach_spheres` (`AttachSpheres`: centres in the tool frame and radii; an empty request detaches; it answers the
+  link's capacity, 0 without the link). Opt-in because even disabled, the extra spheres move cuRobo's pose plans by
+  up to ~5 mm (measured on a 3090): `robot_gen3_2f85.yaml` and every existing config are unchanged, and no action or
+  service type is touched (a new service is MINOR).
+  `make bake` checks both baked files; the held model is checked self-collision-free at the retract pose and every
+  sim-kitchen target, empty and holding a 15 cm utensil.
+
 ## [1.1.0] — 2026-10-02
 
 ### Added

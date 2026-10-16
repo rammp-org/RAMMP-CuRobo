@@ -1,0 +1,8 @@
+# gen3_real.yaml with the held-object robot model (issue #23): the arm can carry an object (a utensil, a plate) whose
+# spheres join the collision model -- CuRoboPlanner.attach_spheres, the node's ~/attach_spheres. Opt-in: the extra
+# (disabled) spheres change cuRobo's pose plans by a few mm, so gen3_real.yaml stays as it was.
+#
+#   ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real_held.yaml
+
+robot: robot_gen3_2f85_held.yaml
+world: world_real_bench.yaml

@@ -438,6 +438,65 @@ class CuRoboPlanner:
             " (ignoring: %s)" % ", ".join(sorted(ignore)) if ignore else "",
         )
 
+    # ------------------------------------------------------------ held object
+    ATTACHED_LINK = "attached_object"
+
+    @property
+    def attached_capacity(self):
+        """How many spheres the robot config's attached_object link holds (0: no such link)."""
+        kc = self._motion_gen.kinematics.kinematics_config
+        if self.ATTACHED_LINK not in kc.link_name_to_idx_map:
+            return 0
+        return int(kc.get_number_of_spheres(self.ATTACHED_LINK))
+
+    def attach_spheres(self, spheres):
+        """Carry spheres [[x, y, z, r], ...] (m, in the tool frame -- the robot config's ee_link) on the
+        attached_object link: they join the robot's collision model (against the world, and against the arm
+        except the gripper holding them) until replaced or detached (issue #23). An empty list detaches.
+        The radii are used as given: the robot config's collision_sphere_buffer, which grows the arm's own
+        spheres, is not added to them.
+        """
+        spheres = [[float(v) for v in s] for s in spheres]
+        if not spheres:
+            self.detach_spheres()
+            return
+        n = self.attached_capacity
+        if n == 0:
+            raise ValueError(
+                "the robot config has no %s link -- plan with the held-object config (gen3_real_held.yaml)"
+                % self.ATTACHED_LINK
+            )
+        if len(spheres) > n:
+            raise ValueError(
+                "%d spheres > the %s link's %d" % (len(spheres), self.ATTACHED_LINK, n)
+            )
+        if any(
+            len(s) != 4 or not all(math.isfinite(v) for v in s) or s[3] <= 0
+            for s in spheres
+        ):
+            raise ValueError("each sphere is [x, y, z, r] with r > 0, all finite")
+        t = self._torch.zeros(
+            (n, 4), device=self._tensor_args.device, dtype=self._tensor_args.dtype
+        )
+        t[:, 3] = -10.0  # the unused ones disabled, as cuRobo creates them
+        t[: len(spheres)] = self._tensor(spheres)
+        self._motion_gen.attach_spheres_to_robot(
+            sphere_tensor=t, link_name=self.ATTACHED_LINK
+        )
+        self._attached = spheres
+        log.info("Attached %d sphere(s) to %s", len(spheres), self.ATTACHED_LINK)
+
+    def detach_spheres(self):
+        """The attached_object link back to nothing (disabled spheres)."""
+        if self.attached_capacity:
+            self._motion_gen.detach_spheres_from_robot(link_name=self.ATTACHED_LINK)
+        self._attached = []
+
+    @property
+    def attached(self):
+        """The spheres carried now (tool frame), [] when nothing is attached."""
+        return list(getattr(self, "_attached", []))
+
     # ----------------------------------------------------------------- queries
     @property
     def scene(self):
