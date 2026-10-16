@@ -16,6 +16,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -29,6 +30,11 @@ def generate_launch_description():
             "world",
             default_value="",
             description="world YAML override (empty = config default)",
+        ),
+        DeclareLaunchArgument(
+            "collision_activation_distance",
+            default_value="-1.0",
+            description="soft standoff from every box, m (negative = config's)",
         ),
         DeclareLaunchArgument(
             "use_sim_time",
@@ -47,6 +53,10 @@ def generate_launch_description():
             {
                 "config": LaunchConfiguration("config"),
                 "world": LaunchConfiguration("world"),
+                "collision_activation_distance": ParameterValue(
+                    LaunchConfiguration("collision_activation_distance"),
+                    value_type=float,
+                ),
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
             }
         ],

@@ -205,6 +205,19 @@ def test_yaw_about_world_z_keeps_attitude_level():
         )
 
 
+def test_overrides_merge_over_the_config():
+    base, _ = load_planner_config("gen3_real.yaml")
+    cfg, _ = load_planner_config(
+        "gen3_real.yaml", {"planner": {"collision_activation_distance": 0.01}}
+    )
+    assert cfg["planner"]["collision_activation_distance"] == 0.01
+    cfg["planner"]["collision_activation_distance"] = base["planner"][
+        "collision_activation_distance"
+    ]
+    assert cfg == base  # nothing else moves
+    assert load_planner_config("gen3_real.yaml", None)[0] == base
+
+
 def test_real_arm_config_loads():
     cfg, cfg_dir = load_planner_config("gen3_real.yaml")
     assert cfg["world"] == "world_real_bench.yaml"

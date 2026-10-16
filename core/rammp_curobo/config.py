@@ -102,8 +102,10 @@ def _merge(base, override):
     return out
 
 
-def load_planner_config(name_or_path):
-    """Load a planner YAML merged over the defaults.
+def load_planner_config(name_or_path, overrides=None):
+    """Load a planner YAML merged over the defaults, then `overrides` (the
+    same schema, e.g. {"planner": {"collision_activation_distance": 0.01}})
+    over it: what a deployment sets without its own copy of the file.
 
     Returns (config dict, config directory) — the directory anchors
     resolution of the robot/world files the config references.
@@ -111,7 +113,7 @@ def load_planner_config(name_or_path):
     path = resolve_config(name_or_path)
     with open(path, "r") as f:
         data = yaml.safe_load(f) or {}
-    cfg = _merge(PLANNER_DEFAULTS, data)
+    cfg = _merge(_merge(PLANNER_DEFAULTS, data), overrides)
     for key in ("robot", "world"):
         if key not in cfg:
             raise KeyError("planner config %s is missing the %r entry" % (path, key))

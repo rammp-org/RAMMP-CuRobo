@@ -12,6 +12,14 @@ that heading to the new version and bumps the five places the number lives.
 
 ## [Unreleased]
 
+### Added
+
+- The collision standoff as a deployment's choice (#29): the node's `collision_activation_distance` parameter, and the
+  launch argument of that name, override the config's `planner.collision_activation_distance` (negative, the default:
+  the config's), through core `CuRoboPlanner.from_config(name, overrides)` / `load_planner_config(name, overrides)`.
+  A utensil working over a bowl's rim needs less than the default 0.03 m, now without a copy of the config. Nothing
+  changes unless it is set.
+
 ## [1.1.0] — 2026-10-02
 
 ### Added

@@ -111,6 +111,12 @@ class RammpCuroboNode(Node):
 
         self.config = self.declare_parameter("config", "gen3.yaml").value
         self.world = self.declare_parameter("world", "").value
+        # The soft standoff from every collision box, metres; negative: the
+        # config's. A deployment's choice (a utensil working over a bowl's rim
+        # wants less than the default), so it needs no copy of the config.
+        self.activation = float(
+            self.declare_parameter("collision_activation_distance", -1.0).value
+        )
 
         # Refuse to double-serve. Two planner nodes on the same action names
         # answer every goal twice and race each other — on hardware this
@@ -137,7 +143,14 @@ class RammpCuroboNode(Node):
         self.get_logger().info("Loading cuRobo planner (%s)..." % self.config)
         from rammp_curobo import CuRoboPlanner
 
-        self.planner = CuRoboPlanner.from_config(self.config)
+        overrides = None
+        if self.activation >= 0.0:
+            overrides = {"planner": {"collision_activation_distance": self.activation}}
+            self.get_logger().info(
+                "collision_activation_distance %.3f m (the config's overridden)"
+                % self.activation
+            )
+        self.planner = CuRoboPlanner.from_config(self.config, overrides)
         if self.world:
             self.planner.update_world(self.world)
             self.get_logger().info("World overridden: %s" % self.world)
