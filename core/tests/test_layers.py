@@ -2637,3 +2637,151 @@ def test_held_and_via_plans_on_the_chair_plan_in_its_layers_and_are_explained(
         res = plan([0.5, 0.0, 0.5], **kw)
         assert sent[-1] == kind
         assert (res.success, res.status, res.error) == (True, "OK", None), kind
+
+
+# ---------------------------------------------------------------- runtime layers
+# Layers a client sets over ROS (set_layer) rather than in a file: composed
+# after the config's layers, kept through every push, each with its own
+# padding.
+
+ROOM = [
+    {"name": "table", "position": [0.4, 0.0, -0.05], "dims": [0.6, 0.8, 0.05]},
+    {
+        "name": "head",
+        "position": [-0.3, 0.3, 0.45],
+        "rpy_deg": [0, 0, 30],
+        "dims": [0.2, 0.18, 0.26],
+    },
+]
+BOWL = [{"name": "floor", "position": [0.3, 0.15, 0.0], "dims": [0.12, 0.12, 0.008]}]
+
+
+def test_a_runtime_layer_composes_as_the_same_boxes_in_a_scene_file(
+    tmp_path, monkeypatch
+):
+    # with the planner's padding, a runtime layer is the same boxes, in the
+    # same order and to the last bit, as a layer file the scene lists; only
+    # the attribution says where they came from
+    _no_gpu(monkeypatch)
+    planner = CuRoboPlanner.from_config("gen3_real.yaml")
+    (tmp_path / "room.yaml").write_text(
+        yaml.safe_dump({"layer": "room", "obstacles": ROOM})
+    )
+    mount = PACKAGED_CONFIG_DIR / "world_mount.yaml"
+    (tmp_path / "with_room.yaml").write_text(
+        mount.read_text(encoding="utf-8") + "layers: [room.yaml]\n"
+    )
+    planner.update_world(tmp_path / "with_room.yaml")
+    filed = [(b["name"], b["dims"], b["pose"]) for b in planner.world_boxes]
+    planner.update_world("world_mount.yaml")
+    planner.set_layer("room", ROOM)
+    sent = [(b["name"], b["dims"], b["pose"]) for b in planner.world_boxes]
+    assert sent == filed
+    assert planner.world_summary() == (
+        "3 boxes: scene 1 | config layers: none | scene layers: none "
+        "| runtime layers: room 2"
+    )
+
+
+def test_runtime_layers_are_kept_replaced_padded_and_removed(monkeypatch):
+    inits, sent, loaded = _no_gpu(monkeypatch)
+    planner = CuRoboPlanner.from_config("gen3_mebot.yaml")
+    pad = planner.world_padding
+
+    def by_layer():
+        return Counter(b["layer"] for b in planner.world_boxes)
+
+    planner.set_layer("room", ROOM)
+    planner.set_layer("bowl", BOWL, padding_m=0.0)
+    assert planner.runtime_layers == {"bowl": 1, "room": 2}
+    assert by_layer() == {"platform": 16, "person": 8, "floor": 1, "room": 2, "bowl": 1}
+    # composed after the config's layers and before the scene's, in name
+    # order, each with its own padding
+    keys = [b["name"] for b in planner.world_boxes]
+    config = [k for k in keys if k.split("/")[0] in ("platform", "person")]
+    assert keys == config + ["bowl/floor", "room/table", "room/head", "floor/floor"]
+    boxes = {b["name"]: b for b in planner.world_boxes}
+    assert boxes["bowl/floor"]["dims"] == BOWL[0]["dims"]
+    assert boxes["room/table"]["dims"] == pytest.approx(
+        [d + 2 * pad for d in ROOM[0]["dims"]]
+    )
+    # every change reached cuRobo, and the planner describes what it holds
+    assert loaded[-1].data is sent[-1] and set(sent[-1]["cuboid"]) == set(keys)
+    assert planner.world_summary().endswith("| runtime layers: bowl 1, room 2")
+
+    # a push replaces the scene and keeps them, as it keeps the config's
+    planner.update_world([_box("crate")])
+    assert by_layer() == {"scene": 1, "platform": 16, "person": 8, "room": 2, "bowl": 1}
+    # a world that leaves the person out keeps leaving it out when a layer
+    # changes, until the next push; a runtime layer is excludable too
+    planner.update_world([_box("crate")], ignore={"person", "room"})
+    planner.set_layer("bowl", BOWL + [_box("rim")], padding_m=0.0)
+    assert by_layer() == {"scene": 1, "platform": 16, "bowl": 2}
+    planner.update_world([_box("crate")])
+    assert by_layer() == {"scene": 1, "platform": 16, "person": 8, "room": 2, "bowl": 2}
+
+    # replaced whole, and removed with no obstacles; removing one that is not
+    # set changes nothing
+    planner.set_layer("room", ROOM[:1])
+    planner.set_layer("bowl", [])
+    n = len(sent)
+    planner.set_layer("never_set", [])
+    assert len(sent) == n
+    assert planner.runtime_layers == {"room": 1}
+    assert by_layer() == {"scene": 1, "platform": 16, "person": 8, "room": 1}
+
+
+@pytest.mark.parametrize(
+    "name, obstacles, padding, refusal",
+    [
+        ("Room", ROOM, None, "the name must match"),
+        ("scene", ROOM, None, "the name must match"),
+        ("a/b", ROOM, None, "the name must match"),
+        ("person", ROOM, None, "the planner config lists a layer of that name"),
+        ("room", ROOM, -0.01, "padding_m must be a finite number >= 0"),
+        ("room", ROOM, float("nan"), "padding_m must be a finite number >= 0"),
+        ("room", [_box("a"), _box("a")], None, r"same name as obstacles\[0\]"),
+        (
+            "room",
+            [_box("a", dims=[0.1, 0.0, 0.1])],
+            None,
+            "'dims' must be 3 finite numbers",
+        ),
+        (
+            "room",
+            [_box("a", position=[0.1, float("nan"), 0.1])],
+            None,
+            "'position' must be 3",
+        ),
+        ("room", [_box("a", rpy=[0, 0, 1])], None, "unknown key 'rpy'"),
+        ("room", [dict(_box("a"), name="a/b")], None, "without '/'"),
+        ("room", [_box("b%d" % i) for i in range(40)], None, "collision_cache_obb"),
+    ],
+)
+def test_a_refused_runtime_layer_leaves_the_world_as_it_was(
+    monkeypatch, name, obstacles, padding, refusal
+):
+    inits, sent, loaded = _no_gpu(monkeypatch)
+    planner = CuRoboPlanner.from_config("gen3_mebot.yaml")
+    planner.set_layer("bowl", BOWL, padding_m=0.0)
+    before = (len(sent), len(loaded), planner.world_boxes, planner.runtime_layers)
+    with pytest.raises(ValueError, match=refusal):
+        planner.set_layer(name, obstacles, padding_m=padding)
+    assert (
+        len(sent),
+        len(loaded),
+        planner.world_boxes,
+        planner.runtime_layers,
+    ) == before
+
+
+def test_a_runtime_layer_box_in_the_arms_fixed_spheres_is_refused(monkeypatch):
+    # the fixed-sphere guard judges a runtime layer as it judges a file's
+    inits, sent, loaded = _no_gpu(monkeypatch)
+    planner = CuRoboPlanner.from_config("gen3_real.yaml")
+    planner.update_world("world_mount.yaml")
+    planner._fixed_spheres = np.array([[0.0, 0.0, 0.1, 0.05]])
+    before = planner.world_boxes
+    with pytest.raises(ValueError, match="intrudes .* into the arm's fixed"):
+        planner.set_layer("room", [_box("post", position=[0.0, 0.0, 0.1])])
+    assert planner.world_boxes == before and planner.runtime_layers == {}

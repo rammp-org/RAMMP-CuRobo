@@ -115,8 +115,19 @@ def test_packaged_configs_exist():
         "layer_mebot_platform.yaml",
         "layer_mebot_person.yaml",
         "layer_mebot_floor.yaml",
+        "world_mount.yaml",
     ):
         assert (PACKAGED_CONFIG_DIR / name).is_file(), name
+
+
+def test_the_mount_world_is_the_bench_pedestal_alone():
+    mount = load_scene(resolve_config("world_mount.yaml"))
+    bench = load_scene(resolve_config("world_real_bench.yaml"))
+    assert [o.name for o in mount.obstacles] == ["pedestal"]
+    assert not mount.objects and not mount.layers and not mount.targets
+    m = mount.obstacles[0]
+    b = next(o for o in bench.obstacles if o.name == "pedestal")
+    assert (m.position, m.dims, m.rpy_deg) == (b.position, b.dims, b.rpy_deg)
 
 
 def test_planner_config_loads_and_merges():

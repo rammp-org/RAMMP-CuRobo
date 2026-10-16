@@ -1,0 +1,13 @@
+# Set, replace or remove one runtime layer of the planner's collision world, live: boxes a client measures while it
+# runs (a table, a bowl, a person's head). The world the planner avoids is its scene (the config's world, or the
+# last set_world), the planner config's layers, the scene's layers and every runtime layer. set_world replaces the
+# scene and keeps the runtime layers. A refused layer leaves the installed world as it was. Planning only: nothing
+# here touches the arm.
+string layer                  # [a-z][a-z0-9_]*, not 'scene', nor a layer the planner config lists; its boxes are
+                              # named <layer>/<name> in the world
+Obstacle[] obstacles          # empty: remove the layer
+float64 padding_m -1.0        # per side, m, for this layer's boxes (0: exactly as given); negative: the planner's
+                              # world_padding
+---
+bool success
+string message                # the world now (where its boxes come from), or why the layer was refused

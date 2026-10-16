@@ -13,14 +13,26 @@ that heading to the new version and bumps the five places the number lives.
 ## [Unreleased]
 
 Obstacle layers, and the first of them: the MEBot wheelchair and the person in
-it (issue #19). No interface change: the `rammp_curobo_interfaces` definitions
-are untouched, and a consumer on `gen3.yaml` or `gen3_real.yaml`, which list no
-layers, gets the collision worlds it got before, box for box, except where
-Fixed says otherwise: a world 1.0.0 built wrong is refused, and a bare-string
-`ignore=` leaves out the prop it names. The release is MINOR.
+it (issue #19), and runtime layers a client sets over ROS (issue #32). The
+existing `rammp_curobo_interfaces` definitions are untouched; runtime layers
+add one service (`SetLayer`) and one message (`Obstacle`). A consumer on
+`gen3.yaml` or `gen3_real.yaml`, which list no layers, gets the collision
+worlds it got before, box for box, except where Fixed says otherwise: a world
+1.0.0 built wrong is refused, and a bare-string `ignore=` leaves out the prop
+it names. The release is MINOR.
 
 ### Added
 
+- Runtime layers (#32): layers a client sets over ROS while it runs, with no
+  file. Core `CuRoboPlanner.set_layer(name, obstacles, padding_m=None)` sets,
+  replaces or (no obstacles) removes one, and `runtime_layers` lists them;
+  a new service `~/set_layer` (`SetLayer`) and message `Obstacle` (a world
+  file's box: name, position, rpy_deg, dims). They compose after the config's
+  layers, stay through every push, are excludable, and each may have its own
+  padding (`padding_m`, 0 for exact; `Layer.padding`, None elsewhere). A
+  refused layer leaves the installed world as it was. `world_summary()` adds
+  `| runtime layers: ...` when any is set and is unchanged otherwise. A new
+  packaged scene, `world_mount.yaml`, holds the arm's pedestal alone.
 - Obstacle layers: named groups of boxes, each in a file of its own. The
   planner config's new `layers:` key lists layers composed into every world,
   `set_world` pushes included; a world file's new `layers:` key lists layers

@@ -79,7 +79,8 @@ status:
 | `BAD_CONSTRAINT`           | a malformed via point, or a hold sent together with a via                                           |
 
 `PlanToPose.action` has the full contract. `/rammp_curobo/set_world` swaps the
-collision world's scene. There is nothing here that can move an arm.
+collision world's scene, and `/rammp_curobo/set_layer` sets one runtime layer
+over it (below). There is nothing here that can move an arm.
 
 ## Planning on the MEBot (≥ 1.1.0)
 
@@ -148,6 +149,36 @@ they cost. For a caller:
   help: 1.0.0 ignores `layers:`, finds no obstacles in `world_mebot.yaml`
   and refuses it as an empty world at start-up. It never plans without the
   chair; pin ≥ 1.1.0.
+
+## Runtime layers: what your module measures
+
+If your module measures its own obstacles while it runs, send them as runtime
+layers instead of writing a world file into the planner's container. Each
+layer is named, replaced whole, and kept through every `set_world` until you
+replace or remove it:
+
+```python
+from rammp_curobo_interfaces.msg import Obstacle
+from rammp_curobo_interfaces.srv import SetLayer, SetWorld
+
+world = node.create_client(SetWorld, "/rammp_curobo/set_world")
+layer = node.create_client(SetLayer, "/rammp_curobo/set_layer")
+world.call_async(SetWorld.Request(world="world_mount.yaml"))      # the arm's pedestal alone
+req = SetLayer.Request(layer="room", padding_m=0.01)               # per side; negative: world_padding
+req.obstacles = [Obstacle(name="table", position=[0.42, 0.25, 0.05], rpy_deg=[0.0, 0.0, 0.0], dims=[0.63, 1.1, 0.05])]
+layer.call_async(req)                                              # reply: success, and the world's summary
+layer.call_async(SetLayer.Request(layer="room"))                   # no obstacles: removed
+```
+
+- Orientation is `rpy_deg` (fixed-axis roll, pitch, yaw), as in a world file;
+  the planner builds every quaternion itself.
+- A refused layer (a malformed box, a name a config layer has, an overflowing
+  world, a box in the arm's fixed spheres) changes nothing; the reply says
+  why.
+- `set_layer` keeps what the last `set_world` left out (`ignore=`), and an
+  `ignore=` may leave out a runtime layer too.
+- A planner without the service (1.0.0) has no `/rammp_curobo/set_layer`:
+  check `wait_for_service` and fall back to a world file.
 
 ## Adopting into a RAMMP module
 

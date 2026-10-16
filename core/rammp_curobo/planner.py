@@ -36,7 +36,14 @@ from rammp_curobo.config import PLANNER_DEFAULTS, load_planner_config, resolve_c
 from rammp_curobo import constraints
 from rammp_curobo.constraints import PoseConstraint, ViaPoint
 from rammp_curobo.robot_config import load_robot_config
-from rammp_curobo.scene import Scene, load_layers, load_scene, scene_from_obstacles
+from rammp_curobo.scene import (
+    Scene,
+    check_runtime_layer_name,
+    load_layers,
+    load_scene,
+    runtime_layer,
+    scene_from_obstacles,
+)
 from rammp_curobo.types import PlanResult, Trajectory
 from rammp_curobo.validate import validate_trajectory
 from rammp_curobo.world import (
@@ -116,6 +123,11 @@ class CuRoboPlanner:
                 layer.path,
             )
         self._scene = load_scene(world_path)
+        # Layers a client sets over ROS (set_layer), by name, and the props
+        # and layers the installed world leaves out (update_world's ignore):
+        # set_layer recomposes the installed world with both.
+        self._runtime = {}
+        self._ignore = frozenset()
         # Pure Python, so a bad layer, an overflow or a duplicate box fails
         # here, before any GPU work.
         self._compose(self._scene)
@@ -213,15 +225,20 @@ class CuRoboPlanner:
 
     def _compose(self, scene, ignore=frozenset(), layers=None):
         """compose_cuboids with this planner's padding, exemptions and cache,
-        and its config layers unless `layers` says otherwise."""
+        and its config layers and runtime layers unless `layers` says
+        otherwise."""
         return compose_cuboids(
             scene,
             padding=self.world_padding,
             ignore=ignore,
             no_pad_names=self.no_pad_names,
             cache_obb=self.collision_cache_obb,
-            layers=self._layers if layers is None else layers,
+            layers=self._all_layers(self._runtime) if layers is None else layers,
         )
+
+    def _all_layers(self, runtime):
+        """The config's layers, then the runtime layers in name order."""
+        return list(self._layers) + [runtime[name] for name in sorted(runtime)]
 
     def _joint_independent_spheres(self):
         """The arm's collision spheres that no joint moves, (n, 4): x, y, z
@@ -532,7 +549,8 @@ class CuRoboPlanner:
 
     def update_world(self, world, ignore=()):
         """Replace the scene of the collision world. The layers the planner
-        config lists stay: they are composed into every world.
+        config lists stay, and so do the runtime layers (set_layer): they
+        are composed into every world.
 
         world: a scene YAML path/name, a Scene, or a list of obstacle dicts
         ({'name', 'position', and 'dims' | 'type'+'radius'(+'height')}).
@@ -556,6 +574,7 @@ class CuRoboPlanner:
         # only now that cuRobo holds it: a refused world leaves the planner
         # describing the world cuRobo kept
         self._scene = scene
+        self._ignore = frozenset([ignore] if isinstance(ignore, str) else ignore)
         self._world_cuboids, self._world_sources = cuboids, sources
         names = [ignore] if isinstance(ignore, str) else sorted(ignore)
         log.info(
@@ -563,6 +582,55 @@ class CuRoboPlanner:
             self.world_summary(),
             " (ignoring: %s)" % ", ".join(names) if names else "",
         )
+
+    def set_layer(self, name, obstacles, padding_m=None):
+        """Set, replace or remove (no obstacles) one runtime layer, live.
+
+        A runtime layer holds boxes a client measures while it runs (a
+        table, a bowl, a person's head) and sends rather than writes to a
+        file. It is composed into every world after the config's layers,
+        keyed '<name>/<box>', and stays until replaced or removed: set_world
+        keeps it, as it keeps the config's layers. The installed scene, and
+        what that world leaves out (update_world's ignore), stay as they are.
+
+        obstacles: entries as a layer file's (name, position, dims, and
+        optionally rpy_deg), checked as strictly as load_layer checks them.
+        padding_m: per side for this layer's boxes (0 keeps them exact);
+        None, the default, is the config's world_padding.
+
+        A runtime layer is excludable, and may not take the name of a layer
+        the config lists. Refused before cuRobo sees it, so the world
+        installed before stays: whatever runtime_layer or compose_cuboids
+        refuses, and a box that reaches into the arm's fixed spheres.
+        """
+        check_runtime_layer_name(name)
+        runtime = dict(self._runtime)
+        if obstacles:
+            if name in {layer.name for layer in self._layers}:
+                raise ValueError(
+                    "runtime layer %r: the planner config lists a layer of that "
+                    "name; a runtime layer cannot replace it" % (name,)
+                )
+            runtime[name] = runtime_layer(name, obstacles, padding_m)
+        elif name in runtime:
+            del runtime[name]
+        else:
+            return  # removing a layer that is not set changes nothing
+        cuboids, sources = self._compose(
+            self._scene, ignore=self._ignore, layers=self._all_layers(runtime)
+        )
+        self._check_fixed_spheres(cuboids, sources)
+        self._motion_gen.update_world(to_world_config(cuboids))
+        self._runtime = runtime
+        self._world_cuboids, self._world_sources = cuboids, sources
+        log.info("Collision world: %s", self.world_summary())
+
+    @property
+    def runtime_layers(self):
+        """{name: number of boxes} of the runtime layers set now."""
+        return {
+            name: len(self._runtime[name].obstacles) for name in sorted(self._runtime)
+        }
 
     # ----------------------------------------------------------------- queries
     @property
@@ -596,7 +664,11 @@ class CuRoboPlanner:
         """Where the installed world's boxes come from, on one line, e.g.
         "25 boxes: scene 0 | config layers: platform 16, person 8 | scene
         layers: floor 1"."""
-        return summarize(self._world_sources, [layer.name for layer in self._layers])
+        return summarize(
+            self._world_sources,
+            [layer.name for layer in self._layers],
+            sorted(self._runtime),
+        )
 
     def fk(self, q, quat_order="xyzw"):
         """Forward kinematics of a controller-order joint vector ->
