@@ -76,7 +76,6 @@ class CuRoboPlanner:
         self.limit_clamp_rad = float(p["limit_clamp_rad"])
         self.tool_spin_deg = float(config["tool"]["spin_deg"])
         self.tool_tip_offset = float(config["tool"]["tip_offset_m"])
-        self.execution = dict(config["execution"])
 
         robot_path = resolve_config(config["robot"], relative_to=config_dir)
         world_path = resolve_config(config["world"], relative_to=config_dir)

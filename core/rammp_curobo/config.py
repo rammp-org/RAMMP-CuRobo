@@ -7,10 +7,13 @@ directory first, so a user can copy gen3.yaml next to their code, edit the
 world line, and everything keeps working.
 """
 
+import logging
 import os
 from pathlib import Path
 
 import yaml
+
+log = logging.getLogger("rammp_curobo")
 
 PACKAGED_CONFIG_DIR = Path(__file__).resolve().parent / "configs"
 
@@ -55,10 +58,6 @@ PLANNER_DEFAULTS = {
     "tool": {
         "spin_deg": 0.0,
         "tip_offset_m": 0.0,
-    },
-    "execution": {
-        "speed_scale": 0.25,
-        "max_speed_scale": 1.0,
     },
 }
 
@@ -111,6 +110,15 @@ def load_planner_config(name_or_path):
     path = resolve_config(name_or_path)
     with open(path, "r") as f:
         data = yaml.safe_load(f) or {}
+    # Configs copied from <= v1.1.0 carry execution.speed_scale: 0.25, which
+    # nothing ever read (issue #22). Execution speed is the executor's job;
+    # drop the block so it cannot pass for a live setting.
+    if data.pop("execution", None) is not None:
+        log.warning(
+            "planner config %s: ignoring the 'execution' block -- the planner "
+            "never limited execution speed; the executor owns speed scaling",
+            path,
+        )
     cfg = _merge(PLANNER_DEFAULTS, data)
     for key in ("robot", "world"):
         if key not in cfg:

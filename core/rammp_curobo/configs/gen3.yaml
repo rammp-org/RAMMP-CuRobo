@@ -63,9 +63,6 @@ tool:
   spin_deg: 0.0
   tip_offset_m: 0.0
 
-execution:
-  # Execution-side time dilation (retime.py): the plan itself always runs at
-  # full velocity_scale 1.0. 0.25 = quarter speed — the hardware bring-up
-  # default per the safety plan; raise only after slow runs are clean.
-  speed_scale: 0.25
-  max_speed_scale: 1.0               # hard cap an executor must enforce
+# No execution speed knob here on purpose (issue #22): the planner plans at
+# full speed and moves nothing; the executor owns speed scaling. An
+# `execution:` block from an older copy of this file is ignored with a warning.

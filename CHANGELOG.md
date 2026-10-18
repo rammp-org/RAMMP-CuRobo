@@ -12,6 +12,16 @@ that heading to the new version and bumps the five places the number lives.
 
 ## [Unreleased]
 
+### Removed
+
+- `execution.speed_scale` / `execution.max_speed_scale` from `gen3.yaml` and the
+  config defaults, and `CuRoboPlanner.execution` (#22). Nothing ever read them,
+  so the "quarter speed" bring-up default they declared was never applied: the
+  arm ran every plan at full speed. Speed scaling is the executor's job
+  (`kinova-gen3-ros2#37`). A config that still carries an `execution:` block
+  loads as before, with a warning that the block is ignored. Library-side
+  retiming (`Trajectory.scaled()`, `retime.py`) is unchanged.
+
 ## [1.1.0] — 2026-10-02
 
 ### Added
