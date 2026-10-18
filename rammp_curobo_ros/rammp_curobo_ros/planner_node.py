@@ -18,19 +18,30 @@ That boundary is the point — see issue #6. A planner that also drove the
 arm meant two safety authorities with different rules, plans made from a
 joint state up to 2 s stale, and a dependency arrow pointing backwards
 from the planner to the driver's IDL. Do not reintroduce any of it.
+
+The robot model is the arm's own: the URDF arm_state_publisher latches on
+/arm/robot_description. The node waits for it before building the planner,
+so it plans in that model's root frame (arm_mount) with its joint names and
+limits, and every returned trajectory says arm_mount in its header.
 """
 
+import logging
 import math
+import tempfile
 import threading
 import time
 
 import rclpy
 from rclpy.action import ActionServer
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import String
 
 from rammp_curobo import PoseConstraint, ViaPoint
+from rammp_curobo.config import load_planner_config
+from rammp_curobo.urdf_model import EE_LINK, prepare_urdf, write_urdf
 from rammp_curobo_interfaces.action import PlanToJoints, PlanToPose
 from rammp_curobo_interfaces.srv import SetWorld
 from rammp_curobo_ros.conversions import trajectory_to_msg
@@ -63,6 +74,23 @@ def check_start_joints(start_joints, joint_names):
     if not all(math.isfinite(float(v)) for v in start_joints):
         return "start_joints contains a non-finite value"
     return None
+
+
+ROBOT_DESCRIPTION_TOPIC = "/arm/robot_description"
+
+
+def planner_config(config, world):
+    """(planner config dict, config dir) with the `world` parameter applied.
+
+    The world goes into the config BEFORE the planner is built: update_world
+    refuses an empty world (cuRobo silently keeps the old one there), so a
+    deployment's world_empty.yaml can only take effect at construction. An
+    empty `world` keeps the config's own.
+    """
+    cfg, cfg_dir = load_planner_config(config)
+    if world:
+        cfg["world"] = world
+    return cfg, cfg_dir
 
 
 _HOLD_MODES = (
@@ -111,6 +139,9 @@ class RammpCuroboNode(Node):
 
         self.config = self.declare_parameter("config", "gen3.yaml").value
         self.world = self.declare_parameter("world", "").value
+        timeout_s = float(
+            self.declare_parameter("robot_description_timeout_s", 30.0).value
+        )
 
         # Refuse to double-serve. Two planner nodes on the same action names
         # answer every goal twice and race each other — on hardware this
@@ -131,16 +162,32 @@ class RammpCuroboNode(Node):
 
         self._plan_lock = threading.Lock()
 
+        # The model first: no planner and no servers until a valid one is in.
+        try:
+            xml = prepare_urdf(self._wait_for_model(timeout_s))
+        except ValueError as exc:
+            self.get_logger().fatal("model on %s: %s" % (ROBOT_DESCRIPTION_TOPIC, exc))
+            raise SystemExit(1)
+        urdf_path = write_urdf(xml, tempfile.mkdtemp())
+
         # Heavy GPU init BEFORE the servers exist: a goal sent during the
         # (possibly minutes-long) warmup must not silently queue and then
         # be answered long after the client gave up (RAMMP-Kinova lesson).
         self.get_logger().info("Loading cuRobo planner (%s)..." % self.config)
         from rammp_curobo import CuRoboPlanner
 
-        self.planner = CuRoboPlanner.from_config(self.config)
-        if self.world:
-            self.planner.update_world(self.world)
-            self.get_logger().info("World overridden: %s" % self.world)
+        self.planner = CuRoboPlanner(
+            *planner_config(self.config, self.world), urdf_path=urdf_path
+        )
+        self.get_logger().info(
+            "model from %s: base %s, ee %s, joints [%s]"
+            % (
+                ROBOT_DESCRIPTION_TOPIC,
+                self.planner.base_frame,
+                EE_LINK,
+                ", ".join(self.planner.joint_names),
+            )
+        )
 
         ActionServer(
             self,
@@ -165,7 +212,7 @@ class RammpCuroboNode(Node):
         # obstacles do not exist on the real bench — cuRobo would dodge
         # phantom furniture and happily route through real objects.
         use_sim_time = bool(self.get_parameter("use_sim_time").value)
-        world_name = self.world or self.planner.world_name
+        world_name = self.planner.world_name
         if not use_sim_time and "sim" in world_name:
             self.get_logger().warning(
                 "=== Planning against the SIM world (%s) WITHOUT sim time — "
@@ -179,6 +226,43 @@ class RammpCuroboNode(Node):
             "This node never moves the arm; execution is the caller's."
             % (len(self.planner.joint_names), world_name)
         )
+
+    def _wait_for_model(self, timeout_s):
+        """The URDF text latched on /arm/robot_description.
+
+        Exits 1 with a FATAL naming its publisher after `timeout_s`. A
+        shutdown (SIGINT/SIGTERM) during the wait propagates as
+        KeyboardInterrupt or ExternalShutdownException, which main() treats
+        as a clean exit.
+        """
+        got = []
+        qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        sub = self.create_subscription(
+            String, ROBOT_DESCRIPTION_TOPIC, lambda m: got.append(m.data), qos
+        )
+        self.get_logger().info(
+            "Waiting up to %.0f s for the model on %s..."
+            % (timeout_s, ROBOT_DESCRIPTION_TOPIC)
+        )
+        deadline = time.monotonic() + timeout_s
+        while not got and time.monotonic() < deadline:
+            if not rclpy.ok():
+                raise ExternalShutdownException()
+            rclpy.spin_once(self, timeout_sec=0.1)
+        self.destroy_subscription(sub)
+        if not got:
+            self.get_logger().fatal(
+                "no model on %s after %.0f s. It is published by "
+                "arm_state_publisher: ros2 launch kinova_gen3_description "
+                "description.launch.py mount_file:=<robot>/mount.yaml"
+                % (ROBOT_DESCRIPTION_TOPIC, timeout_s)
+            )
+            raise SystemExit(1)
+        return got[0]
 
     # ---------------------------------------------------------------- planning
     def _plan_to_pose_cb(self, goal_handle):
@@ -287,8 +371,16 @@ class RammpCuroboNode(Node):
 
 
 def main(args=None):
+    # The core logs through Python logging (the world it built, warm-up);
+    # without a handler its INFO never reaches the console.
+    core_log = logging.getLogger("rammp_curobo")
+    core_log.setLevel(logging.INFO)
+    core_log.addHandler(logging.StreamHandler())
     rclpy.init(args=args)
-    node = RammpCuroboNode()
+    try:
+        node = RammpCuroboNode()
+    except (KeyboardInterrupt, ExternalShutdownException):
+        return  # stopped while waiting for the model: a clean exit
     executor = MultiThreadedExecutor()
     executor.add_node(node)
     try:
