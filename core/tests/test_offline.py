@@ -733,6 +733,13 @@ def test_meshes_are_stripped_and_missing_files_load():
     assert root.find("link[@name='arm_mount']") is not None
 
 
+def test_ros2_control_is_stripped():
+    xml = read("arm_level.urdf").replace(
+        "</robot>", "<ros2_control name='x' type='system'/></robot>"
+    )
+    assert not ET.fromstring(prepare_urdf(xml)).findall("ros2_control")
+
+
 def test_foreign_model_is_refused_by_name():
     for broken, why in [
         (read("arm_level.urdf").replace('"arm_mount"', '"base_link"'), "arm_mount"),
@@ -740,7 +747,21 @@ def test_foreign_model_is_refused_by_name():
             read("arm_level.urdf").replace("arm_tool_frame", "tool_frame"),
             "arm_tool_frame",
         ),
+        (
+            read("arm_level.urdf").replace(
+                "</robot>",
+                '<link name="world"/><joint name="w" type="fixed"><parent link="world"/>'
+                '<child link="arm_mount"/></joint></robot>',
+            ),
+            "arm_mount",
+        ),
         (read("arm_level.urdf").replace("arm_joint_4", "joint_4"), "arm_joint_4"),
+        (
+            read("arm_level.urdf").replace(
+                "arm_robotiq_85_left_knuckle_joint", "left_knuckle_joint"
+            ),
+            "arm_robotiq_85_left_knuckle_joint",
+        ),
         ("", "empty"),
         ("<robot", "parse"),
     ]:
@@ -748,10 +769,13 @@ def test_foreign_model_is_refused_by_name():
             prepare_urdf(broken)
 
 
-def test_robot_config_takes_the_urdf_path(tmp_path):
+def test_robot_config_takes_the_urdf_path(tmp_path, monkeypatch):
     p = write_urdf(read("arm_level.urdf"), tmp_path)
     kin = load_robot_config("robot_gen3_2f85.yaml", urdf_path=p)["kinematics"]
     assert kin["urdf_path"] == str(p) and kin["asset_root_path"] == str(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    kin = load_robot_config("robot_gen3_2f85.yaml", urdf_path=p.name)["kinematics"]
+    assert Path(kin["urdf_path"]).is_absolute() and kin["urdf_path"] == str(p)
 
 
 def test_robot_config_without_a_urdf_is_refused():

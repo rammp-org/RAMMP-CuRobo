@@ -10,6 +10,10 @@ Sanitising strips <visual>, <collision> and top-level <ros2_control>: the
 rendered mesh paths point into /opt/ros/humble/share, which the planner image
 does not have, and the baked spheres are the collision model, so meshes are
 never needed.
+
+The 2F-85 gripper is required: the robot config locks its joints and puts
+collision spheres on its links, so a gripperless model cannot load, and it is
+refused here by name rather than failing inside cuRobo.
 """
 
 import xml.etree.ElementTree as ET
@@ -32,8 +36,8 @@ def prepare_urdf(xml):
     """URDF text -> sanitised URDF text, or ValueError naming what is wrong.
 
     Refuses a model that is not ours before cuRobo sees it: the root link
-    must be `arm_mount`, and `arm_tool_frame` and all seven `arm_joint_N`
-    must exist.
+    must be `arm_mount`, and `arm_tool_frame`, all seven `arm_joint_N` and
+    the six 2F-85 `GRIPPER_JOINTS` must exist.
     """
     if not xml or not xml.strip():
         raise ValueError("robot model is empty")
@@ -52,7 +56,7 @@ def prepare_urdf(xml):
         )
     if EE_LINK not in links:
         raise ValueError("robot model has no %r link" % EE_LINK)
-    missing = [j for j in ARM_JOINTS if j not in joints]
+    missing = [j for j in ARM_JOINTS + GRIPPER_JOINTS if j not in joints]
     if missing:
         raise ValueError("robot model is missing joints %s" % missing)
 

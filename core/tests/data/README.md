@@ -4,10 +4,12 @@
 `/arm/robot_description`, rendered by kinova-gen3-ros2's `kinova_gen3_render`. They are
 committed as rendered, plus one trailing newline (the `end-of-file-fixer` hook).
 
-- Image: `kinova-gen3-ros2:review-sim` on abra (`sha256:b8a5a209e2c8…`, built 2026-10-16)
-  from kinova-gen3-ros2 `feat/tilted-arm-mount` @ `e140639` against kinova-gen3-driver
-  `dev` @ `e439d30`. Its `camera` xacro arg defaults to false, so the bracelet is
-  `bracelet_no_vision_link`.
+- Image: `kinova-gen3-ros2:review-sim` on abra, ID
+  `sha256:b8a5a209e2c8a0c3404db4a4d54fd31235e2f4e78570c01651ab2edecc13f895`, built
+  2026-10-16, against kinova-gen3-driver `dev` @ `e439d30`. Built from the
+  kinova-gen3-ros2 `feat/tilted-arm-mount` tree at `e140639`; the description and renderer
+  are unchanged since `6dfb507`. Its `camera` xacro arg defaults to false, so the bracelet
+  mesh is `bracelet_no_vision_link.dae` (no Kinova vision module).
 - Rendered 2026-10-18.
 
 Mount files:
