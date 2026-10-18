@@ -23,6 +23,8 @@ def trajectory_to_msg(traj):
         p.positions = [float(v) for v in traj.positions[k]]
         if traj.velocities is not None:
             p.velocities = [float(v) for v in traj.velocities[k]]
+        if traj.accelerations is not None:
+            p.accelerations = [float(v) for v in traj.accelerations[k]]
         p.time_from_start = duration_msg((k + 1) * traj.dt)
         msg.points.append(p)
     return msg

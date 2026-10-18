@@ -12,6 +12,18 @@ that heading to the new version and bumps the five places the number lives.
 
 ## [Unreleased]
 
+### Fixed
+
+- `trajectory_to_msg` now copies the planned accelerations into each
+  `JointTrajectoryPoint` (#15); they were computed and then dropped at the
+  message boundary. A consumer that picks its interpolation order from what
+  the points carry (`joint_trajectory_controller`, the kinova driver) moves
+  from cubic to quintic on our plans with no change on its side. Measured on
+  the Jetson: the commanded position moves by at most 0.1 mrad. On plans
+  cuRobo optimized coarser than `interpolation_dt` (most longer moves), the
+  accelerations do not match the resampled positions — see the PR closing #15 before
+  relying on quintic to make those plans smooth.
+
 ## [1.1.0] — 2026-10-02
 
 ### Added
