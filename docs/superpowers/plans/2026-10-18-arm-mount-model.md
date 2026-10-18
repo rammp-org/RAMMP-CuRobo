@@ -40,22 +40,24 @@
 ## Review Focus
 
 1. A rendered URDF whose mesh files do not exist in the image must load (Task 1: `test_meshes_are_stripped_and_missing_files_load`).
-2. Mimic tags and articulated gripper joints in the URDF must leave cuRobo with exactly the 7 arm joints in chain order (Task 3: `test_kinematics_joint_names_are_the_seven_arm_joints`).
-3. A tilted model (`rpy_deg [0, 30, 0]`) must plan in `arm_mount`: the same arm-relative goal, rotated by `Ry(30°)`, gives the same joint solution (Task 3: `test_tilted_model_plans_in_arm_mount`).
-4. A start pose outside the new limits by more than 0.05 rad is refused naming the joint, not silently clamped (Task 3: `test_park_pose_beyond_clamp_is_refused_by_name`).
-5. A model that is not ours (unprefixed names, root not `arm_mount`, no `arm_tool_frame`) is refused by name before cuRobo sees it (Task 1: `test_foreign_model_is_refused_by_name`).
+1. Mimic tags and articulated gripper joints in the URDF must leave cuRobo with exactly the 7 arm joints in chain order (Task 3: `test_kinematics_joint_names_are_the_seven_arm_joints`).
+1. A tilted model (`rpy_deg [0, 30, 0]`) must plan in `arm_mount`: the same arm-relative goal, rotated by `Ry(30°)`, gives the same joint solution (Task 3: `test_tilted_model_plans_in_arm_mount`).
+1. A start pose outside the new limits by more than 0.05 rad is refused naming the joint, not silently clamped (Task 3: `test_park_pose_beyond_clamp_is_refused_by_name`).
+1. A model that is not ours (unprefixed names, root not `arm_mount`, no `arm_tool_frame`) is refused by name before cuRobo sees it (Task 1: `test_foreign_model_is_refused_by_name`).
 
----
+______________________________________________________________________
 
 ### Task 1: Test fixtures and URDF intake in `core`
 
 **Files:**
+
 - Create: `core/tests/data/arm_level.urdf`, `core/tests/data/arm_tilt30.urdf`, `core/tests/data/README.md`
 - Create: `core/rammp_curobo/urdf_model.py`
 - Modify: `core/rammp_curobo/robot_config.py` (`load_robot_config`)
 - Test: `core/tests/test_offline.py`
 
 **Interfaces:**
+
 - Produces: `prepare_urdf(xml: str) -> str`, `write_urdf(xml: str, directory: str | Path) -> Path`, constants `ROOT_LINK = "arm_mount"`, `EE_LINK = "arm_tool_frame"`, `ARM_JOINTS: tuple[str, ...]` (`arm_joint_1..7`), `GRIPPER_JOINTS: tuple[str, ...]` (the six in Global Constraints), all in `rammp_curobo.urdf_model`. `load_robot_config(path, urdf_path: str | Path | None = None) -> dict`.
 
 - [ ] **Step 1: Render the fixtures.** On abra, from an image built from kinova-gen3-ros2 `feat/tilted-arm-mount` (or `dev` once PR #47 merges), render two models with `python3 -m kinova_gen3_render --mount <file> --out <out>` (source `/module_ws/install/setup.bash`): `robot: fixture_level`, `rpy_deg: [0, 0, 0]` → `arm_level.urdf`; `robot: fixture_tilt30`, `rpy_deg: [0, 30, 0]` → `arm_tilt30.urdf`. Commit them unmodified. `data/README.md` records the image, commit and both commands. Check the bracelet is the no-vision one: `grep -c bracelet_no_vision_link arm_level.urdf` ≥ 1.
@@ -101,23 +103,25 @@ def test_robot_config_without_a_urdf_is_refused():
 ### Task 2: Bake the robot config onto the upstream links
 
 **Files:**
+
 - Modify: `scripts/bake_robot_config.py`, `core/rammp_curobo/configs/robot_gen3_2f85.yaml` (regenerated), `Makefile` (`bake` runs in the image), `core/rammp_curobo/config.py` (`PLANNER_DEFAULTS["joint_names"]`), `core/rammp_curobo/configs/gen3.yaml` (`joint_names`)
 - Create: `core/tests/data/robot_gen3_2f85_nvidia.yaml` (today's baked config, copied verbatim, the parity reference)
 - Test: `core/tests/test_offline.py`
 
 **Interfaces:**
+
 - Consumes: `ARM_JOINTS`, `GRIPPER_JOINTS`, `ROOT_LINK`, `EE_LINK` (Task 1); fixture `arm_level.urdf`.
 - Produces: `LINK_MAP: dict[str, str]` in `bake_robot_config.py` (NVIDIA link → upstream link); the regenerated `robot_gen3_2f85.yaml` with `base_link: arm_mount`, `ee_link: arm_tool_frame`, `urdf_path: from_robot_description`, `asset_root_path: ""`, `mesh_link_names: []`, `lock_joints: {<six gripper joints>: 0.0}`, cspace `joint_names: [arm_joint_1..7]`.
 
 `LINK_MAP` (arm links keep their frames, gain the prefix; gripper links move to the upstream 2F-85):
 
-| NVIDIA | upstream |
-| --- | --- |
-| `base_link` … `bracelet_link` (8 arm links) | `arm_` + same name |
-| `robotiq_arg2f_base_link` | `arm_robotiq_85_base_link` |
-| `left_outer_finger` / `right_outer_finger` | `arm_robotiq_85_left_finger_link` / `arm_robotiq_85_right_finger_link` |
+| NVIDIA                                             | upstream                                                                       |
+| -------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `base_link` … `bracelet_link` (8 arm links)        | `arm_` + same name                                                             |
+| `robotiq_arg2f_base_link`                          | `arm_robotiq_85_base_link`                                                     |
+| `left_outer_finger` / `right_outer_finger`         | `arm_robotiq_85_left_finger_link` / `arm_robotiq_85_right_finger_link`         |
 | `left_inner_finger_pad` / `right_inner_finger_pad` | `arm_robotiq_85_left_finger_tip_link` / `arm_robotiq_85_right_finger_tip_link` |
-| `left_outer_knuckle` (buffer entry only) | `arm_robotiq_85_left_knuckle_link` |
+| `left_outer_knuckle` (buffer entry only)           | `arm_robotiq_85_left_knuckle_link`                                             |
 
 - [ ] **Step 1: Copy today's baked config** to `core/tests/data/robot_gen3_2f85_nvidia.yaml` before changing anything.
 
@@ -139,7 +143,7 @@ def test_baked_robot_config_is_the_upstream_model():
     assert set(kin["collision_link_names"]) == {LINK_MAP[n] for n in old["collision_link_names"]}
 ```
 
-  and `test_planner_config_loads_and_merges` / `test_gen3_yaml_matches_planner_defaults` now expect `["arm_joint_%d" % i for i in range(1, 8)]`.
+and `test_planner_config_loads_and_merges` / `test_gen3_yaml_matches_planner_defaults` now expect `["arm_joint_%d" % i for i in range(1, 8)]`.
 
 - [ ] **Step 3: Run to see it fail** (offline, muk or abra) → FAIL on `base_link`.
 
@@ -152,12 +156,15 @@ def test_baked_robot_config_is_the_upstream_model():
 ### Task 3: Planner on the URDF; parity and limits verified on the GPU
 
 **Files:**
+
 - Modify: `core/rammp_curobo/planner.py` (`__init__`, `from_config`, `_finish`, `_explain`, `plan_to_pose` docstring), `core/rammp_curobo/types.py` (`Trajectory`), `core/rammp_curobo/configs/gen3_real.yaml` (header comment)
 - Create: `core/tests/test_model_parity.py` (GPU), `core/tests/conftest.py` (`urdf_level`, `urdf_tilt30` fixtures returning written paths)
 - Modify: `core/tests/test_smoke.py` (fixture passes `urdf_path`; names and limits)
 
 **Interfaces:**
+
 - Consumes: `load_robot_config(path, urdf_path)` (Task 1); the regenerated config (Task 2).
+
 - Produces: `CuRoboPlanner(config: dict, config_dir=None, *, urdf_path: str | Path | None = None)`, `CuRoboPlanner.from_config(name_or_path, *, urdf_path=None)` -- **keyword-only**, so open PR #31's positional `from_config(name, overrides)` cannot land a dict in `urdf_path`; `Trajectory.frame_id: str` (new field, default `""`); `CuRoboPlanner.base_frame -> str` (the robot config's `base_link`, i.e. `"arm_mount"`).
 
 - [ ] **Step 1: Write the failing GPU tests** in `test_model_parity.py` (module-skip without CUDA like `test_smoke.py`). The reference is NVIDIA's model built from `data/robot_gen3_2f85_nvidia.yaml` (urdf resolved in cuRobo's content tree):
@@ -198,7 +205,7 @@ def test_park_pose_beyond_clamp_is_refused_by_name(planner):
     assert not res.success and "arm_joint_4" in res.error
 ```
 
-  `max_pair_distance` pairs spheres through `LINK_MAP` (same order per link). Self-collision: `planner.check_state_valid(retract)` and the existing `test_check_state_valid` stay green. Update `test_smoke.py`'s `planner` fixture to `from_config("gen3.yaml", urdf_path=urdf_level)`, its `joint_N` strings to `arm_joint_N`, the joint_2 limit comment to ±2.24, and replace `test_park_pose_outside_model_limits_is_clamped` with a clamp case **inside** 0.05 rad (`park[3] = -2.60` → clamped to -2.57, error-free).
+`max_pair_distance` pairs spheres through `LINK_MAP` (same order per link). Self-collision: `planner.check_state_valid(retract)` and the existing `test_check_state_valid` stay green. Update `test_smoke.py`'s `planner` fixture to `from_config("gen3.yaml", urdf_path=urdf_level)`, its `joint_N` strings to `arm_joint_N`, the joint_2 limit comment to ±2.24, and replace `test_park_pose_outside_model_limits_is_clamped` with a clamp case **inside** 0.05 rad (`park[3] = -2.60` → clamped to -2.57, error-free).
 
 - [ ] **Step 2: Build the branch image on abra and run them to see them fail** — `docker build ... -t rammp-curobo:arm-mount .` then `docker run --rm --runtime nvidia --network none rammp-curobo:arm-mount python3 -m pytest /opt/rammp_curobo_src/core/tests -q` → FAIL (`from_config() got an unexpected keyword argument 'urdf_path'`).
 
@@ -211,11 +218,13 @@ def test_park_pose_beyond_clamp_is_refused_by_name(planner):
 ### Task 4: An empty collision world, at construction only
 
 **Files:**
+
 - Modify: `core/rammp_curobo/world.py` (`make_world_config`), `core/rammp_curobo/planner.py` (`_init_curobo`)
 - Create: `core/rammp_curobo/configs/world_empty.yaml`
 - Test: `core/tests/test_offline.py`, `core/tests/test_smoke.py`
 
 **Interfaces:**
+
 - Produces: `make_world_config(scene, padding=0.02, ignore=frozenset(), no_pad_names=frozenset(), cache_obb=40, allow_empty: bool = False)`; packaged `world_empty.yaml` (`base_frame: arm_mount`, `obstacles: []`, `objects: []`, `targets: []`).
 
 - [ ] **Step 1: Write the failing tests** — offline: `make_world_config(load_scene("world_empty.yaml"), allow_empty=True)` returns a config with no cuboids, and without `allow_empty` still raises `match="empty"`; `test_packaged_configs_exist` includes `world_empty.yaml`. GPU (`test_smoke.py`): `CuRoboPlanner.from_config(cfg_with_world("world_empty.yaml"), urdf_path=urdf_level)` constructs and `plan_to_joints` from retract to a nearby goal succeeds; `update_world([])` on it still raises `match="empty"`.
@@ -231,11 +240,14 @@ def test_park_pose_beyond_clamp_is_refused_by_name(planner):
 ### Task 5: The ROS node reads `/arm/robot_description` and stamps the frame
 
 **Files:**
+
 - Modify: `rammp_curobo_ros/rammp_curobo_ros/planner_node.py`, `rammp_curobo_ros/rammp_curobo_ros/conversions.py`, `rammp_curobo_ros/package.xml` (`std_msgs`), `rammp_curobo_ros/launch/planner.launch.py`
 - Test: `rammp_curobo_ros/test/test_robot_description.py`, `rammp_curobo_ros/test/test_start_joints_contract.py`
 
 **Interfaces:**
+
 - Consumes: `prepare_urdf`, `write_urdf` (Task 1); `CuRoboPlanner(config, config_dir, *, urdf_path=...)` (Task 3); `Trajectory.frame_id` (Task 3).
+
 - Produces: node parameter `robot_description_timeout_s` (float, default `30.0`); `trajectory_to_msg(traj)` sets `msg.header.frame_id = traj.frame_id`; a module-level `planner_config(config: str, world: str) -> tuple[dict, Path]` that applies the `world` parameter to the config **before** construction.
 
 - [ ] **Step 1: Write the failing tests** (offline with ROS messages on `PYTHONPATH`, the existing pattern): `trajectory_to_msg(Trajectory(..., frame_id="arm_mount")).header.frame_id == "arm_mount"`; `planner_config("gen3.yaml", "world_empty.yaml")[0]["world"] == "world_empty.yaml"` and `planner_config("gen3.yaml", "")` keeps the config's world; `JOINTS` in the start-joints contract test become `arm_joint_N`.
@@ -251,6 +263,7 @@ def test_park_pose_beyond_clamp_is_refused_by_name(planner):
 ### Task 6: Contract text, docs, and the live check on abra
 
 **Files:**
+
 - Modify: `rammp_curobo_interfaces/action/PlanToPose.action` (lines 1, 4, 28-31, 40-46, 66-68), `rammp_curobo_interfaces/action/PlanToJoints.action` (lines 1, 8), `core/rammp_curobo/constraints.py` (`PoseConstraint` docstring, lines 50-61), `CLAUDE.md`, `README.md`, `INTEGRATION.md`, `docker/README.md`, `CHANGELOG.md`, `rammp_curobo_ros/rammp_curobo_ros/tour_demo.py` (comments only)
 
 - [ ] **Step 1: Contract text.** `PlanToPose.action` line 1: "a tool pose (`arm_tool_frame`) in `arm_mount`"; joint lists say `arm_joint_1..7`; the result field says its `header.frame_id` is `arm_mount`. Replace the "LEVEL WITH THE WORLD" paragraph (40-46) and the `constraints.py` caveat with the actual limitation: *HOLD_LEVEL holds level relative to `arm_mount`, which is level with the chair, not with gravity: on a ramp it is off by the ramp angle.* The hold maths and the verifier do not change.
