@@ -12,6 +12,63 @@ that heading to the new version and bumps the five places the number lives.
 
 ## [Unreleased]
 
+The planner plans against the arm's own model, in `arm_mount`, for tilted arm
+mounts (rammp-deployments `docs/superpowers/specs/2026-10-15-tilted-arm-mount-design.md`).
+Breaking: move a pin only together with kinova-gen3-ros2's `arm_` names and
+`arm_mount` (#47).
+
+### Changed (breaking)
+
+- **A required topic.** The node builds its robot model from the URDF
+  `arm_state_publisher` latches on `/arm/robot_description` (RELIABLE +
+  TRANSIENT_LOCAL), waiting `robot_description_timeout_s` (default 30 s); no
+  model in time is a FATAL naming `arm_state_publisher` and exit 1. No URDF
+  ships here any more. The model is read once: a later, different model is
+  ignored, so restart the planner when the robot's mount changes. In `core`,
+  `CuRoboPlanner(...)` / `from_config(...)` take the model as a file,
+  `urdf_path=` (keyword); the baked config refuses to load without one.
+- **Joint names** `joint_1..7` → `arm_joint_1..7`, on goals, in
+  `gen3.yaml` and on every returned trajectory.
+- **Frame.** Goals and plans are in `arm_mount`, the URDF's root (level with
+  the chair), with the tool at `arm_tool_frame` (was `base_link` /
+  `tool_frame`). On a level mount the numbers are unchanged; on a tilted one
+  they are the arm's tilt apart, as intended.
+- **Joint limits** are the URDF's, the ones the driver enforces: j2/j4/j6
+  ±2.41/±2.66/±2.23 → **±2.24/±2.57/±2.09** rad (continuous j1/3/5/7 parse as
+  ±6.28). `limit_clamp_rad` stays 0.05, so a plan from the Gen3's park pose
+  (`arm_joint_4` ≈ -2.674) is now **refused**, naming `arm_joint_4`
+  (kinova-gen3-ros2#49).
+- **The container's CMD** execs the planner node directly (PID 1) instead of
+  `ros2 launch`, so the container's exit code is the node's: a missing model
+  is a non-zero exit, and `docker stop` exits 0 promptly.
+
+### Added
+
+- **Every plan states its frame:** `trajectory.header.frame_id` is
+  `arm_mount` on pose and joint plans alike (core: `Trajectory.frame_id`).
+  kinova-gen3-ros2's `GoToEEPose` refuses an unstamped pose plan on a tilted
+  mount (#47).
+- **`world_empty.yaml`**: plan against the arm alone (flatbot). Accepted at
+  construction only (the node's `world` parameter is applied before the
+  planner is built); `update_world` / `set_world` still refuse an empty
+  world. The startup log reports `Collision world: N boxes (<file>)`, and a
+  world file with an unknown top-level key is refused.
+
+### Unchanged on purpose
+
+- **The collision spheres** are moved onto the upstream links through FK of
+  both models, not re-tuned: same count and radii, every sphere and
+  `arm_tool_frame` within 1 mm (and 0.1°) of NVIDIA's model, which stays the
+  sphere source. `make bake` now runs inside the image.
+- **The gripper** is still locked open, now by its actuated joint only
+  (`arm_robotiq_85_left_knuckle_joint`); cuRobo holds the five mimics with it.
+  The URDF gives the mimic joints no limits, so they are filled in for cuRobo
+  from the joint each follows (kinova-gen3-ros2#48 may add them upstream).
+- **The retract seed's values**, `[0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]`.
+- **`HOLD_LEVEL`'s maths.** Its documented limitation is now the real one:
+  it holds level relative to `arm_mount`, which is level with the chair, not
+  with gravity — on a ramp it is off by the ramp angle.
+
 ## [1.1.0] — 2026-10-02
 
 ### Added

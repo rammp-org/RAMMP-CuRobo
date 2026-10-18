@@ -8,15 +8,23 @@ to execute. The planner never touches the arm: it holds no driver, no
 controller client and no `/joint_states` subscription, and execution is
 entirely the caller's.
 
+It plans against the arm's own model: the URDF `arm_state_publisher`
+(kinova-gen3-ros2) latches on `/arm/robot_description`. No URDF ships here.
+Goals and plans are in that model's root frame, **`arm_mount`** (Z up when
+the chair is level, X forward, origin at the arm's base), with the tool at
+`arm_tool_frame` and joints `arm_joint_1..7`; every returned trajectory
+says so in `header.frame_id`.
+
 ```
 core/                     Layer 1 — pip package `rammp-curobo`: pure-Python
-                          cuRobo wrapper, NO ROS imports (configs baked in)
+                          cuRobo wrapper, NO ROS imports (configs baked in;
+                          the robot model is a URDF path you pass)
 rammp_curobo_interfaces/  ROS 2 action/srv definitions (dependency-free)
 rammp_curobo_ros/         Layer 2 — plan-only planner node + tour_demo
                           (the showcase: 4 random points chain-planned
                           into one merged trajectory; nothing moves)
 examples/                 plan_only.py (no ROS)
-scripts/                  config baking
+scripts/                  config baking (`make bake`, runs in the image)
 docker/                   the planning service as a container (Jetson/JP6)
 docs/HARDWARE_BRINGUP.md  the real-arm runbook — READ BEFORE TOUCHING HARDWARE
 ```
@@ -92,7 +100,10 @@ python3 -m pytest core/tests -q
 
 The offline tests run anywhere; the GPU tests plan real collision-free
 trajectories in the sim-kitchen world (first run compiles kernels — takes
-a minute or two; ~20 s warm). Or plan one motion directly:
+a minute or two; ~20 s warm). They plan on `core/tests/data/arm_level.urdf`
+and `arm_tilt30.urdf`, the arm's model rendered by kinova-gen3-ros2's
+`kinova_gen3_render` for a level and a 30° mount (how: that directory's
+README). Or plan one motion directly:
 
 ```bash
 python3 examples/plan_only.py --joints 0.3 0.262 3.142 -2.269 0.0 0.960 1.571
@@ -116,6 +127,29 @@ That's the whole service: `/rammp_curobo/plan_to_pose` and
 plan from (`start_joints`, **required** — the planner has no view of any
 arm) and return the trajectory. See **INTEGRATION.md** for client code,
 and **docker/** to run the same thing as a container.
+
+The node first waits for the model on `/arm/robot_description` (latched;
+`robot_description_timeout_s`, default 30 s), so `arm_state_publisher`
+must be up in the same ROS domain:
+`ros2 launch kinova_gen3_description description.launch.py mount_file:=<robot>/mount.yaml`.
+Without it the node logs a FATAL naming `arm_state_publisher` and exits 1.
+It reads the model **once**: a later, different model on the topic is
+ignored, so **restart the planner whenever the robot's mount changes**.
+Once built it logs the model (`base arm_mount, ee arm_tool_frame, joints [arm_joint_1, …]`) and the world (`Collision world: N boxes (<file>)`).
+
+- **Joint limits are the URDF's**, the ones the driver enforces (j2/j4/j6
+  ±2.24/±2.57/±2.09). A start more than `limit_clamp_rad` (0.05) outside
+  them is refused naming the joint — including the Gen3's park pose
+  (`arm_joint_4` ≈ -2.674; kinova-gen3-ros2#49).
+- **The gripper is locked open** by its actuated joint
+  (`arm_robotiq_85_left_knuckle_joint`); cuRobo holds the five mimic joints
+  with it. Their limits are filled in from that joint for cuRobo, since the
+  URDF gives none (kinova-gen3-ros2#48 may add them upstream).
+- **Nothing in reach to model** (flatbot)? `world:=world_empty.yaml` plans
+  against the arm alone. An empty world is accepted only at startup;
+  `set_world` / `update_world` still refuse one.
+- **`HOLD_LEVEL` is level with `arm_mount`**, which is level with the chair,
+  not with gravity: on a ramp it is off by the ramp angle.
 
 ## The showcase
 
@@ -163,6 +197,9 @@ executor that used to live here was removed (**issue #6**).
 | `plan_single_js` fails / `DT_EXCEPTION` on older Jetson wheels     | known torch-wheel cuSOLVER gap; `joint_space_method: auto` falls back to FK-pose planning automatically. Keep `enable_graph: false` on Jetson always                                              |
 | plan succeeds but joints differ from a joint goal                  | FK-pose fallback reached the POSE via another joint family — check `goal_mismatch_rad` before acting on it                                                                                        |
 | goal aborted: "start_joints is required"                           | `start_joints` is not optional — the planner has no view of any arm, so the caller must send the configuration to plan from                                                                       |
+| node exits 1: "no model on /arm/robot_description"                 | `arm_state_publisher` is not running in this ROS domain (or not discoverable) — start it, then the planner                                                                                        |
+| plan refused naming `arm_joint_4` from the park pose               | the park pose (-2.674) is outside the URDF's ±2.57 by more than the 0.05 clamp — move out of park first (kinova-gen3-ros2#49)                                                                     |
+| plans ignore a new mount                                           | the model is read once at startup — restart the planner after changing the robot's mount                                                                                                          |
 | node warns about SIM world without sim time                        | you're (probably) on the real arm with the kitchen world — relaunch with `world:=world_real_bench.yaml` (measured!)                                                                               |
 | nodes can't see each other's topics                                | `ROS_LOCALHOST_ONLY=1` must be exported in EVERY shell (non-interactive shells skip `~/.zshrc` — export explicitly; RAMMP-Kinova's `tools/launch_stack.zsh` does)                                 |
 | both bringups fight / controllers flap                             | MuJoCo sim and kortex bringup both claim `/controller_manager` — run exactly one                                                                                                                  |

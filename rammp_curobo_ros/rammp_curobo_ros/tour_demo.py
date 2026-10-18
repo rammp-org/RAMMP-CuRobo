@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Plan-only tour: 4 random reachable points, chained cuRobo plans.
 
-Samples 4 random targets in a +/-45 deg cone in front of the arm inside
-its natural reach and PRE-PLANS the whole tour as chained segments
+Samples 4 random targets (in arm_mount) in a +/-45 deg cone in front of
+the arm inside its natural reach and PRE-PLANS the whole tour as chained segments
 (start -> P1 -> P2 -> P3 -> P4 -> start), each planned from the previous
 segment's planned endpoint, then merges them into one continuous
 trajectory and reports it.
@@ -35,8 +35,10 @@ from rammp_curobo_ros.ros_util import NODE_NAMESPACE, spin_until_done
 # planner: where the arm belongs is an arm-layer opinion, and the planner
 # holds none (issue #6). A demo is allowed one; a planner is not.
 HOME = [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]
-# tool_frame orientation at HOME (FK-verified on gen3_real.yaml to 3e-4):
-# tool z level along +x, wrist flat. Targets steer THIS attitude toward
+# arm_tool_frame orientation at HOME on a level mount (FK-verified on
+# gen3_real.yaml to 3e-4): tool z level along +x, wrist flat. Targets and
+# this attitude are in arm_mount, so on a tilted mount it is still level,
+# but no longer HOME's own. Targets steer THIS attitude toward
 # each bearing (Rz(bearing) ⊗ q_home) so the wrist stays flat instead of
 # rolling the gripper vertical/straight-down.
 HOME_QUAT_XYZW = [0.5, 0.5, 0.5, 0.5]
@@ -150,7 +152,7 @@ def main():
         nargs=7,
         default=None,
         help="joint configuration to start and end the tour at (rad, "
-        "joint_1..7); default: this demo's HOME",
+        "arm_joint_1..7); default: this demo's HOME",
     )
     ap.add_argument("--points", type=int, default=4)
     ap.add_argument(

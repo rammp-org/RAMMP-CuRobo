@@ -37,3 +37,8 @@ docker run --rm --network none -u $(id -u):$(id -g) -v $PWD:/w -w /w kinova-gen3
 
 The two files differ only in `arm_base_joint`'s origin: `rpy="0.0 0.5235987755982988 0.0"`
 in the tilt fixture.
+
+The fixtures are used as rendered: the 2F-85's mimic joints carry no `<limit>` in them, and
+`urdf_model.prepare_urdf` fills each from the joint it follows before cuRobo reads the
+model. The robot config locks the gripper by its actuated joint only
+(`arm_robotiq_85_left_knuckle_joint`); cuRobo holds the five mimics with it.
