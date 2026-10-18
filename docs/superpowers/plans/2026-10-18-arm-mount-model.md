@@ -22,7 +22,7 @@
 - This repo never touches the arm: no executor, no `/joint_states`, no controller clients (CLAUDE.md, issue #6).
 - Frame for all Cartesian I/O: `arm_mount` (Z against gravity when the chair is level, X forward, origin at the arm's base).
 - Kinematics: `base_link: arm_mount`, `ee_link: arm_tool_frame`. Joint names `arm_joint_1 … arm_joint_7`. The retract seed's **values** are unchanged: `[0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]`.
-- The 6 Robotiq joints are locked open (`lock_joints`, value `0.0`): `arm_robotiq_85_left_knuckle_joint`, `arm_robotiq_85_right_knuckle_joint`, `arm_robotiq_85_left_inner_knuckle_joint`, `arm_robotiq_85_right_inner_knuckle_joint`, `arm_robotiq_85_left_finger_tip_joint`, `arm_robotiq_85_right_finger_tip_joint`.
+- The gripper is locked open: `lock_joints` holds the actuated `arm_robotiq_85_left_knuckle_joint` at `0.0`, and cuRobo's mimic handling holds the other five (cuRobo v0.7.8 refuses mimic joints in `lock_joints`).
 - Joint limits come from the URDF — the values the driver enforces (j2/j4/j6 ±2.24/±2.57/±2.09; continuous j1/3/5/7 become ±6.28 in cuRobo's parser).
 - **Spheres are moved, not re-tuned.** Same count, same radii; only centres are re-expressed.
 - Verification (spec): at a set of configurations every sphere's world position in `arm_mount` matches the old model's within **1 mm**; `arm_tool_frame` matches NVIDIA's `tool_frame` within **1 mm and 0.1°**; the existing self-collision checks pass.
@@ -58,7 +58,7 @@ ______________________________________________________________________
 
 **Interfaces:**
 
-- Produces: `prepare_urdf(xml: str) -> str`, `write_urdf(xml: str, directory: str | Path) -> Path`, constants `ROOT_LINK = "arm_mount"`, `EE_LINK = "arm_tool_frame"`, `ARM_JOINTS: tuple[str, ...]` (`arm_joint_1..7`), `GRIPPER_JOINTS: tuple[str, ...]` (the six in Global Constraints), all in `rammp_curobo.urdf_model`. `load_robot_config(path, urdf_path: str | Path | None = None) -> dict`.
+- Produces: `prepare_urdf(xml: str) -> str`, `write_urdf(xml: str, directory: str | Path) -> Path`, constants `ROOT_LINK = "arm_mount"`, `EE_LINK = "arm_tool_frame"`, `ARM_JOINTS: tuple[str, ...]` (`arm_joint_1..7`), `GRIPPER_JOINTS: tuple[str, ...]` (the six 2F-85 joints `prepare_urdf` requires), all in `rammp_curobo.urdf_model`. `load_robot_config(path, urdf_path: str | Path | None = None) -> dict`.
 
 - [ ] **Step 1: Render the fixtures.** On abra, from an image built from kinova-gen3-ros2 `feat/tilted-arm-mount` (or `dev` once PR #47 merges), render two models with `python3 -m kinova_gen3_render --mount <file> --out <out>` (source `/module_ws/install/setup.bash`): `robot: fixture_level`, `rpy_deg: [0, 0, 0]` → `arm_level.urdf`; `robot: fixture_tilt30`, `rpy_deg: [0, 30, 0]` → `arm_tilt30.urdf`. Commit them unmodified. `data/README.md` records the image, commit and both commands. Check the bracelet is the no-vision one: `grep -c bracelet_no_vision_link arm_level.urdf` ≥ 1.
 
@@ -111,7 +111,7 @@ def test_robot_config_without_a_urdf_is_refused():
 **Interfaces:**
 
 - Consumes: `ARM_JOINTS`, `GRIPPER_JOINTS`, `ROOT_LINK`, `EE_LINK` (Task 1); fixture `arm_level.urdf`.
-- Produces: `LINK_MAP: dict[str, str]` in `bake_robot_config.py` (NVIDIA link → upstream link); the regenerated `robot_gen3_2f85.yaml` with `base_link: arm_mount`, `ee_link: arm_tool_frame`, `urdf_path: from_robot_description`, `asset_root_path: ""`, `mesh_link_names: []`, `lock_joints: {<six gripper joints>: 0.0}`, cspace `joint_names: [arm_joint_1..7]`.
+- Produces: `LINK_MAP: dict[str, str]` in `bake_robot_config.py` (NVIDIA link → upstream link); the regenerated `robot_gen3_2f85.yaml` with `base_link: arm_mount`, `ee_link: arm_tool_frame`, `urdf_path: from_robot_description`, `asset_root_path: ""`, `mesh_link_names: []`, `lock_joints: {arm_robotiq_85_left_knuckle_joint: 0.0}`, cspace `joint_names: [arm_joint_1..7]`.
 
 `LINK_MAP` (arm links keep their frames, gain the prefix; gripper links move to the upstream 2F-85):
 

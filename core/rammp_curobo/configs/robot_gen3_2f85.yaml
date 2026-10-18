@@ -152,8 +152,7 @@ robot_cfg:
     urdf_path: from_robot_description
     asset_root_path: ''
     mesh_link_names: []
-    lock_joints: {arm_robotiq_85_left_knuckle_joint: 0.0, arm_robotiq_85_right_knuckle_joint: 0.0, arm_robotiq_85_left_inner_knuckle_joint: 0.0,
-      arm_robotiq_85_right_inner_knuckle_joint: 0.0, arm_robotiq_85_left_finger_tip_joint: 0.0, arm_robotiq_85_right_finger_tip_joint: 0.0}
+    lock_joints: {arm_robotiq_85_left_knuckle_joint: 0.0}
     cspace:
       joint_names: [arm_joint_1, arm_joint_2, arm_joint_3, arm_joint_4, arm_joint_5, arm_joint_6, arm_joint_7]
       cspace_distance_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]

@@ -34,7 +34,6 @@ from rammp_curobo.scene import load_scene, scene_from_obstacles
 from rammp_curobo.types import Trajectory
 from rammp_curobo.urdf_model import (
     ARM_JOINTS,
-    GRIPPER_JOINTS,
     prepare_urdf,
     write_urdf,
 )
@@ -97,7 +96,7 @@ def test_baked_robot_config_is_the_upstream_model():
     old = load_yaml_robot(DATA / "robot_gen3_2f85_nvidia.yaml")["kinematics"]
     assert kin["base_link"] == "arm_mount" and kin["ee_link"] == "arm_tool_frame"
     assert kin["urdf_path"] == "from_robot_description" and kin["mesh_link_names"] == []
-    assert kin["lock_joints"] == {j: 0.0 for j in GRIPPER_JOINTS}
+    assert kin["lock_joints"] == {"arm_robotiq_85_left_knuckle_joint": 0.0}
     assert kin["cspace"]["joint_names"] == list(ARM_JOINTS)
     assert kin["cspace"]["retract_config"] == old["cspace"]["retract_config"]
     for nv, up in LINK_MAP.items():  # moved, not re-tuned

@@ -42,7 +42,7 @@ import yaml
 
 from rammp_curobo.config import PLANNER_DEFAULTS
 from rammp_curobo.robot_config import URDF_SENTINEL
-from rammp_curobo.urdf_model import ARM_JOINTS, EE_LINK, GRIPPER_JOINTS, ROOT_LINK
+from rammp_curobo.urdf_model import ARM_JOINTS, EE_LINK, ROOT_LINK
 
 REPO = Path(__file__).resolve().parent.parent
 OUT = REPO / "core" / "rammp_curobo" / "configs" / "robot_gen3_2f85.yaml"
@@ -261,7 +261,10 @@ def main():
     kin["mesh_link_names"] = []
 
     cspace = kin.pop("cspace")
-    kin["lock_joints"] = {j: 0.0 for j in GRIPPER_JOINTS}
+    # The gripper is locked open by its one actuated joint: cuRobo v0.7.8
+    # refuses mimic joints in lock_joints and holds the other five through
+    # their <mimic>.
+    kin["lock_joints"] = {"arm_robotiq_85_left_knuckle_joint": 0.0}
     assert cspace["joint_names"] == ["joint_%d" % i for i in range(1, 8)]
     assert JOINT_NAMES == list(ARM_JOINTS)
     cspace["joint_names"] = JOINT_NAMES
