@@ -83,7 +83,9 @@ def _fill_mimic_limits(root):
     These are only the fields cuRobo requires, on joints whose motion another
     joint defines. Velocity scales by |multiplier| (cuRobo refuses a mimic
     slower than its leader); the range is the mimic's actual range, which
-    must contain 0, where the gripper is locked open.
+    must contain 0, where the gripper is locked open. A mimic of a limitless
+    mimic is filled only if its leader comes first in document order, and a
+    leader without lower/upper (continuous) maps to [offset, offset].
     """
     by_name = {j.get("name"): j for j in root.findall("joint")}
     for joint in root.findall("joint"):

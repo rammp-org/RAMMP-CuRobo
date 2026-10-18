@@ -34,6 +34,7 @@ from rammp_curobo.scene import load_scene, scene_from_obstacles
 from rammp_curobo.types import Trajectory
 from rammp_curobo.urdf_model import (
     ARM_JOINTS,
+    _fill_mimic_limits,
     prepare_urdf,
     write_urdf,
 )
@@ -788,6 +789,35 @@ def test_mimic_joints_get_their_leaders_limit_scaled():
     # a mimic with a <limit> of its own keeps it
     right = root.find("joint[@name='arm_robotiq_85_right_knuckle_joint']")
     assert len(right.findall("limit")) == 1
+
+
+def _mimic_model(mimic, lead_limit='<limit lower="0" upper="0.8" velocity="0.5"/>'):
+    return ET.fromstring(
+        '<robot><joint name="lead" type="revolute">%s</joint>'
+        '<joint name="m" type="revolute">%s</joint></robot>' % (lead_limit, mimic)
+    )
+
+
+def test_mimic_offset_and_multiplier_map_the_range_and_scale_velocity():
+    root = _mimic_model('<mimic joint="lead" multiplier="-2" offset="0.1"/>')
+    _fill_mimic_limits(root)
+    lim = root.find("joint[@name='m']/limit")
+    assert float(lim.get("lower")) == pytest.approx(-1.5)
+    assert float(lim.get("upper")) == pytest.approx(0.1)
+    assert float(lim.get("velocity")) == pytest.approx(1.0)
+
+
+def test_mimic_range_that_excludes_0_is_refused():
+    root = _mimic_model('<mimic joint="lead" offset="1.0"/>')
+    with pytest.raises(ValueError, match=r"'m' range \[1, 1.8\] excludes 0"):
+        _fill_mimic_limits(root)
+
+
+def test_mimic_of_a_limitless_leader_is_refused():
+    root = _mimic_model('<mimic joint="lead"/>', lead_limit="")
+    root.find("joint[@name='lead']").set("type", "fixed")
+    with pytest.raises(ValueError, match="'m' mimics 'lead', which has no <limit>"):
+        _fill_mimic_limits(root)
 
 
 def test_limitless_joint_that_mimics_nothing_is_refused():

@@ -684,12 +684,11 @@ class CuRoboPlanner:
         """Clamp a controller-order joint vector into the model's position
         limits, or explain why that's not okay.
 
-        Real arms park slightly OUTSIDE conservative model limits — the
-        Gen3's factory park pose puts joint_4 ~0.8 deg past cuRobo's URDF
-        bound, and cuRobo hard-refuses such a start. Violations up to
-        `limit_clamp_rad` are clamped inward (the executor's start-state
-        tolerance absorbs the difference); anything larger is a genuine
-        configuration problem and is refused with the joint named.
+        cuRobo hard-refuses a start outside its limits, so small
+        model-vs-arm disagreements, up to `limit_clamp_rad`, are clamped
+        inward; anything larger is refused with the joint named. The Gen3's
+        park pose (arm_joint_4 ~ -2.674) is 0.10 rad past the URDF's +-2.57
+        and is refused (tracked in kinova-gen3-ros2#49).
 
         Returns (clamped_q or None, error or None). q may be None (nothing
         to clamp).

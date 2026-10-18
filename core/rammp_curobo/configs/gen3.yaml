@@ -1,7 +1,10 @@
 # Planner config for the RAMMP Kinova Gen3 7-DoF + Robotiq 2F-85.
 #
 #   from rammp_curobo import CuRoboPlanner
-#   planner = CuRoboPlanner.from_config('gen3.yaml')
+#   planner = CuRoboPlanner.from_config('gen3.yaml', urdf_path=path)
+#
+# `path` is the arm's own URDF as a file: the ROS node writes the model on
+# /arm/robot_description to one; the tests use core/tests/data/arm_level.urdf.
 #
 # robot/world resolve relative to this file's directory first, then the
 # packaged defaults — copy this file next to your code and point `world` at

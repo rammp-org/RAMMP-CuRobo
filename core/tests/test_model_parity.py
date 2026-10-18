@@ -158,10 +158,12 @@ def test_tool_frame_matches_nvidia_within_1mm_and_0_1deg(new_kin, old_kin, confi
 
 def test_gripper_is_locked_open_through_its_mimics(urdf_level):
     """lock_joints names only the actuated knuckle; cuRobo's mimic handling
-    must hold the other five. Every gripper joint's child link sits where it
-    does with all six joints at 0 (yourdfpy as the reference)."""
+    must hold the other five. Every gripper joint's child link has the pose
+    (position and orientation) it has with all six joints at 0 (yourdfpy as
+    the reference): a leaf link's own angle moves only its orientation."""
     import xml.etree.ElementTree as ET
 
+    from trimesh.transformations import quaternion_matrix
     from yourdfpy import URDF
 
     root = ET.parse(urdf_level).getroot()
@@ -173,16 +175,17 @@ def test_gripper_is_locked_open_through_its_mimics(urdf_level):
     kin = Kin(cfg)
     retract = kin.cfg["cspace"]["retract_config"]
     q = torch.tensor([retract], device="cuda", dtype=torch.float32)
-    got = kin.model.get_link_poses(q, links).position[0].cpu().numpy()
+    poses = kin.model.get_link_poses(q, links)
+    got_p = poses.position[0].cpu().numpy()
+    got_q = poses.quaternion[0].cpu().numpy()  # wxyz
 
     ref = URDF.load(str(urdf_level), load_meshes=False)
     ref.update_cfg({**dict(zip(ARM_JOINTS, retract)), GRIPPER_JOINTS[0]: 0.0})
-    for link, p in zip(links, got):
-        want = ref.get_transform(link, "arm_mount")[:3, 3]
-        assert np.linalg.norm(p - want) < 1e-6, "%s: %.3g m" % (
-            link,
-            np.linalg.norm(p - want),
-        )
+    for link, p, quat in zip(links, got_p, got_q):
+        want = ref.get_transform(link, "arm_mount")
+        dp = np.linalg.norm(p - want[:3, 3])
+        dr = np.abs(quaternion_matrix(quat)[:3, :3] - want[:3, :3]).max()
+        assert dp < 1e-6 and dr < 1e-5, "%s: %.3g m, rotation %.3g" % (link, dp, dr)
 
 
 def test_kinematics_joint_names_are_the_seven_arm_joints(planner):
