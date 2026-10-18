@@ -1,32 +1,43 @@
 #!/usr/bin/env python3
 """Plan a collision-free trajectory with cuRobo — no ROS, no hardware.
 
-Nothing here can move an arm: this is the Layer-1 library alone. Examples:
+Nothing here can move an arm: this is the Layer-1 library alone.
+
+--urdf is REQUIRED: the arm's own model. On a robot it is what
+arm_state_publisher latches on /arm/robot_description (rendered by
+kinova-gen3-ros2), written to a file; for a bench run use the rendered
+fixture core/tests/data/arm_level.urdf.
 
 --start is REQUIRED on every call: the planner does not know where the arm
 is and will not guess one for you. Examples (start = a mild variation of the
 robot config's retract pose):
 
     # joint-space goal (native js planning; FK-pose fallback automatic)
-    python3 examples/plan_only.py --start 0.0 0.262 3.142 -2.269 0.0 0.960 1.571 \
+    python3 examples/plan_only.py --urdf core/tests/data/arm_level.urdf \
+        --start 0.0 0.262 3.142 -2.269 0.0 0.960 1.571 \
         --joints 0.3 0.262 3.142 -2.269 0.0 0.960 1.571
 
     # tool_frame pose goal: position + roll/pitch/yaw in degrees
-    python3 examples/plan_only.py --start 0.0 0.262 3.142 -2.269 0.0 0.960 1.571 \
+    python3 examples/plan_only.py --urdf core/tests/data/arm_level.urdf \
+        --start 0.0 0.262 3.142 -2.269 0.0 0.960 1.571 \
         --pos 0.45 0.12 0.30 --rpy-deg 180 0 0
 
     # same goal, quarter-speed preview of what an executor would send
-    python3 examples/plan_only.py --start 0.0 0.262 3.142 -2.269 0.0 0.960 1.571 \
+    python3 examples/plan_only.py --urdf core/tests/data/arm_level.urdf \
+        --start 0.0 0.262 3.142 -2.269 0.0 0.960 1.571 \
         --pos 0.45 0.12 0.30 --rpy-deg 180 0 0 --speed-scale 0.25
 """
 
 import argparse
 import sys
+import tempfile
+from pathlib import Path
 
 import numpy as np
 
 from rammp_curobo import CuRoboPlanner
 from rammp_curobo.geometry import euler_deg_to_quat_xyzw
+from rammp_curobo.urdf_model import prepare_urdf, write_urdf
 
 
 def main():
@@ -35,6 +46,12 @@ def main():
     )
     ap.add_argument(
         "--config", default="gen3.yaml", help="planner YAML (packaged name or path)"
+    )
+    ap.add_argument(
+        "--urdf",
+        required=True,
+        help="the arm's URDF (/arm/robot_description written to a file; "
+        "core/tests/data/arm_level.urdf for a bench run)",
     )
     goal = ap.add_mutually_exclusive_group(required=True)
     goal.add_argument(
@@ -86,7 +103,10 @@ def main():
         ap.error("--quat/--rpy-deg only apply to --pos goals")
 
     print("Initializing planner (GPU init + warmup — first run takes a while)...")
-    planner = CuRoboPlanner.from_config(args.config)
+    urdf_path = write_urdf(
+        prepare_urdf(Path(args.urdf).read_text()), tempfile.mkdtemp()
+    )
+    planner = CuRoboPlanner.from_config(args.config, urdf_path=urdf_path)
 
     if args.joints is not None:
         res = planner.plan_to_joints(args.joints, args.start)

@@ -103,11 +103,16 @@ trajectories in the sim-kitchen world (first run compiles kernels — takes
 a minute or two; ~20 s warm). They plan on `core/tests/data/arm_level.urdf`
 and `arm_tilt30.urdf`, the arm's model rendered by kinova-gen3-ros2's
 `kinova_gen3_render` for a level and a 30° mount (how: that directory's
-README). Or plan one motion directly:
+README). Or plan one motion directly on the level-mount fixture:
 
 ```bash
-python3 examples/plan_only.py --joints 0.3 0.262 3.142 -2.269 0.0 0.960 1.571
+python3 examples/plan_only.py --urdf core/tests/data/arm_level.urdf \
+    --start 0.0 0.262 3.142 -2.269 0.0 0.960 1.571 \
+    --joints 0.3 0.262 3.142 -2.269 0.0 0.960 1.571
 ```
+
+On a robot the model comes from `/arm/robot_description` (rendered by
+kinova-gen3-ros2); write it to a file and pass that as `--urdf`.
 
 > Shell note: the Jetson's default shell is **zsh** — source the `.zsh`
 > setup files as shown. From bash, use the `.bash` variants instead
