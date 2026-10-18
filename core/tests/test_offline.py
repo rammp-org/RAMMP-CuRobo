@@ -231,7 +231,15 @@ def test_legacy_execution_block_is_dropped_with_a_warning(tmp_path, caplog):
     with caplog.at_level("WARNING", logger="rammp_curobo"):
         cfg, _ = load_planner_config(str(path))
     assert "execution" not in cfg
-    assert "execution" in caplog.text and "speed" in caplog.text
+    (rec,) = [r for r in caplog.records if r.name == "rammp_curobo"]
+    assert rec.levelname == "WARNING"
+    assert "ignoring the 'execution' block" in rec.getMessage()
+
+    # the packaged config carries no such block, so it must load silently
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="rammp_curobo"):
+        load_planner_config("gen3.yaml")
+    assert not [r for r in caplog.records if r.name == "rammp_curobo"]
 
 
 def test_wrap_aware_start_match():
