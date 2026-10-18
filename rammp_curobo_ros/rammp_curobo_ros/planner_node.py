@@ -32,6 +32,7 @@ import threading
 import time
 
 import rclpy
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.action import ActionServer
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
@@ -139,8 +140,14 @@ class RammpCuroboNode(Node):
 
         self.config = self.declare_parameter("config", "gen3.yaml").value
         self.world = self.declare_parameter("world", "").value
+        # dynamic_typing: `-p robot_description_timeout_s:=3` is an INTEGER,
+        # which a DOUBLE-typed declaration refuses with a traceback.
         timeout_s = float(
-            self.declare_parameter("robot_description_timeout_s", 30.0).value
+            self.declare_parameter(
+                "robot_description_timeout_s",
+                30.0,
+                ParameterDescriptor(dynamic_typing=True),
+            ).value
         )
 
         # Refuse to double-serve. Two planner nodes on the same action names
@@ -375,7 +382,9 @@ def main(args=None):
     # without a handler its INFO never reaches the console.
     core_log = logging.getLogger("rammp_curobo")
     core_log.setLevel(logging.INFO)
-    core_log.addHandler(logging.StreamHandler())
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("[%(levelname)s] [%(name)s]: %(message)s"))
+    core_log.addHandler(handler)
     rclpy.init(args=args)
     try:
         node = RammpCuroboNode()
