@@ -213,8 +213,12 @@ def main():
     # links share frames (transforms identity to printed precision); the
     # gripper links do not: NVIDIA's gripper base is turned 1.57 rad about z
     # from the flange, the upstream one is not, so every gripper move is a
-    # ~90 deg turn, and the largest is the pads -> finger tips at 38.6 mm
-    # (the frame origins differ; the sphere positions do not).
+    # ~90 deg turn of the FRAMES only. The fingers sit on flange +-x in both
+    # models (NVIDIA's arg2f lays them on its own base y; the 1.57
+    # compensates), so the geometry is the same and a rigid move at q = 0 is
+    # valid; the 4-fold-symmetric shell does not care about the turn anyway.
+    # The largest move is the pads -> finger tips at 38.6 mm (the frame
+    # origins differ; the sphere positions do not).
     nv_urdf = join_path(get_assets_path(), kin["urdf_path"])
     nv = _link_poses(URDF.load(nv_urdf, load_meshes=False), LINK_MAP, "base_link")
     up = _link_poses(

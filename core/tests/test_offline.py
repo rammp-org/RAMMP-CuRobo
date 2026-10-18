@@ -46,6 +46,7 @@ BAKE = Path(__file__).resolve().parents[2] / "scripts" / "bake_robot_config.py"
 _spec = importlib.util.spec_from_file_location("bake_robot_config", BAKE)
 _bake = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_bake)
+ARM_LINKS = _bake.ARM_LINKS
 LINK_MAP = _bake.LINK_MAP
 
 
@@ -106,6 +107,17 @@ def test_baked_robot_config_is_the_upstream_model():
             ]
     assert set(kin["collision_link_names"]) == {
         LINK_MAP[n] for n in old["collision_link_names"]
+    }
+    for link in ARM_LINKS:  # identity transforms: centres carry over exactly
+        assert kin["collision_spheres"]["arm_" + link] == old["collision_spheres"][link]
+    # a stale NVIDIA name here matches nothing in cuRobo and is skipped
+    # silently, leaving an adjacent pair always in self collision
+    assert kin["self_collision_ignore"] == {
+        LINK_MAP[k]: [LINK_MAP[x] for x in v]
+        for k, v in old["self_collision_ignore"].items()
+    }
+    assert kin["self_collision_buffer"] == {
+        LINK_MAP[k]: v for k, v in old["self_collision_buffer"].items()
     }
 
 
