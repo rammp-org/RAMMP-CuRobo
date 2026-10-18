@@ -77,7 +77,8 @@ ApproachVia approach_via
 bool success
 string message                              # failure explanation when !success
 # time-parameterized at full speed; joint_names arm_joint_1..7,
-# header.frame_id "arm_mount" (the frame the target was planned in)
+# header.frame_id "arm_mount" on success (the frame the target was planned in;
+# a failed plan's trajectory is empty, with an empty frame)
 trajectory_msgs/JointTrajectory trajectory
 float64 planning_time                       # seconds
 ---

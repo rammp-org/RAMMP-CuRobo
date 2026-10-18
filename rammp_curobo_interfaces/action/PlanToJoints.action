@@ -13,7 +13,8 @@ float64[] start_joints
 ---
 bool success
 string message
-# joint_names arm_joint_1..7; header.frame_id "arm_mount", as on every plan
+# joint_names arm_joint_1..7; header.frame_id "arm_mount" on success (a failed
+# plan's trajectory is empty, with an empty frame)
 trajectory_msgs/JointTrajectory trajectory
 float64 planning_time
 float64 goal_mismatch_rad

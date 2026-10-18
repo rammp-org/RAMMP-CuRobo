@@ -17,7 +17,7 @@ robot config's retract pose):
         --start 0.0 0.262 3.142 -2.269 0.0 0.960 1.571 \
         --joints 0.3 0.262 3.142 -2.269 0.0 0.960 1.571
 
-    # tool_frame pose goal: position + roll/pitch/yaw in degrees
+    # arm_tool_frame pose goal: position + roll/pitch/yaw in degrees
     python3 examples/plan_only.py --urdf core/tests/data/arm_level.urdf \
         --start 0.0 0.262 3.142 -2.269 0.0 0.960 1.571 \
         --pos 0.45 0.12 0.30 --rpy-deg 180 0 0
@@ -66,7 +66,7 @@ def main():
         type=float,
         nargs=3,
         metavar=("X", "Y", "Z"),
-        help="goal tool_frame position (m, base frame)",
+        help="goal arm_tool_frame position (m, arm_mount)",
     )
     ori = ap.add_mutually_exclusive_group()
     ori.add_argument(
@@ -89,7 +89,7 @@ def main():
         nargs=7,
         metavar="RAD",
         required=True,
-        help="joint configuration to plan FROM (rad, joint_1..7). Required "
+        help="joint configuration to plan FROM (rad, arm_joint_1..7). Required "
         "— the planner holds no default start pose",
     )
     ap.add_argument(

@@ -116,6 +116,7 @@ def merge_trajectories(plans):
     from trajectory_msgs.msg import JointTrajectory
 
     merged = JointTrajectory()
+    merged.header.frame_id = plans[0].trajectory.header.frame_id
     merged.joint_names = list(plans[0].trajectory.joint_names)
     offset = 0.0
     for plan in plans:
