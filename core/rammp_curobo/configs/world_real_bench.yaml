@@ -14,8 +14,8 @@
 # table) only needs the table plane height to be conservative (err HIGH: a
 # table modeled too tall costs reachable volume, never safety).
 #
-# cuRobo v0.7.8 refuses an EMPTY world (silently keeps the previous one on
-# update), so at minimum keep the pedestal + table entries.
+# cuRobo v0.7.8 refuses an EMPTY world on update (it silently keeps the
+# previous one); the pedestal + table entries stay because they are real.
 
 base_frame: base_link
 

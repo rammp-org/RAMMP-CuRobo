@@ -121,9 +121,33 @@ class Scene:
         return None
 
 
+SCENE_KEYS = ("base_frame", "obstacles", "objects", "targets")
+
+
 def load_scene(path):
+    """Parse a world YAML. Refuses a mis-keyed file: a typo'd or missing
+    `obstacles` would otherwise load as an empty world without a word, so
+    an empty world must say `obstacles: []`."""
     with open(path, "r") as f:
         data = yaml.safe_load(f)
+    if not isinstance(data, dict):
+        raise ValueError("world file %s is empty or not a mapping" % path)
+    for key in data:
+        if key not in SCENE_KEYS:
+            raise ValueError(
+                "world file %s: unknown top-level key %r (expected %s)"
+                % (path, key, ", ".join(SCENE_KEYS))
+            )
+    if "obstacles" not in data:
+        raise ValueError(
+            "world file %s has no 'obstacles' key; write `obstacles: []` "
+            "for an empty world" % path
+        )
+    if data["obstacles"] is None:
+        raise ValueError(
+            "world file %s: 'obstacles' is null; write `obstacles: []` for "
+            "an empty world" % path
+        )
     return Scene(
         base_frame=data.get("base_frame", "base_link"),
         obstacles=[Obstacle(o) for o in data.get("obstacles", [])],

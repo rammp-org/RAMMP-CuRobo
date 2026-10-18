@@ -5,6 +5,8 @@ These run anywhere (CI, a laptop) — no torch, no cuRobo, no ROS.
 
 import importlib.util
 import math
+import sys
+import types
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -147,14 +149,47 @@ def test_world_cuboids_padding_and_ignore():
     assert len(boxes) <= 40
 
 
-def test_empty_world_only_when_allowed():
-    # make_world_config builds a cuRobo WorldConfig: runs in the image only
-    pytest.importorskip("curobo")
+def test_empty_world_only_when_allowed(monkeypatch):
+    # cuRobo stubbed so CI's offline job runs the guard; test_smoke covers
+    # the real WorldConfig
+    geom = types.ModuleType("curobo.geom.types")
+    geom.WorldConfig = types.SimpleNamespace(from_dict=lambda d: d)
+    for name in ("curobo", "curobo.geom"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, "curobo.geom.types", geom)
     scene = load_scene(resolve_config("world_empty.yaml"))
     assert scene.base_frame == "arm_mount"
-    assert make_world_config(scene, allow_empty=True).cuboid == []
+    assert make_world_config(scene, allow_empty=True) == {"cuboid": {}}
     with pytest.raises(ValueError, match="empty"):
         make_world_config(scene)
+
+
+@pytest.mark.parametrize(
+    "text, match",
+    [
+        ("base_frame: base_link\ntargets: []\n", "obstacles"),  # missing key
+        (
+            "obstacle:\n  - {name: t, position: [0, 0, 0], dims: [1, 1, 1]}\n",
+            "obstacle",
+        ),
+        ("targets:\n  - {name: cup, position: [0.5, 0, 0]}\n", "obstacles"),
+        ("obstacles:\n", "obstacles: \\[\\]"),  # null
+        ("", "empty"),
+    ],
+    ids=["missing", "typo", "only-targets", "null", "empty-file"],
+)
+def test_load_scene_refuses_mis_keyed_world(tmp_path, text, match):
+    path = tmp_path / "world_bad.yaml"
+    path.write_text(text)
+    with pytest.raises(ValueError, match=match) as e:
+        load_scene(path)
+    assert "world_bad.yaml" in str(e.value)
+
+
+def test_packaged_worlds_load():
+    for name in ("world_sim_kitchen.yaml", "world_real_bench.yaml", "world_empty.yaml"):
+        load_scene(resolve_config(name))
+    assert load_scene(resolve_config("world_empty.yaml")).obstacles == []
 
 
 def test_scene_from_obstacle_dicts():
