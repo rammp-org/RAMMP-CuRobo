@@ -11,8 +11,8 @@ executing it is your side's job.
 the arm's URDF: Z up when the chair is level, X forward, origin at the arm's
 base) for the tool frame `arm_tool_frame`; joints are `arm_joint_1..7`.
 Every returned trajectory carries `header.frame_id: "arm_mount"`, joint plans
-too. Read it: on a tilted mount kinova-gen3-ros2's `GoToEEPose` refuses a
-pose plan not stamped `arm_mount` (#47). On a level mount (dojo) `arm_mount`
+too. Read it: kinova-gen3-ros2's `GoToEEPose` refuses any pose plan not
+stamped `arm_mount` (#47), on every mount. On a level mount (dojo) `arm_mount`
 and the arm's base coincide, so the numbers are unchanged.
 
 ## Pure Python (no ROS) — the 5 lines

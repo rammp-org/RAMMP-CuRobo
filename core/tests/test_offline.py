@@ -126,7 +126,7 @@ def test_baked_robot_config_is_the_upstream_model():
 
 def test_sim_kitchen_scene_parses():
     scene = load_scene(resolve_config("world_sim_kitchen.yaml"))
-    assert scene.base_frame == "base_link"
+    assert scene.base_frame == "arm_mount"
     names = {o.name for o in scene.obstacles}
     assert {"table", "pedestal", "back_wall"} <= names
     assert len(scene.obstacles) == 11

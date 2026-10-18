@@ -159,7 +159,8 @@ HEADER = """\
 # urdf_path is the sentinel from_robot_description, replaced at load by the
 # file the caller wrote it to. base_link is arm_mount; ee_link is
 # arm_tool_frame, 0.120 m beyond the wrist flange, roughly the FINGERTIP
-# midpoint. The six 2F-85 joints are locked open.
+# midpoint. The 2F-85 is locked open by its actuated knuckle
+# (arm_robotiq_85_left_knuckle_joint); cuRobo holds the five mimics with it.
 """
 
 

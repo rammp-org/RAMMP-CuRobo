@@ -15,7 +15,13 @@ that heading to the new version and bumps the five places the number lives.
 The planner plans against the arm's own model, in `arm_mount`, for tilted arm
 mounts (rammp-deployments `docs/superpowers/specs/2026-10-15-tilted-arm-mount-design.md`).
 Breaking: move a pin only together with kinova-gen3-ros2's `arm_` names and
-`arm_mount` (#47).
+`arm_mount` (#47), on every robot, dojo included. The two move together: the
+new kinova-gen3-ros2 refuses every pose plan from an older planner, and this
+planner exits without the new kinova-gen3-ros2's `arm_state_publisher`.
+
+**Deploying.** The image's default CMD loads `gen3_real.yaml`, whose world is
+`world_real_bench.yaml`: dojo's bench. On flatbot either move the pin together
+with the per-robot worlds, or run the planner with `-p world:=world_empty.yaml`.
 
 ### Changed (breaking)
 
@@ -41,18 +47,21 @@ Breaking: move a pin only together with kinova-gen3-ros2's `arm_` names and
 - **The container's CMD** execs the planner node directly (PID 1) instead of
   `ros2 launch`, so the container's exit code is the node's: a missing model
   is a non-zero exit, and `docker stop` exits 0 promptly.
+- **World files are strict.** A world file with an unknown top-level key is
+  refused, and so is one without an `obstacles` key (`obstacles: null` and a
+  missing key are both refused; an empty list is `obstacles: []`). Both used
+  to load.
 
 ### Added
 
 - **Every plan states its frame:** `trajectory.header.frame_id` is
   `arm_mount` on pose and joint plans alike (core: `Trajectory.frame_id`).
-  kinova-gen3-ros2's `GoToEEPose` refuses an unstamped pose plan on a tilted
-  mount (#47).
+  kinova-gen3-ros2's `GoToEEPose` refuses any pose plan not stamped
+  `arm_mount` (#47), on every mount.
 - **`world_empty.yaml`**: plan against the arm alone (flatbot). Accepted at
   construction only (the node's `world` parameter is applied before the
   planner is built); `update_world` / `set_world` still refuse an empty
-  world. The startup log reports `Collision world: N boxes (<file>)`, and a
-  world file with an unknown top-level key is refused.
+  world. The startup log reports `Collision world: N boxes (<file>)`.
 
 ### Unchanged on purpose
 

@@ -20,7 +20,8 @@ planner whenever the robot's mount changes. Planning is in the model's root,
 `arm_mount` (level with the chair, not with gravity), with `ee_link`
 `arm_tool_frame` and joints `arm_joint_1..7`; every returned trajectory is
 stamped `header.frame_id: arm_mount`, joint plans included
-(kinova-gen3-ros2#47 refuses an unstamped pose plan on a tilted mount).
+(kinova-gen3-ros2's `GoToEEPose` refuses any pose plan not stamped
+`arm_mount` (#47), on every mount).
 
 **This repo NEVER touches the arm** (issue #6, 2026-08-24): no executor, no
 `/joint_states` subscription, no controller or controller-manager client, no
