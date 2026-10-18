@@ -11,6 +11,12 @@ rendered mesh paths point into /opt/ros/humble/share, which the planner image
 does not have, and the baked spheres are the collision model, so meshes are
 never needed.
 
+It also fills the <limit> cuRobo v0.7.8 requires on every moving joint. The
+2F-85's mimic joints carry none (URDF allows that on a continuous joint), and
+cuRobo's parser dereferences it even on a locked joint. Only joints whose
+motion is defined by another joint (<mimic>) are filled, from the joint they
+follow; a limitless joint that follows nothing is refused by name.
+
 The 2F-85 gripper is required: the robot config locks its joints and puts
 collision spheres on its links, so a gripperless model cannot load, and it is
 refused here by name rather than failing inside cuRobo.
@@ -66,7 +72,51 @@ def prepare_urdf(xml):
                 link.remove(el)
     for el in root.findall("ros2_control"):
         root.remove(el)
+    _fill_mimic_limits(root)
     return ET.tostring(root, encoding="unicode")
+
+
+def _fill_mimic_limits(root):
+    """Give each limitless mimic joint the <limit> of the joint it follows,
+    mapped through the mimic: position = multiplier * leader + offset.
+
+    These are only the fields cuRobo requires, on joints whose motion another
+    joint defines. Velocity scales by |multiplier| (cuRobo refuses a mimic
+    slower than its leader); the range is the mimic's actual range, which
+    must contain 0, where the gripper is locked open.
+    """
+    by_name = {j.get("name"): j for j in root.findall("joint")}
+    for joint in root.findall("joint"):
+        name = joint.get("name")
+        if joint.get("type") == "fixed" or joint.find("limit") is not None:
+            continue
+        mimic = joint.find("mimic")
+        if mimic is None:
+            raise ValueError("robot model joint %r has no <limit>" % name)
+        leader = by_name.get(mimic.get("joint"))
+        lead = None if leader is None else leader.find("limit")
+        if lead is None:
+            raise ValueError(
+                "robot model joint %r mimics %r, which has no <limit>"
+                % (name, mimic.get("joint"))
+            )
+        k = float(mimic.get("multiplier", 1.0))
+        offset = float(mimic.get("offset", 0.0))
+        lo, hi = sorted(
+            k * float(lead.get(b, 0.0)) + offset for b in ("lower", "upper")
+        )
+        if not lo <= 0.0 <= hi:
+            raise ValueError(
+                "robot model joint %r range [%g, %g] excludes 0" % (name, lo, hi)
+            )
+        ET.SubElement(
+            joint,
+            "limit",
+            effort=lead.get("effort", "0"),
+            lower=repr(lo),
+            upper=repr(hi),
+            velocity=repr(abs(k) * float(lead.get("velocity", 0.0))),
+        )
 
 
 def write_urdf(xml, directory):

@@ -770,6 +770,35 @@ def test_ros2_control_is_stripped():
     assert not ET.fromstring(prepare_urdf(xml)).findall("ros2_control")
 
 
+def test_mimic_joints_get_their_leaders_limit_scaled():
+    # cuRobo v0.7.8 dereferences <limit> on every moving joint; the 2F-85's
+    # mimic joints carry none in the published model.
+    root = ET.fromstring(prepare_urdf(read("arm_level.urdf")))
+    lead = root.find("joint[@name='arm_robotiq_85_left_knuckle_joint']/limit")
+    assert (lead.get("lower"), lead.get("upper")) == ("0.0", "0.8")
+    for name, lo, hi in [
+        ("arm_robotiq_85_left_inner_knuckle_joint", 0.0, 0.8),  # multiplier 1
+        ("arm_robotiq_85_right_inner_knuckle_joint", -0.8, 0.0),  # multiplier -1
+        ("arm_robotiq_85_left_finger_tip_joint", -0.8, 0.0),
+        ("arm_robotiq_85_right_finger_tip_joint", 0.0, 0.8),
+    ]:
+        lim = root.find("joint[@name='%s']/limit" % name)
+        assert lim is not None, name
+        assert float(lim.get("lower")) == lo and float(lim.get("upper")) == hi, name
+        assert float(lim.get("velocity")) == float(lead.get("velocity")), name
+    # a mimic with a <limit> of its own keeps it
+    right = root.find("joint[@name='arm_robotiq_85_right_knuckle_joint']")
+    assert len(right.findall("limit")) == 1
+
+
+def test_limitless_joint_that_mimics_nothing_is_refused():
+    xml = read("arm_level.urdf").replace(
+        '<limit effort="39" velocity="1.3963" /></joint>', "</joint>", 1
+    )
+    with pytest.raises(ValueError, match="arm_joint_1"):
+        prepare_urdf(xml)
+
+
 def test_foreign_model_is_refused_by_name():
     for broken, why in [
         (read("arm_level.urdf").replace('"arm_mount"', '"base_link"'), "arm_mount"),
