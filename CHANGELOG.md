@@ -18,11 +18,19 @@ that heading to the new version and bumps the five places the number lives.
   `JointTrajectoryPoint` (#15); they were computed and then dropped at the
   message boundary. A consumer that picks its interpolation order from what
   the points carry (`joint_trajectory_controller`, the kinova driver) moves
-  from cubic to quintic on our plans with no change on its side. Measured on
-  the Jetson: the commanded position moves by at most 0.1 mrad. On plans
-  cuRobo optimized coarser than `interpolation_dt` (most longer moves), the
-  accelerations do not match the resampled positions — see the PR closing #15 before
-  relying on quintic to make those plans smooth.
+  from cubic to quintic on our plans with no change on its side.
+- The dense plan's positions, velocities and accelerations now agree (#15).
+  cuRobo's `LINEAR_CUDA` resample lerps each one independently between its
+  optimized knots, so on any plan optimized coarser than `interpolation_dt`
+  the positions kinked at every knot while the accelerations claimed a
+  smooth ramp (measured 95-368% apart). The planner now samples all three
+  from one quintic spline through the same knots, before validation and the
+  constraint re-check, so both see exactly what ships. Measured on the
+  Jetson over 22 plans: a consumer's quintic peak jerk drops from a median
+  7283 to 180 rad/s^3, its peak acceleration from 4.1x to 1.02x the planned
+  one, at 1.7 ms per plan. Positions move by at most 3.5 mrad. If the knots
+  do not reproduce cuRobo's resample, the plan ships as cuRobo returned it.
+  The core now depends on `scipy` (already in the Jetson image via cuRobo).
 
 ## [1.1.0] — 2026-10-02
 

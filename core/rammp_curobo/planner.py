@@ -35,6 +35,7 @@ from rammp_curobo import geometry
 from rammp_curobo.config import load_planner_config, resolve_config
 from rammp_curobo import constraints
 from rammp_curobo.constraints import PoseConstraint, ViaPoint
+from rammp_curobo.resample import resample_quintic
 from rammp_curobo.robot_config import load_robot_config
 from rammp_curobo.scene import Scene, load_scene, scene_from_obstacles
 from rammp_curobo.types import PlanResult, Trajectory
@@ -856,7 +857,7 @@ class CuRoboPlanner:
 
         # ONLY the trimmed interpolated plan: result buffers are padded and
         # the untrimmed tail can be stale garbage from a previous plan.
-        plan = result.get_interpolated_plan()
+        plan = self._resample(result.get_interpolated_plan(), result)
         ordered = plan.get_ordered_joint_state(self.joint_names)
         pos = ordered.position.detach().cpu().numpy().astype(float).copy()
         vel = (
@@ -901,6 +902,30 @@ class CuRoboPlanner:
                 np.abs(pos[-1] - np.asarray(q_goal, dtype=float)).max()
             )
         return res
+
+    def _resample(self, plan, result):
+        """Replace cuRobo's LINEAR_CUDA resample with a quintic-spline one
+        through the same knots (#15) — BEFORE validation, so the re-check
+        sees exactly the states that ship. Falls back to cuRobo's plan if
+        the knots do not reproduce it."""
+
+        def arr(x):
+            return x.detach().cpu().numpy().astype(float).reshape(-1, x.shape[-1])
+
+        out = resample_quintic(
+            arr(result.optimized_plan.position),
+            arr(plan.position),
+            float(result.interpolation_dt),
+            arr(plan.velocity)[0],
+            arr(plan.acceleration)[0],
+        )
+        if out is None:
+            log.warning("dense plan is not a linear resample of its knots; kept as-is")
+            return plan
+        plan = plan.clone()
+        for dst, src in zip((plan.position, plan.velocity, plan.acceleration), out):
+            dst.copy_(self._torch.as_tensor(src, dtype=dst.dtype, device=dst.device))
+        return plan
 
     def _recheck_constraints(self, plan_curobo_order):
         """Independent belt-and-braces: re-check every interpolated state
