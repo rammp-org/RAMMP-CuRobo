@@ -9,6 +9,8 @@ plans in the sim-kitchen world.
 import math
 import time
 
+import yaml
+
 import numpy as np
 import pytest
 
@@ -18,6 +20,7 @@ if not torch.cuda.is_available():
     pytest.skip("CUDA is not available", allow_module_level=True)
 
 from rammp_curobo import CuRoboPlanner  # noqa: E402
+from rammp_curobo.config import resolve_config  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -147,6 +150,24 @@ def test_update_world_guards_and_round_trip(planner, start):
     pos, quat = planner.fk(planner.retract_pose)
     res = planner.plan_to_pose(pos, quat, start)
     assert res.success, res.error
+
+
+def test_empty_world_constructs_and_plans(urdf_level, tmp_path):
+    # Allowed at construction only (flatbot has no table); update_world
+    # still refuses an empty world, since cuRobo would keep the old one.
+    cfg = yaml.safe_load(resolve_config("gen3.yaml").read_text())
+    cfg["world"] = "world_empty.yaml"
+    path = tmp_path / "gen3_empty.yaml"
+    path.write_text(yaml.safe_dump(cfg))
+    empty = CuRoboPlanner.from_config(str(path), urdf_path=urdf_level)
+
+    q_goal = list(empty.retract_pose)
+    q_goal[1] -= 0.25
+    q_goal[3] += 0.30
+    res = empty.plan_to_joints(q_goal, list(empty.retract_pose))
+    assert res.success, res.error
+    with pytest.raises(ValueError, match="empty"):
+        empty.update_world([])
 
 
 def test_small_limit_violation_is_clamped(planner):

@@ -39,7 +39,7 @@ from rammp_curobo.urdf_model import (
     write_urdf,
 )
 from rammp_curobo.validate import start_state_matches, validate_trajectory
-from rammp_curobo.world import world_cuboids
+from rammp_curobo.world import make_world_config, world_cuboids
 
 DATA = Path(__file__).parent / "data"
 BAKE = Path(__file__).resolve().parents[2] / "scripts" / "bake_robot_config.py"
@@ -64,6 +64,7 @@ def test_packaged_configs_exist():
         "robot_gen3_2f85.yaml",
         "world_sim_kitchen.yaml",
         "world_real_bench.yaml",
+        "world_empty.yaml",
     ):
         assert (PACKAGED_CONFIG_DIR / name).is_file(), name
 
@@ -144,6 +145,16 @@ def test_world_cuboids_padding_and_ignore():
     # the sim kitchen must leave headroom under the 60-box cache for
     # update_world additions (40 keeps a wide margin)
     assert len(boxes) <= 40
+
+
+def test_empty_world_only_when_allowed():
+    # make_world_config builds a cuRobo WorldConfig: runs in the image only
+    pytest.importorskip("curobo")
+    scene = load_scene(resolve_config("world_empty.yaml"))
+    assert scene.base_frame == "arm_mount"
+    assert make_world_config(scene, allow_empty=True).cuboid == []
+    with pytest.raises(ValueError, match="empty"):
+        make_world_config(scene)
 
 
 def test_scene_from_obstacle_dicts():

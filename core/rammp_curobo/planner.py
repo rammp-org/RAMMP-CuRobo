@@ -127,6 +127,7 @@ class CuRoboPlanner:
             padding=self.world_padding,
             no_pad_names=self.no_pad_names,
             cache_obb=self.collision_cache_obb,
+            allow_empty=True,
         )
         log.info("Loading cuRobo MotionGen (%s)...", self._cfg["robot"])
         cfg = MotionGenConfig.load_from_robot_config(
