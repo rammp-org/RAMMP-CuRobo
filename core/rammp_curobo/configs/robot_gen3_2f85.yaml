@@ -143,7 +143,7 @@ robot_cfg:
       left_outer_finger: [right_outer_finger, right_inner_finger_pad, left_inner_finger_pad]
       right_outer_finger: [right_inner_finger_pad, left_inner_finger_pad]
       left_inner_finger_pad: [right_inner_finger_pad]
-    urdf_path: robot/kinova/kinova_gen3_7dof.urdf
+    urdf_path: from_robot_description
     asset_root_path: robot/kinova
     mesh_link_names: [base_link, shoulder_link, half_arm_1_link, half_arm_2_link, forearm_link, spherical_wrist_1_link,
       spherical_wrist_2_link, bracelet_link]

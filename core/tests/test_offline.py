@@ -4,6 +4,8 @@ These run anywhere (CI, a laptop) — no torch, no cuRobo, no ROS.
 """
 
 import math
+import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -26,10 +28,18 @@ from rammp_curobo.geometry import (
     xyzw_to_wxyz,
 )
 from rammp_curobo.retime import scale_trajectory
+from rammp_curobo.robot_config import load_robot_config
 from rammp_curobo.scene import load_scene, scene_from_obstacles
 from rammp_curobo.types import Trajectory
+from rammp_curobo.urdf_model import prepare_urdf, write_urdf
 from rammp_curobo.validate import start_state_matches, validate_trajectory
 from rammp_curobo.world import world_cuboids
+
+DATA = Path(__file__).parent / "data"
+
+
+def read(name):
+    return (DATA / name).read_text()
 
 
 def test_packaged_configs_exist():
@@ -713,3 +723,37 @@ def test_a_path_violation_is_reported_before_the_endpoint():
     path = [goal, euler_deg_to_quat_xyzw([8.0, 0.0, 0.0]), goal]
     why = _verify(_StubTrajFk(path), goal, level)
     assert why is not None and "tilt (roll/pitch)" in why
+
+
+def test_meshes_are_stripped_and_missing_files_load():
+    xml = prepare_urdf(read("arm_level.urdf"))
+    root = ET.fromstring(xml)
+    assert not root.findall(".//visual") and not root.findall(".//collision")
+    assert not root.findall("ros2_control")
+    assert root.find("link[@name='arm_mount']") is not None
+
+
+def test_foreign_model_is_refused_by_name():
+    for broken, why in [
+        (read("arm_level.urdf").replace('"arm_mount"', '"base_link"'), "arm_mount"),
+        (
+            read("arm_level.urdf").replace("arm_tool_frame", "tool_frame"),
+            "arm_tool_frame",
+        ),
+        (read("arm_level.urdf").replace("arm_joint_4", "joint_4"), "arm_joint_4"),
+        ("", "empty"),
+        ("<robot", "parse"),
+    ]:
+        with pytest.raises(ValueError, match=why):
+            prepare_urdf(broken)
+
+
+def test_robot_config_takes_the_urdf_path(tmp_path):
+    p = write_urdf(read("arm_level.urdf"), tmp_path)
+    kin = load_robot_config("robot_gen3_2f85.yaml", urdf_path=p)["kinematics"]
+    assert kin["urdf_path"] == str(p) and kin["asset_root_path"] == str(tmp_path)
+
+
+def test_robot_config_without_a_urdf_is_refused():
+    with pytest.raises(ValueError, match="/arm/robot_description"):
+        load_robot_config("robot_gen3_2f85.yaml")
