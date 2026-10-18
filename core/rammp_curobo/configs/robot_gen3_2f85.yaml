@@ -2,35 +2,39 @@
 #
 # Derived from cuRobo v0.7.8's bundled configs/robot/kinova_gen3.yml
 # (Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES, used under the cuRobo
-# license) with RAMMP-Kinova's field-tuned collision-model patches baked in.
-# Regenerate with: python3 scripts/bake_robot_config.py — do not hand-edit
+# license) with RAMMP-Kinova's field-tuned collision-model patches baked in,
+# then moved onto the arm's own (upstream) links by forward kinematics.
+# Regenerate with: make bake (scripts/bake_robot_config.py) — do not hand-edit
 # sphere values here without re-running the self-collision checks described
 # in RAMMP-Kinova's CLAUDE.md.
 #
-# ee_link is tool_frame: 0.120 m beyond the wrist flange, roughly the
-# FINGERTIP midpoint. urdf_path is resolved inside the installed cuRobo
-# package (content/assets/...), so this file works with any v0.7.8 install.
+# The robot model is the URDF the arm publishes on /arm/robot_description:
+# urdf_path is the sentinel from_robot_description, replaced at load by the
+# file the caller wrote it to. base_link is arm_mount; ee_link is
+# arm_tool_frame, 0.120 m beyond the wrist flange, roughly the FINGERTIP
+# midpoint. The six 2F-85 joints are locked open.
 robot_cfg:
   kinematics:
-    base_link: base_link
-    collision_link_names: [base_link, shoulder_link, half_arm_1_link, half_arm_2_link, forearm_link, spherical_wrist_1_link,
-      spherical_wrist_2_link, bracelet_link, robotiq_arg2f_base_link, left_outer_finger, left_inner_finger_pad,
-      right_outer_finger, right_inner_finger_pad]
+    base_link: arm_mount
+    collision_link_names: [arm_base_link, arm_shoulder_link, arm_half_arm_1_link, arm_half_arm_2_link,
+      arm_forearm_link, arm_spherical_wrist_1_link, arm_spherical_wrist_2_link, arm_bracelet_link, arm_robotiq_85_base_link,
+      arm_robotiq_85_left_finger_link, arm_robotiq_85_left_finger_tip_link, arm_robotiq_85_right_finger_link,
+      arm_robotiq_85_right_finger_tip_link]
     collision_sphere_buffer: 0.005
     collision_spheres:
-      base_link:
+      arm_base_link:
       - center: [0.0, 0.0, 0.065]
         radius: 0.075
       - center: [0.0, 0.0, 0.125]
         radius: 0.065
-      shoulder_link:
+      arm_shoulder_link:
       - center: [0.0, 0.0, -0.04]
         radius: 0.07
       - center: [0.0, 0.0, -0.1]
         radius: 0.072
       - center: [0.0, 0.0, -0.16]
         radius: 0.062
-      half_arm_1_link:
+      arm_half_arm_1_link:
       - center: [0.0, 0.0, 0.0]
         radius: 0.062
       - center: [0.0, -0.06, 0.0]
@@ -39,7 +43,7 @@ robot_cfg:
         radius: 0.062
       - center: [0.0, -0.17, 0.0]
         radius: 0.06
-      half_arm_2_link:
+      arm_half_arm_2_link:
       - center: [0.0, 0.0, 0.0]
         radius: 0.058
       - center: [0.0, 0.0, -0.07]
@@ -48,7 +52,7 @@ robot_cfg:
         radius: 0.056
       - center: [0.0, 0.0, -0.21]
         radius: 0.056
-      forearm_link:
+      arm_forearm_link:
       - center: [0.0, 0.0, 0.0]
         radius: 0.06
       - center: [0.0, -0.06, 0.0]
@@ -57,98 +61,101 @@ robot_cfg:
         radius: 0.058
       - center: [0.0, -0.17, 0.0]
         radius: 0.055
-      spherical_wrist_1_link:
+      arm_spherical_wrist_1_link:
       - center: [0.0, 0.0, 0.0]
         radius: 0.06
       - center: [0.0, 0.0, -0.085]
         radius: 0.06
-      spherical_wrist_2_link:
+      arm_spherical_wrist_2_link:
       - center: [0.0, 0.0, 0.0]
         radius: 0.055
       - center: [0.0, -0.085, 0.0]
         radius: 0.055
-      bracelet_link:
+      arm_bracelet_link:
       - center: [0.0, 0.0, -0.045]
         radius: 0.045
       - center: [0.0, -0.05, -0.045]
         radius: 0.045
       - center: [0.045, 0.0, -0.05]
         radius: 0.036
-      robotiq_arg2f_base_link:
-      - center: [0.0, -0.0, 0.04]
+      arm_robotiq_85_base_link:
+      - center: [0.0, 0.0, 0.04]
         radius: 0.04
       - center: [0.0, 0.0, 0.055]
         radius: 0.042
-      - center: [0.04, 0.0, 0.06]
+      - center: [3.2e-05, 0.04, 0.06]
         radius: 0.032
-      - center: [-0.04, 0.0, 0.06]
+      - center: [-3.2e-05, -0.04, 0.06]
         radius: 0.032
-      - center: [0.0, 0.04, 0.06]
+      - center: [-0.04, 3.2e-05, 0.06]
         radius: 0.032
-      - center: [0.0, -0.04, 0.06]
+      - center: [0.04, -3.2e-05, 0.06]
         radius: 0.032
       - center: [0.0, 0.0, 0.078]
         radius: 0.035
-      - center: [0.045, 0.0, 0.1]
+      - center: [3.6e-05, 0.045, 0.1]
         radius: 0.026
-      - center: [-0.045, 0.0, 0.1]
+      - center: [-3.6e-05, -0.045, 0.1]
         radius: 0.026
-      - center: [0.0, 0.045, 0.1]
+      - center: [-0.045, 3.6e-05, 0.1]
         radius: 0.026
-      - center: [0.0, -0.045, 0.1]
+      - center: [0.045, -3.6e-05, 0.1]
         radius: 0.026
-      - center: [0.045, 0.0, 0.13]
+      - center: [3.6e-05, 0.045, 0.13]
         radius: 0.022
-      - center: [-0.045, 0.0, 0.13]
+      - center: [-3.6e-05, -0.045, 0.13]
         radius: 0.022
-      - center: [0.0, 0.045, 0.13]
+      - center: [-0.045, 3.6e-05, 0.13]
         radius: 0.022
-      - center: [0.0, -0.045, 0.13]
+      - center: [0.045, -3.6e-05, 0.13]
         radius: 0.022
-      - center: [0.045, 0.0, 0.145]
+      - center: [3.6e-05, 0.045, 0.145]
         radius: 0.018
-      - center: [-0.045, 0.0, 0.145]
+      - center: [-3.6e-05, -0.045, 0.145]
         radius: 0.018
-      - center: [0.0, 0.045, 0.145]
+      - center: [-0.045, 3.6e-05, 0.145]
         radius: 0.018
-      - center: [0.0, -0.045, 0.145]
+      - center: [0.045, -3.6e-05, 0.145]
         radius: 0.018
-      left_outer_finger:
-      - center: [0.0, -0.01, 0.02]
+      arm_robotiq_85_left_finger_link:
+      - center: [-0.010026, -4.3e-05, 0.019663]
         radius: 0.03
-      left_inner_finger_pad:
-      - center: [0.0, -0.0, 0.0]
+      arm_robotiq_85_left_finger_tip_link:
+      - center: [-0.021578, -3.8e-05, 0.031998]
         radius: 0.02
-      right_outer_finger:
-      - center: [0.0, -0.01, 0.02]
+      arm_robotiq_85_right_finger_link:
+      - center: [0.010026, 4.1e-05, 0.019663]
         radius: 0.03
-      right_inner_finger_pad:
-      - center: [0.0, -0.0, 0.0]
+      arm_robotiq_85_right_finger_tip_link:
+      - center: [0.021578, 3.7e-05, 0.031998]
         radius: 0.02
-    ee_link: tool_frame
-    self_collision_buffer: {base_link: 0.0, forearm_link: 0.0, half_arm_1_link: 0.0, half_arm_2_link: 0.0,
-      shoulder_link: 0.0, spherical_wrist_1_link: 0.0, spherical_wrist_2_link: 0.0, bracelet_link: 0.0,
-      robotiq_arg2f_base_link: 0.0, left_outer_finger: 0.0, left_inner_finger_pad: 0.0, right_outer_finger: 0.0,
-      right_inner_finger_pad: 0.0, left_outer_knuckle: 0.0}
+    ee_link: arm_tool_frame
+    self_collision_buffer: {arm_base_link: 0.0, arm_forearm_link: 0.0, arm_half_arm_1_link: 0.0, arm_half_arm_2_link: 0.0,
+      arm_shoulder_link: 0.0, arm_spherical_wrist_1_link: 0.0, arm_spherical_wrist_2_link: 0.0, arm_bracelet_link: 0.0,
+      arm_robotiq_85_base_link: 0.0, arm_robotiq_85_left_finger_link: 0.0, arm_robotiq_85_left_finger_tip_link: 0.0,
+      arm_robotiq_85_right_finger_link: 0.0, arm_robotiq_85_right_finger_tip_link: 0.0, arm_robotiq_85_left_knuckle_link: 0.0}
     self_collision_ignore:
-      base_link: [shoulder_link]
-      shoulder_link: [half_arm_1_link]
-      half_arm_1_link: [half_arm_2_link]
-      half_arm_2_link: [forearm_link]
-      forearm_link: [spherical_wrist_1_link]
-      spherical_wrist_1_link: [spherical_wrist_2_link]
-      spherical_wrist_2_link: [bracelet_link]
-      bracelet_link: [robotiq_arg2f_base_link]
-      robotiq_arg2f_base_link: [left_outer_finger, right_outer_finger, left_inner_finger_pad, right_inner_finger_pad]
-      left_outer_finger: [right_outer_finger, right_inner_finger_pad, left_inner_finger_pad]
-      right_outer_finger: [right_inner_finger_pad, left_inner_finger_pad]
-      left_inner_finger_pad: [right_inner_finger_pad]
+      arm_base_link: [arm_shoulder_link]
+      arm_shoulder_link: [arm_half_arm_1_link]
+      arm_half_arm_1_link: [arm_half_arm_2_link]
+      arm_half_arm_2_link: [arm_forearm_link]
+      arm_forearm_link: [arm_spherical_wrist_1_link]
+      arm_spherical_wrist_1_link: [arm_spherical_wrist_2_link]
+      arm_spherical_wrist_2_link: [arm_bracelet_link]
+      arm_bracelet_link: [arm_robotiq_85_base_link]
+      arm_robotiq_85_base_link: [arm_robotiq_85_left_finger_link, arm_robotiq_85_right_finger_link, arm_robotiq_85_left_finger_tip_link,
+        arm_robotiq_85_right_finger_tip_link]
+      arm_robotiq_85_left_finger_link: [arm_robotiq_85_right_finger_link, arm_robotiq_85_right_finger_tip_link,
+        arm_robotiq_85_left_finger_tip_link]
+      arm_robotiq_85_right_finger_link: [arm_robotiq_85_right_finger_tip_link, arm_robotiq_85_left_finger_tip_link]
+      arm_robotiq_85_left_finger_tip_link: [arm_robotiq_85_right_finger_tip_link]
     urdf_path: from_robot_description
-    asset_root_path: robot/kinova
-    mesh_link_names: [base_link, shoulder_link, half_arm_1_link, half_arm_2_link, forearm_link, spherical_wrist_1_link,
-      spherical_wrist_2_link, bracelet_link]
+    asset_root_path: ''
+    mesh_link_names: []
+    lock_joints: {arm_robotiq_85_left_knuckle_joint: 0.0, arm_robotiq_85_right_knuckle_joint: 0.0, arm_robotiq_85_left_inner_knuckle_joint: 0.0,
+      arm_robotiq_85_right_inner_knuckle_joint: 0.0, arm_robotiq_85_left_finger_tip_joint: 0.0, arm_robotiq_85_right_finger_tip_joint: 0.0}
     cspace:
-      joint_names: [joint_1, joint_2, joint_3, joint_4, joint_5, joint_6, joint_7]
+      joint_names: [arm_joint_1, arm_joint_2, arm_joint_3, arm_joint_4, arm_joint_5, arm_joint_6, arm_joint_7]
       cspace_distance_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
       null_space_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
       retract_config: [0.0, 0.262, 3.142, -2.269, 0.0, 0.96, 1.571]

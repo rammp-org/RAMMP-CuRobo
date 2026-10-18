@@ -3,6 +3,7 @@
 These run anywhere (CI, a laptop) — no torch, no cuRobo, no ROS.
 """
 
+import importlib.util
 import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -31,15 +32,29 @@ from rammp_curobo.retime import scale_trajectory
 from rammp_curobo.robot_config import load_robot_config
 from rammp_curobo.scene import load_scene, scene_from_obstacles
 from rammp_curobo.types import Trajectory
-from rammp_curobo.urdf_model import prepare_urdf, write_urdf
+from rammp_curobo.urdf_model import (
+    ARM_JOINTS,
+    GRIPPER_JOINTS,
+    prepare_urdf,
+    write_urdf,
+)
 from rammp_curobo.validate import start_state_matches, validate_trajectory
 from rammp_curobo.world import world_cuboids
 
 DATA = Path(__file__).parent / "data"
+BAKE = Path(__file__).resolve().parents[2] / "scripts" / "bake_robot_config.py"
+_spec = importlib.util.spec_from_file_location("bake_robot_config", BAKE)
+_bake = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_bake)
+LINK_MAP = _bake.LINK_MAP
 
 
 def read(name):
     return (DATA / name).read_text()
+
+
+def load_yaml_robot(name_or_path):
+    return yaml.safe_load(resolve_config(name_or_path).read_text())["robot_cfg"]
 
 
 def test_packaged_configs_exist():
@@ -55,7 +70,7 @@ def test_packaged_configs_exist():
 def test_planner_config_loads_and_merges():
     cfg, cfg_dir = load_planner_config("gen3.yaml")
     assert cfg["robot"] == "robot_gen3_2f85.yaml"
-    assert cfg["joint_names"] == ["joint_%d" % i for i in range(1, 8)]
+    assert cfg["joint_names"] == ["arm_joint_%d" % i for i in range(1, 8)]
     assert cfg["planner"]["enable_graph"] is False
     assert cfg["planner"]["joint_space_method"] == "auto"
     assert cfg["execution"]["speed_scale"] == 0.25
@@ -73,22 +88,25 @@ def test_gen3_yaml_matches_planner_defaults():
     for section in ("planner", "tool", "execution"):
         assert cfg[section] == PLANNER_DEFAULTS[section], section
     assert cfg["joint_names"] == PLANNER_DEFAULTS["joint_names"]
+    assert cfg["joint_names"] == ["arm_joint_%d" % i for i in range(1, 8)]
 
 
-def test_baked_robot_config_carries_the_patches():
-    path = resolve_config("robot_gen3_2f85.yaml")
-    kin = yaml.safe_load(path.read_text())["robot_cfg"]["kinematics"]
-    spheres = kin["collision_spheres"]
-    assert isinstance(spheres, dict), "spheres must be inlined, not a ref"
-    for link in ("left_inner_finger_pad", "right_inner_finger_pad"):
-        assert all(s["radius"] >= 0.02 for s in spheres[link])
-    assert len(spheres["robotiq_arg2f_base_link"]) == 19  # stock 1 + shell 18
-    assert len(spheres["base_link"]) == 2  # audit-tuned set
-    retract = kin["cspace"]["retract_config"]
-    assert retract == pytest.approx(
-        [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571], abs=1e-6
-    )
-    assert kin["ee_link"] == "tool_frame"
+def test_baked_robot_config_is_the_upstream_model():
+    kin = load_yaml_robot("robot_gen3_2f85.yaml")["kinematics"]
+    old = load_yaml_robot(DATA / "robot_gen3_2f85_nvidia.yaml")["kinematics"]
+    assert kin["base_link"] == "arm_mount" and kin["ee_link"] == "arm_tool_frame"
+    assert kin["urdf_path"] == "from_robot_description" and kin["mesh_link_names"] == []
+    assert kin["lock_joints"] == {j: 0.0 for j in GRIPPER_JOINTS}
+    assert kin["cspace"]["joint_names"] == list(ARM_JOINTS)
+    assert kin["cspace"]["retract_config"] == old["cspace"]["retract_config"]
+    for nv, up in LINK_MAP.items():  # moved, not re-tuned
+        if nv in old["collision_spheres"]:
+            assert [s["radius"] for s in kin["collision_spheres"][up]] == [
+                s["radius"] for s in old["collision_spheres"][nv]
+            ]
+    assert set(kin["collision_link_names"]) == {
+        LINK_MAP[n] for n in old["collision_link_names"]
+    }
 
 
 def test_sim_kitchen_scene_parses():
