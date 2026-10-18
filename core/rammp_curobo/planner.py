@@ -248,6 +248,29 @@ class CuRoboPlanner:
                 timing=time.monotonic() - t0,
             )
         out = self._finish(result, t0)
+        # IK can land a continuous joint on the 2*pi branch away from the
+        # start, and the plan then winds a revolution to reach the same
+        # angle (#14). cuRobo already seeds IK with the start, but +/-pi
+        # cost the same and plan_single takes no seed of its own. Replan
+        # that goal in joint space, where _nearest_branch moves it onto the
+        # start's branch. 'js' only: 'auto' could fall back into this path.
+        # Not for a hold or via, which a joint-space replan would drop.
+        if (
+            out.success
+            and not (constraint is not None and constraint.is_active())
+            and not (via is not None and via.is_active())
+            and self._winds(out.joint_traj.positions)
+        ):
+            res = self.plan_to_joints(out.final_joints, start, method="js")
+            if res.success:
+                res.goal_mismatch_rad = None
+                res.timing = time.monotonic() - t0
+                return res
+            log.warning(
+                "plan winds a continuous joint and the replan on the "
+                "start's branch failed (%s); returning the winding plan",
+                res.status,
+            )
         # A hold is a COST, so a returned plan is a proposal, not a promise.
         # Measure it and refuse rather than hand over a trajectory that quietly
         # tipped the thing we were asked to keep upright.
@@ -675,6 +698,20 @@ class CuRoboPlanner:
                     g = cand
             out.append(float(g))
         return out
+
+    def _winds(self, positions):
+        """True if any continuous joint travels more than pi beyond its
+        net change, measured as an angle (mod 2*pi). A plan that goes from
+        -pi to +pi travels 2*pi to arrive where it started (#14)."""
+        lim = self.joint_limits()["position"]
+        q = np.asarray(positions, dtype=float)
+        for j in range(q.shape[1]):
+            if float(lim[1][j]) - float(lim[0][j]) > 2 * math.pi + 1e-6:
+                path = float(np.abs(np.diff(q[:, j])).sum())
+                net = abs(math.remainder(q[-1, j] - q[0, j], 2 * math.pi))
+                if path - net > math.pi:
+                    return True
+        return False
 
     def _clamp_to_limits(self, q, what):
         """Clamp a controller-order joint vector into the model's position

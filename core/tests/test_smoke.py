@@ -18,6 +18,7 @@ if not torch.cuda.is_available():
     pytest.skip("CUDA is not available", allow_module_level=True)
 
 from rammp_curobo import CuRoboPlanner  # noqa: E402
+from rammp_curobo.types import Trajectory  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -181,6 +182,42 @@ def test_joint_goal_normalized_to_start_branch(planner):
     j3 = res.joint_traj.positions[:, 2]
     assert abs(j3[-1] - (-3.1416)) < 0.05  # stayed on the start's branch
     assert np.abs(np.diff(j3)).sum() < 0.2  # no winding
+
+
+@pytest.mark.parametrize("parked", [-math.pi, math.pi])
+@pytest.mark.parametrize("j", [0, 2, 4, 6])  # joints 1/3/5/7, the continuous ones
+def test_pose_goal_normalized_to_start_branch(planner, j, parked, monkeypatch):
+    # #14: the arm parks a continuous joint on the +/-pi boundary and is sent
+    # the pose it is already at, and IK lands that joint on the OTHER 2*pi
+    # branch (observed live: arm at -pi, IK returned +pi), so the plan winds
+    # a revolution. Which branch IK picks depends on its random seeds -- it
+    # did not recur in ~270 plans here -- and cuRobo's trajopt will not
+    # produce that path on demand, so the wound plan is injected: the real
+    # plan_single runs, and its one _finish hands back the revolution.
+    start = list(planner.retract_pose)
+    start[j] = parked
+    ok, why = planner.check_state_valid(start)
+    assert ok, why
+    real_finish = planner._finish
+
+    def wound_plan(result, t0, q_goal=None):
+        monkeypatch.setattr(planner, "_finish", real_finish)
+        res = real_finish(result, t0, q_goal)
+        pos = np.tile(start, (200, 1))
+        pos[:, j] = np.linspace(
+            parked, parked - math.copysign(2 * math.pi, parked), 200
+        )
+        res.joint_traj = Trajectory(list(planner.joint_names), pos, None, None, 0.05)
+        res.final_joints = pos[-1].copy()
+        return res
+
+    monkeypatch.setattr(planner, "_finish", wound_plan)
+    pos, quat = planner.fk(start)
+    res = planner.plan_to_pose(pos, quat, start=start)
+    assert res.success, res.error
+    q = res.joint_traj.positions
+    assert np.abs(np.diff(q[:, j])).sum() < 0.2  # no winding
+    assert abs(q[-1, j] - parked) < 0.05  # stayed on the start's branch
 
 
 def _rotmat(q_xyzw):
