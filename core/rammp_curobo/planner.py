@@ -90,7 +90,7 @@ class CuRoboPlanner:
         cspace = self._robot_cfg["kinematics"]["cspace"]
         by_name = dict(zip(cspace["joint_names"], cspace["retract_config"]))
         self.retract_pose = [float(by_name[n]) for n in self.joint_names]
-        self._scene = load_scene(world_path)
+        self._scene = load_scene(world_path, frame=self.base_frame)
         self._init_curobo(warmup=bool(p["warmup"]))
 
     @classmethod
@@ -427,10 +427,18 @@ class CuRoboPlanner:
         """
         if isinstance(world, Scene):
             scene = world
+            if scene.base_frame != self.base_frame:
+                raise ValueError(
+                    "scene base_frame is %r, expected %r (the planning frame)"
+                    % (scene.base_frame, self.base_frame)
+                )
         elif isinstance(world, (list, tuple)):
-            scene = scene_from_obstacles(world)
+            scene = scene_from_obstacles(world, base_frame=self.base_frame)
         else:
-            scene = load_scene(resolve_config(world, relative_to=self._config_dir))
+            scene = load_scene(
+                resolve_config(world, relative_to=self._config_dir),
+                frame=self.base_frame,
+            )
         wc = make_world_config(
             scene,
             padding=self.world_padding,

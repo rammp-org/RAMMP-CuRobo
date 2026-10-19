@@ -175,8 +175,28 @@ def test_empty_world_only_when_allowed(monkeypatch):
         ("targets:\n  - {name: cup, position: [0.5, 0, 0]}\n", "obstacles"),
         ("obstacles:\n", "obstacles: \\[\\]"),  # null
         ("", "empty"),
+        # the boxes would be applied in arm_mount whatever the file says
+        ("base_frame: base_link\nobstacles: []\n", "'base_link'"),
+        ("obstacles: []\n", "base_frame is None"),
+        ("base_frame: arm_mount\nobstacles: []\nobjects:\n", "'objects' is null"),
+        (
+            "base_frame: arm_mount\nobstacles: []\nobjects: {name: a}\n",
+            "'objects' is dict",
+        ),
+        ("base_frame: arm_mount\nobstacles: []\ntargets: 3\n", "'targets' is int"),
     ],
-    ids=["missing", "typo", "only-targets", "null", "empty-file"],
+    ids=[
+        "missing",
+        "typo",
+        "only-targets",
+        "null",
+        "empty-file",
+        "base-link-frame",
+        "no-frame",
+        "null-objects",
+        "mapping-objects",
+        "scalar-targets",
+    ],
 )
 def test_load_scene_refuses_mis_keyed_world(tmp_path, text, match):
     path = tmp_path / "world_bad.yaml"
@@ -205,6 +225,7 @@ def test_scene_from_obstacle_dicts():
             },
         ]
     )
+    assert scene.base_frame == "arm_mount"  # update_world(list) must not be refused
     boxes = world_cuboids(scene, padding=0.0)
     assert boxes["obj_box"]["dims"] == pytest.approx([0.1, 0.2, 0.3])
     assert boxes["obj_can"]["dims"] == pytest.approx([0.08, 0.08, 0.12])
