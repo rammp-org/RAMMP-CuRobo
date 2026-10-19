@@ -35,6 +35,7 @@ from rammp_curobo import geometry
 from rammp_curobo.config import load_planner_config, resolve_config
 from rammp_curobo import constraints
 from rammp_curobo.constraints import PoseConstraint, ViaPoint
+from rammp_curobo.resample import resample_quintic
 from rammp_curobo.robot_config import load_robot_config
 from rammp_curobo.scene import Scene, load_scene, scene_from_obstacles
 from rammp_curobo.types import PlanResult, Trajectory
@@ -634,14 +635,16 @@ class CuRoboPlanner:
         return 2.0 * math.acos(min(1.0, abs(ew))), "orientation"
 
     def joint_limits(self):
-        """{'position': (2, dof) [lower; upper], 'velocity': (dof,)} in
-        CONTROLLER joint order (numpy, radians)."""
+        """{'position': (2, dof) [lower; upper], 'velocity': (dof,),
+        'acceleration': (dof,)} in CONTROLLER joint order (numpy, radians)."""
         lim = self._motion_gen.kinematics.get_joint_limits()
         order = [self._curobo_joint_names.index(n) for n in self.joint_names]
         pos = lim.position.detach().cpu().numpy()[:, order].astype(float)
         vel = lim.velocity.detach().cpu().numpy().astype(float)
         vmax = (np.abs(vel).max(axis=0) if vel.ndim == 2 else np.abs(vel))[order]
-        return {"position": pos, "velocity": vmax}
+        acc = np.abs(lim.acceleration.detach().cpu().numpy().astype(float))
+        amax = (acc.max(axis=0) if acc.ndim == 2 else acc)[order]
+        return {"position": pos, "velocity": vmax, "acceleration": amax}
 
     def check_state_valid(self, q):
         """(feasible, detail) for one controller-order joint vector against
@@ -882,7 +885,7 @@ class CuRoboPlanner:
 
         # ONLY the trimmed interpolated plan: result buffers are padded and
         # the untrimmed tail can be stale garbage from a previous plan.
-        plan = result.get_interpolated_plan()
+        plan, consistent = self._resample(result.get_interpolated_plan(), result)
         ordered = plan.get_ordered_joint_state(self.joint_names)
         pos = ordered.position.detach().cpu().numpy().astype(float).copy()
         vel = (
@@ -890,9 +893,11 @@ class CuRoboPlanner:
             if ordered.velocity is not None
             else None
         )
+        # Unresampled, cuRobo's accelerations disagree with its positions
+        # (#15): ship none, so a consumer stays on cubic rather than trust them.
         acc = (
             ordered.acceleration.detach().cpu().numpy().astype(float).copy()
-            if ordered.acceleration is not None
+            if consistent and ordered.acceleration is not None
             else None
         )
         traj = Trajectory(
@@ -905,7 +910,12 @@ class CuRoboPlanner:
         )
 
         lim = self.joint_limits()
-        problems = validate_trajectory(traj, lim["position"], lim["velocity"])
+        problems = validate_trajectory(
+            traj,
+            lim["position"],
+            lim["velocity"],
+            acceleration_limits=lim.get("acceleration"),
+        )
         problems += self._recheck_constraints(plan)
         if problems:
             return PlanResult.failure(
@@ -928,6 +938,35 @@ class CuRoboPlanner:
                 np.abs(pos[-1] - np.asarray(q_goal, dtype=float)).max()
             )
         return res
+
+    def _resample(self, plan, result):
+        """Replace cuRobo's LINEAR_CUDA resample with a quintic-spline one
+        through the same knots (#15) — BEFORE validation, so the re-check
+        sees exactly the states that ship. Returns (plan, consistent):
+        cuRobo's own plan and False when there are no knots or they do not
+        reproduce it."""
+
+        def arr(x):
+            return x.detach().cpu().numpy().astype(float).reshape(-1, x.shape[-1])
+
+        knots = getattr(result, "optimized_plan", None)
+        out = None
+        if knots is not None:
+            out = resample_quintic(
+                arr(knots.position),
+                arr(plan.position),
+                float(result.interpolation_dt),
+            )
+        if out is None:
+            log.warning(
+                "dense plan is not a linear resample of its knots; kept as-is, "
+                "without accelerations"
+            )
+            return plan, False
+        plan = plan.clone()
+        for dst, src in zip((plan.position, plan.velocity, plan.acceleration), out):
+            dst.copy_(self._torch.as_tensor(src, dtype=dst.dtype, device=dst.device))
+        return plan, True
 
     def _recheck_constraints(self, plan_curobo_order):
         """Independent belt-and-braces: re-check every interpolated state

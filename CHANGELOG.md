@@ -145,6 +145,31 @@ sheppy does not restart it: after fixing `arm_state_publisher`, restart the plan
   it holds level relative to `arm_mount`, which is level with the chair, not
   with gravity — on a ramp it is off by the ramp angle.
 
+### Fixed
+
+- `trajectory_to_msg` now copies the planned accelerations into each
+  `JointTrajectoryPoint` (#15); they were computed and then dropped at the
+  message boundary. A consumer that picks its interpolation order from what
+  the points carry (`joint_trajectory_controller`, the kinova driver) moves
+  from cubic to quintic on our plans with no change on its side.
+- The dense plan's positions, velocities and accelerations now agree (#15).
+  cuRobo's `LINEAR_CUDA` resample lerps each one independently between its
+  optimized knots, so on any plan optimized coarser than `interpolation_dt`
+  the positions kinked at every knot while the accelerations claimed a
+  smooth ramp (measured 95-368% apart). The planner now samples all three
+  from one quintic spline through the same knots, landing on the goal at
+  rest, before validation and the constraint re-check, so both see exactly
+  what ships. Measured on the Jetson over 22 plans: a consumer's quintic
+  peak jerk drops from a median 7397 to 227 rad/s^3, its peak acceleration
+  from 4.1x to 1.02x the planned one, at 1.6 ms per plan; positions move by
+  at most 6.1 mrad. If the knots do not reproduce cuRobo's resample, the
+  plan ships as cuRobo returned it but without accelerations, so a consumer
+  stays on cubic. The core now depends on `scipy` (already in the Jetson
+  image via cuRobo).
+- Shipped accelerations are validated against the robot's acceleration
+  limit, with the same 1% slack as velocities; `joint_limits()` now reports
+  `acceleration` too.
+
 ## [1.1.0] — 2026-10-02
 
 ### Added
