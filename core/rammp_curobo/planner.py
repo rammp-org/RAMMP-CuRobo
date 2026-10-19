@@ -919,7 +919,21 @@ class CuRoboPlanner:
 
         # ONLY the trimmed interpolated plan: result buffers are padded and
         # the untrimmed tail can be stale garbage from a previous plan.
-        plan, consistent = self._resample(result.get_interpolated_plan(), result)
+        linear = result.get_interpolated_plan()
+        plan, consistent = self._resample(linear, result)
+        recheck = self._recheck_constraints(plan)
+        if recheck and consistent:
+            # The spline can leave the hull of cuRobo's knots: a goal its IK
+            # put ON a joint limit is passed by ~0.2 mrad, which the re-check
+            # rightly rejects. cuRobo's chords never leave the hull, so ship
+            # its own plan (no accelerations) through the same gate instead.
+            log.warning(
+                "quintic resample failed the constraint re-check (%s); "
+                "using cuRobo's linear plan, without accelerations",
+                recheck[0],
+            )
+            plan, consistent = linear, False
+            recheck = self._recheck_constraints(plan)
         ordered = plan.get_ordered_joint_state(self.joint_names)
         pos = ordered.position.detach().cpu().numpy().astype(float).copy()
         vel = (
@@ -950,7 +964,7 @@ class CuRoboPlanner:
             lim["velocity"],
             acceleration_limits=lim.get("acceleration"),
         )
-        problems += self._recheck_constraints(plan)
+        problems += recheck
         if problems:
             return PlanResult.failure(
                 "LIBRARY_VALIDATION_FAILED",

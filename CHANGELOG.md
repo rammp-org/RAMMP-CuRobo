@@ -166,6 +166,15 @@ sheppy does not restart it: after fixing `arm_state_publisher`, restart the plan
   plan ships as cuRobo returned it but without accelerations, so a consumer
   stays on cubic. The core now depends on `scipy` (already in the Jetson
   image via cuRobo).
+- A pose plan whose goal cuRobo's IK put on a joint limit was rejected after
+  the quintic resample above ("constraint re-check flagged N/M states
+  infeasible"): the spline passes the goal, here by up to 0.2 mrad, and so
+  goes past the limit, which cuRobo's chords never do. GoToEEPose hit it on
+  the real arm on 2026-10-19. When the spline fails the constraint re-check,
+  the planner now ships cuRobo's own plan, without accelerations, after
+  putting that plan through the same re-check and validation. On an RTX 5090
+  this fell back on 15 of 252 plans to that goal, with no rejects; before
+  the fix 5 of 82 were rejected, each at `arm_joint_4` = 2.57.
 - Shipped accelerations are validated against the robot's acceleration
   limit, with the same 1% slack as velocities; `joint_limits()` now reports
   `acceleration` too.

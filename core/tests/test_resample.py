@@ -273,6 +273,66 @@ def test_finish_rejects_accelerations_over_the_limit():
     assert "acceleration" in res.error
 
 
+AT_LIMIT = json.loads(
+    (Path(__file__).parent / "data" / "curobo_at_limit.json").read_text()
+)
+
+
+def _at_limit():
+    g = {
+        k: np.asarray(AT_LIMIT[k], dtype=np.float32)
+        for k in ("knots", "dense", "dense_v", "dense_a", "position_limits")
+    }
+    g["dt"] = AT_LIMIT["dt"]
+    return g
+
+
+def test_the_spline_passes_a_goal_on_a_joint_limit():
+    """cuRobo's IK can put the goal ON a joint limit. Its chords stop there;
+    the spline through the same knots passes it (2026-10-19 GoToEEPose)."""
+    g = _at_limit()
+    lo, hi = g["position_limits"]
+    p, _, _ = resample_quintic(g["knots"], g["dense"], g["dt"])
+    assert ((g["dense"] >= lo) & (g["dense"] <= hi)).all()
+    assert (p[-10:, 3] > hi[3]).any()
+
+
+def test_finish_ships_curobos_plan_when_the_spline_fails_the_recheck():
+    from rammp_curobo.planner import CuRoboPlanner
+
+    g = _at_limit()
+    lo, hi = g["position_limits"]
+
+    def recheck(plan):  # cuRobo's bound term: feasible up to the limit itself
+        p = plan.position.a
+        bad = int(((p < lo) | (p > hi)).any(axis=1).sum())
+        return ["flagged %d/%d states" % (bad, len(p))] if bad else []
+
+    stub = types.SimpleNamespace(
+        joint_names=JOINTS,
+        base_frame="arm_mount",
+        _torch=_TORCH,
+        _recheck_constraints=recheck,
+        joint_limits=lambda: {
+            "position": g["position_limits"],
+            "velocity": np.full(7, 10.0),
+            "acceleration": np.full(7, 100.0),
+        },
+    )
+    stub._resample = lambda plan, result: CuRoboPlanner._resample(stub, plan, result)
+    plan = _Plan(g["dense"], g["dense_v"], g["dense_a"])
+    result = types.SimpleNamespace(
+        success=_Tensor(True),
+        interpolation_dt=g["dt"],
+        get_interpolated_plan=lambda: plan,
+        optimized_plan=types.SimpleNamespace(position=_Tensor(g["knots"])),
+    )
+    res = CuRoboPlanner._finish(stub, result, 0.0)
+    assert res.success, res.error
+    np.testing.assert_array_equal(res.joint_traj.positions, g["dense"])
+    assert res.joint_traj.accelerations is None
+
+
 def test_validate_checks_accelerations_only_when_given_limits():
     n = 10
     traj = Trajectory(
