@@ -54,4 +54,5 @@ BAKE_IMAGE ?= ghcr.io/rammp-org/rammp-curobo:1.1.0
 bake:                      ## Regenerate the robot config (expect no diff)
 	docker run --rm --network none -u $$(id -u):$$(id -g) -v $(CURDIR):/w -w /w \
 	  -e PYTHONPATH=/w/core $(BAKE_IMAGE) python3 scripts/bake_robot_config.py
-	git diff --exit-code core/rammp_curobo/configs/robot_gen3_2f85.yaml
+	git diff --exit-code core/rammp_curobo/configs/robot_gen3_2f85.yaml \
+	  core/tests/data/robot_gen3_2f85_moves.yaml

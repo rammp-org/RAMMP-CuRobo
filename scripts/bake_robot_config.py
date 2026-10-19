@@ -27,6 +27,12 @@ T_up^-1 * T_nv * c_nv, with LINK_MAP naming the target link. Count, order
 and radii are unchanged. The planner gets the URDF itself at runtime, so the
 YAML carries the sentinel urdf_path `from_robot_description`.
 
+The rename / lock / sphere move is build_robot_config(), a pure function of
+the NVIDIA-frame config and the moves. The bake writes the gripper moves to
+core/tests/data/robot_gen3_2f85_moves.yaml (the arm links' are identity), so
+an offline test rebuilds the committed YAML from robot_gen3_2f85_nvidia.yaml
+and those moves without cuRobo, yourdfpy or NVIDIA's URDF.
+
 Run in the image (needs the pinned cuRobo v0.7.8 content tree and yourdfpy):
     make bake
 or, with both installed:
@@ -34,6 +40,7 @@ or, with both installed:
 """
 
 import argparse
+import copy
 import io
 from pathlib import Path
 
@@ -47,6 +54,7 @@ from rammp_curobo.urdf_model import ARM_JOINTS, EE_LINK, ROOT_LINK
 REPO = Path(__file__).resolve().parent.parent
 OUT = REPO / "core" / "rammp_curobo" / "configs" / "robot_gen3_2f85.yaml"
 UPSTREAM_URDF = REPO / "core" / "tests" / "data" / "arm_level.urdf"
+MOVES = REPO / "core" / "tests" / "data" / "robot_gen3_2f85_moves.yaml"
 
 # The IK seed baked into cspace.retract_config, and the ONLY place this
 # pose is defined. The planner deliberately holds no pose of its own
@@ -178,6 +186,61 @@ def _rotation_deg(T):
     return np.degrees(np.arccos(np.clip((np.trace(T[:3, :3]) - 1) / 2, -1, 1)))
 
 
+def build_robot_config(nv_cfg, moves):
+    """NVIDIA-frame config + link moves -> the robot config dict.
+
+    `nv_cfg` is cuRobo's kinova_gen3.yml with the collision patches applied
+    and its spheres inlined (NVIDIA's link frames and names); `moves` maps
+    every LINK_MAP key to the 4x4 c_up = moves[link] @ c_nv. Pure: no
+    cuRobo, no URDF, and `nv_cfg` is not modified.
+    """
+    cfg = copy.deepcopy(nv_cfg)
+    kin = cfg["robot_cfg"]["kinematics"]
+
+    def moved(link, ss):
+        T = np.asarray(moves[link], dtype=float)
+        return [
+            {
+                "center": [
+                    round(float(v), 6) + 0.0 for v in (T @ _hom(s["center"]))[:3]
+                ],
+                "radius": s["radius"],
+            }
+            for s in ss
+        ]
+
+    def renamed(links):
+        return [LINK_MAP[n] for n in links]
+
+    kin["base_link"] = ROOT_LINK
+    kin["ee_link"] = EE_LINK
+    kin["collision_link_names"] = renamed(kin["collision_link_names"])
+    kin["collision_spheres"] = {
+        LINK_MAP[n]: moved(n, ss) for n, ss in kin["collision_spheres"].items()
+    }
+    kin["self_collision_buffer"] = {
+        LINK_MAP[n]: b for n, b in kin["self_collision_buffer"].items()
+    }
+    kin["self_collision_ignore"] = {
+        LINK_MAP[n]: renamed(ns) for n, ns in kin["self_collision_ignore"].items()
+    }
+    kin["urdf_path"] = URDF_SENTINEL
+    kin["asset_root_path"] = ""
+    kin["mesh_link_names"] = []
+
+    cspace = kin.pop("cspace")
+    # The gripper is locked open by its one actuated joint: cuRobo v0.7.8
+    # refuses mimic joints in lock_joints and holds the other five through
+    # their <mimic>.
+    kin["lock_joints"] = {"arm_robotiq_85_left_knuckle_joint": 0.0}
+    assert cspace["joint_names"] == ["joint_%d" % i for i in range(1, 8)]
+    assert JOINT_NAMES == list(ARM_JOINTS)
+    cspace["joint_names"] = JOINT_NAMES
+    cspace["retract_config"] = [float(v) for v in RETRACT_POSE]
+    kin["cspace"] = cspace
+    return cfg
+
+
 def main():
     from curobo.util_file import (
         get_assets_path,
@@ -232,45 +295,23 @@ def main():
             % (n, LINK_MAP[n], 1e3 * np.linalg.norm(T[:3, 3]), _rotation_deg(T))
         )
 
-    def moved(link, ss):
-        T = moves[link]
-        return [
-            {
-                "center": [
-                    round(float(v), 6) + 0.0 for v in (T @ _hom(s["center"]))[:3]
-                ],
-                "radius": s["radius"],
-            }
-            for s in ss
-        ]
-
-    def renamed(links):
-        return [LINK_MAP[n] for n in links]
-
-    kin["base_link"] = ROOT_LINK
-    kin["ee_link"] = EE_LINK
-    kin["collision_link_names"] = renamed(kin["collision_link_names"])
-    kin["collision_spheres"] = {LINK_MAP[n]: moved(n, ss) for n, ss in spheres.items()}
-    kin["self_collision_buffer"] = {
-        LINK_MAP[n]: b for n, b in kin["self_collision_buffer"].items()
+    # The arm links' moves are identity (asserted), so only the gripper's
+    # are committed for the offline rebuild.
+    for n in ARM_LINKS:
+        assert np.allclose(moves[n], np.eye(4), atol=1e-9), n
+    gripper = {
+        n: [[float(v) for v in row] for row in T]
+        for n, T in moves.items()
+        if n not in ARM_LINKS
     }
-    kin["self_collision_ignore"] = {
-        LINK_MAP[n]: renamed(ns) for n, ns in kin["self_collision_ignore"].items()
-    }
-    kin["urdf_path"] = URDF_SENTINEL
-    kin["asset_root_path"] = ""
-    kin["mesh_link_names"] = []
-
-    cspace = kin.pop("cspace")
-    # The gripper is locked open by its one actuated joint: cuRobo v0.7.8
-    # refuses mimic joints in lock_joints and holds the other five through
-    # their <mimic>.
-    kin["lock_joints"] = {"arm_robotiq_85_left_knuckle_joint": 0.0}
-    assert cspace["joint_names"] == ["joint_%d" % i for i in range(1, 8)]
-    assert JOINT_NAMES == list(ARM_JOINTS)
-    cspace["joint_names"] = JOINT_NAMES
-    cspace["retract_config"] = [float(v) for v in RETRACT_POSE]
-    kin["cspace"] = cspace
+    MOVES.write_text(
+        "# GENERATED by scripts/bake_robot_config.py (make bake): the gripper\n"
+        "# links' sphere moves, c_up = T @ c_nv, from NVIDIA's model onto\n"
+        "# arm_level.urdf at q = 0. The arm links' moves are identity.\n"
+        + yaml.safe_dump(gripper, sort_keys=False, default_flow_style=None, width=100)
+    )
+    kin["collision_spheres"] = spheres
+    cfg = build_robot_config(cfg, moves)
 
     buf = io.StringIO()
     yaml.safe_dump(cfg, buf, sort_keys=False, default_flow_style=None, width=100)

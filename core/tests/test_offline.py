@@ -124,6 +124,26 @@ def test_baked_robot_config_is_the_upstream_model():
     }
 
 
+def test_bake_rebuilds_the_committed_robot_config():
+    """The bake's rename / lock / sphere move, re-run offline: CI catches a
+    bake change that `make bake` would only catch by hand, and a hand edit
+    of a gripper sphere (the shell nearest the user)."""
+    nv_cfg = yaml.safe_load((DATA / "robot_gen3_2f85_nvidia.yaml").read_text())
+    moves = {n: np.eye(4) for n in ARM_LINKS}
+    moves.update(yaml.safe_load((DATA / "robot_gen3_2f85_moves.yaml").read_text()))
+    assert set(moves) == set(LINK_MAP)
+    got = _bake.build_robot_config(nv_cfg, moves)["robot_cfg"]["kinematics"]
+    want = load_yaml_robot("robot_gen3_2f85.yaml")["kinematics"]
+    spheres = (got.pop("collision_spheres"), want.pop("collision_spheres"))
+    assert got == want  # names, lock_joints, self_collision maps, cspace
+    assert list(spheres[0]) == list(spheres[1])
+    for link, ss in spheres[1].items():
+        assert len(spheres[0][link]) == len(ss), link
+        for a, b in zip(spheres[0][link], ss):
+            assert a["radius"] == b["radius"], link
+            assert np.allclose(a["center"], b["center"], rtol=0, atol=1e-6), link
+
+
 def test_sim_kitchen_scene_parses():
     scene = load_scene(resolve_config("world_sim_kitchen.yaml"))
     assert scene.base_frame == "arm_mount"
