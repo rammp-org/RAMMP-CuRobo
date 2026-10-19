@@ -146,6 +146,11 @@ Once built it logs the model (`base arm_mount, ee arm_tool_frame, joints [arm_jo
   ±2.24/±2.57/±2.09). A start more than `limit_clamp_rad` (0.05) outside
   them is refused naming the joint — including the Gen3's park pose
   (`arm_joint_4` ≈ -2.674; kinova-gen3-ros2#49).
+- **Plans keep `joint_limit_margin_rad` (0.1) from every limit.** cuRobo
+  plans inside the narrowed limits, so a goal reachable only near a limit
+  fails as `IK_FAIL`. A start or joint goal within the margin is refused
+  naming the joint (`START_IN_LIMIT_MARGIN` / `GOAL_IN_LIMIT_MARGIN`), never
+  moved; jog the arm away from the limit first.
 - **The gripper is locked open** by its actuated joint
   (`arm_robotiq_85_left_knuckle_joint`); cuRobo holds the five mimic joints
   with it. Their limits are filled in from that joint for cuRobo, since the

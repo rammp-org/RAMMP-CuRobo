@@ -102,6 +102,11 @@ plus the gripper services (2026-08-24, issue #6).
   `limit_clamp_rad` stays 0.05, so a start from the Gen3 park pose
   (`arm_joint_4` ≈ -2.674) is REFUSED, naming the joint
   (kinova-gen3-ros2#49). Don't widen the clamp or the limit to hide it.
+- `joint_limit_margin_rad` (0.1) is cuRobo's `position_limit_clip`: every
+  plan stays that far inside the URDF limits. `joint_limits()` still
+  returns the URDF's (widened back); the constraint re-check enforces the
+  margin. A start inside it is REFUSED by name, never shifted — shifting
+  would put the plan's first point off the arm's measured q.
 - A world file must say `base_frame: arm_mount`; any other frame, or none,
   is refused (`load_scene`), since the boxes are applied in `arm_mount`.
 - `world_empty.yaml` (no obstacles) is accepted at CONSTRUCTION only: the

@@ -43,6 +43,7 @@ PLANNER_DEFAULTS = {
         "no_pad_names": ["pedestal"],
         "joint_space_method": "auto",
         "limit_clamp_rad": 0.05,
+        "joint_limit_margin_rad": 0.1,
         # A constrained plan must hold the orientation within this much, and
         # that applies to the START too: the start is part of "throughout", so
         # a goal whose held components disagree with the start by more than

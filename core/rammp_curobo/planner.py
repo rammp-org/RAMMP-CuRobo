@@ -76,6 +76,12 @@ class CuRoboPlanner:
         self.no_pad_names = frozenset(p["no_pad_names"] or [])
         self.joint_space_method = str(p["joint_space_method"])
         self.limit_clamp_rad = float(p["limit_clamp_rad"])
+        self.joint_limit_margin_rad = float(p["joint_limit_margin_rad"])
+        if not self.joint_limit_margin_rad >= 0.0:
+            raise ValueError(
+                "joint_limit_margin_rad must be >= 0, got %r"
+                % p["joint_limit_margin_rad"]
+            )
         self.tool_spin_deg = float(config["tool"]["spin_deg"])
         self.tool_tip_offset = float(config["tool"]["tip_offset_m"])
 
@@ -102,6 +108,9 @@ class CuRoboPlanner:
         cspace = self._robot_cfg["kinematics"]["cspace"]
         by_name = dict(zip(cspace["joint_names"], cspace["retract_config"]))
         self.retract_pose = [float(by_name[n]) for n in self.joint_names]
+        # cuRobo plans (IK, trajopt, the constraint re-check) inside limits
+        # narrowed by the margin, so no plan reaches a URDF limit.
+        cspace["position_limit_clip"] = self.joint_limit_margin_rad
         self._scene = load_scene(world_path, frame=self.base_frame)
         self._init_curobo(warmup=bool(p["warmup"]))
 
@@ -234,7 +243,7 @@ class CuRoboPlanner:
 
         start, err = self._clamp_to_limits(start, "start")
         if err is not None:
-            return PlanResult.failure("START_OUTSIDE_LIMITS", err)
+            return PlanResult.failure(*err)
 
         # Refuse a self-contradictory request BEFORE planning. cuRobo does
         # not check a base-frame hold's start itself, so without this a
@@ -417,10 +426,10 @@ class CuRoboPlanner:
         q_goal = self._nearest_branch(q_goal, [float(v) for v in start])
         q_goal, err = self._clamp_to_limits(q_goal, "goal")
         if err is not None:
-            return PlanResult.failure("GOAL_OUTSIDE_LIMITS", err)
+            return PlanResult.failure(*err)
         start, err = self._clamp_to_limits(start, "start")
         if err is not None:
-            return PlanResult.failure("START_OUTSIDE_LIMITS", err)
+            return PlanResult.failure(*err)
         method = method or self.joint_space_method
 
         if method == "auto":
@@ -670,10 +679,13 @@ class CuRoboPlanner:
 
     def joint_limits(self):
         """{'position': (2, dof) [lower; upper], 'velocity': (dof,),
-        'acceleration': (dof,)} in CONTROLLER joint order (numpy, radians)."""
+        'acceleration': (dof,)} in CONTROLLER joint order (numpy, radians).
+        Positions are the URDF's: cuRobo's own are narrowed by
+        joint_limit_margin_rad, which is widened back here."""
         lim = self._motion_gen.kinematics.get_joint_limits()
         order = [self._curobo_joint_names.index(n) for n in self.joint_names]
         pos = lim.position.detach().cpu().numpy()[:, order].astype(float)
+        pos += np.array([[-1.0], [1.0]]) * self.joint_limit_margin_rad
         vel = lim.velocity.detach().cpu().numpy().astype(float)
         vmax = (np.abs(vel).max(axis=0) if vel.ndim == 2 else np.abs(vel))[order]
         acc = np.abs(lim.acceleration.detach().cpu().numpy().astype(float))
@@ -750,8 +762,12 @@ class CuRoboPlanner:
         park pose (arm_joint_4 ~ -2.674) is 0.10 rad past the URDF's +-2.57
         and is refused (tracked in kinova-gen3-ros2#49).
 
-        Returns (clamped_q or None, error or None). q may be None (nothing
-        to clamp).
+        cuRobo plans inside joint_limit_margin_rad of every limit, so a
+        joint within the margin is refused too, never moved: shifting a
+        start would put the plan's first point off the arm's measured q.
+
+        Returns (clamped_q or None, (status, error) or None). q may be None
+        (nothing to clamp).
         """
         if q is None:
             return None, None
@@ -763,6 +779,7 @@ class CuRoboPlanner:
         worst = float(deltas[j])
         if worst > self.limit_clamp_rad:
             return None, (
+                "%s_OUTSIDE_LIMITS" % what.upper(),
                 "%s: %s is %.3f rad outside the model position limits "
                 "[%.3f, %.3f] (max clamp %.3f) — jog the arm inside its "
                 "planning limits or fix the request"
@@ -773,7 +790,24 @@ class CuRoboPlanner:
                     lim[0][j],
                     lim[1][j],
                     self.limit_clamp_rad,
-                )
+                ),
+            )
+        room = np.minimum(clamped - lim[0], lim[1] - clamped)
+        k = int(np.argmin(room))
+        if room[k] < self.joint_limit_margin_rad:
+            return None, (
+                "%s_IN_LIMIT_MARGIN" % what.upper(),
+                "%s: %s is %.3f rad from its position limit [%.3f, %.3f], "
+                "inside joint_limit_margin_rad %.3f — jog it away from the "
+                "limit first"
+                % (
+                    what,
+                    self.joint_names[k],
+                    max(float(room[k]), 0.0),
+                    lim[0][k],
+                    lim[1][k],
+                    self.joint_limit_margin_rad,
+                ),
             )
         if worst > 1e-9:
             log.info(
@@ -919,7 +953,22 @@ class CuRoboPlanner:
 
         # ONLY the trimmed interpolated plan: result buffers are padded and
         # the untrimmed tail can be stale garbage from a previous plan.
-        plan, consistent = self._resample(result.get_interpolated_plan(), result)
+        linear = result.get_interpolated_plan()
+        plan, consistent = self._resample(linear, result)
+        recheck = self._recheck_constraints(plan)
+        if recheck and consistent:
+            # The spline can leave the hull of cuRobo's knots: a goal its IK
+            # put ON a (margin-narrowed) limit is passed by up to ~0.7 mrad,
+            # which the re-check rejects. cuRobo's chords never leave the
+            # hull, so ship its own plan (no accelerations) through the same
+            # gate instead; it still keeps the margin from the URDF limit.
+            log.warning(
+                "quintic resample failed the constraint re-check (%s); "
+                "using cuRobo's linear plan, without accelerations",
+                recheck[0],
+            )
+            plan, consistent = linear, False
+            recheck = self._recheck_constraints(plan)
         ordered = plan.get_ordered_joint_state(self.joint_names)
         pos = ordered.position.detach().cpu().numpy().astype(float).copy()
         vel = (
@@ -950,7 +999,7 @@ class CuRoboPlanner:
             lim["velocity"],
             acceleration_limits=lim.get("acceleration"),
         )
-        problems += self._recheck_constraints(plan)
+        problems += recheck
         if problems:
             return PlanResult.failure(
                 "LIBRARY_VALIDATION_FAILED",

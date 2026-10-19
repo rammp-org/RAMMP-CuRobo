@@ -102,6 +102,11 @@ sheppy does not restart it: after fixing `arm_state_publisher`, restart the plan
   Limit differences are logged as a WARNING and the model's are used. An
   upstream description change that moves a link means a re-bake and a
   release.
+- **Starts and joint goals near a limit are refused.** One within
+  `joint_limit_margin_rad` (0.1 rad) of a URDF position limit fails as
+  `START_IN_LIMIT_MARGIN` / `GOAL_IN_LIMIT_MARGIN`, naming the joint, where
+  it used to plan. The Gen3 rest preset (`arm_joint_4` -2.548) is one. The
+  0.05 rad clamp now matters only with the margin set to 0.
 
 ### Added
 
@@ -166,6 +171,19 @@ sheppy does not restart it: after fixing `arm_state_publisher`, restart the plan
   plan ships as cuRobo returned it but without accelerations, so a consumer
   stays on cubic. The core now depends on `scipy` (already in the Jetson
   image via cuRobo).
+- Plans no longer reach a joint limit, and a goal on one is no longer
+  rejected after planning. cuRobo's IK put pose goals ON a limit
+  (`arm_joint_4` = 2.57 for a GoToEEPose on the real arm on 2026-10-19); the
+  quintic resample above passed it by up to 0.7 mrad and the constraint
+  re-check rejected the plan ("constraint re-check flagged N/M states
+  infeasible"). cuRobo now plans inside `joint_limit_margin_rad` (new,
+  default 0.1 rad) of every URDF limit, and when the spline still leaves
+  the narrowed limits the planner ships cuRobo's own plan, without
+  accelerations, after the same re-check and validation. On a Jetson Orin,
+  159 plans per model to that day's two goals: 34 rejects on the 30° model
+  and 2 on the level model before, none after, and every plan kept at
+  least 0.1 rad from every limit (before: down to 0.1 mrad). A goal
+  reachable only near a limit now fails as `IK_FAIL`.
 - Shipped accelerations are validated against the robot's acceleration
   limit, with the same 1% slack as velocities; `joint_limits()` now reports
   `acceleration` too.

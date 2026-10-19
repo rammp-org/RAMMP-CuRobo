@@ -50,6 +50,13 @@ planner:
                                      # (arm_joint_4 ~ -2.674) is 0.10 rad past the
                                      # URDF's +-2.57 and is refused
                                      # (kinova-gen3-ros2#49)
+  joint_limit_margin_rad: 0.1        # cuRobo plans this far inside every URDF
+                                     # position limit (its position_limit_clip),
+                                     # so no plan reaches a limit. A start or
+                                     # joint goal inside the margin is REFUSED
+                                     # naming the joint (START_/GOAL_IN_LIMIT_
+                                     # MARGIN), never moved: the Gen3 rest preset
+                                     # (arm_joint_4 -2.548) is one
   constraint_tolerance_deg: 2.0       # orientation holds are a cuRobo COST, not a
                                       # clamp. A plan whose worst deviation from
                                       # the held orientation exceeds this is
