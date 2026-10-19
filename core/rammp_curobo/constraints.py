@@ -39,7 +39,7 @@ class PoseConstraint:
     """How much of the tool's ORIENTATION to keep for the whole trajectory.
 
     HOLD_LEVEL keeps roll and pitch and leaves yaw free IN TRANSIT, so the only
-    motion the tool may add on the way is a spin about base Z. The plan must
+    motion the tool may add on the way is a spin about arm_mount Z. The plan must
     still end at the goal's yaw. A pure rotation about Z has rotation
     vector (0, 0, theta) for any theta, so that freedom is exact at any
     magnitude — and a spin about the vertical cannot change how far something
@@ -53,12 +53,11 @@ class PoseConstraint:
     held values are the GOAL's; the planner refuses a start that disagrees
     with them, which is what makes the two the same.
 
-    It reads "level with the world" as "level with base Z". True while the arm
-    is mounted level, and silently false the moment it is not: on a tilted
-    mount the freed rotation is about a tilted axis, so it tips the very object
-    the hold was asked to protect. The fix is declaring the mount transform so
-    base_link IS gravity-aligned (#20), not another field here — an undeclared
-    tilt breaks the driver's gravity compensation too.
+    It holds level relative to arm_mount, which is level with the chair, not
+    with gravity. The URDF declares the mount tilt, so arm_mount's Z is
+    vertical on level ground; on a ramp it is off by the ramp angle, and so is
+    this hold (the driver's gravity compensation too). Fixing that needs live
+    gravity (the base IMU), which is out of scope.
 
     It is a COST, not a clamp. cuRobo penalises deviation, it does not forbid
     it. The planner therefore VERIFIES the returned trajectory and refuses a
