@@ -14,14 +14,15 @@ that heading to the new version and bumps the five places the number lives.
 
 ### Fixed
 
-- `plan_to_pose` could wind a continuous joint (1/3/5/7) a full revolution
-  when IK landed it on the other 2\*pi branch from the start, e.g. a goal at
-  the arm's current pose with joint_3 parked at -pi (#14). A plan that
-  travels more than pi beyond a continuous joint's net change is now replanned
-  in joint space to its final configuration moved onto the start's branch,
-  the same correction `plan_to_joints` already applied. If that replan fails
-  the original plan is returned, with a warning. Not applied to plans with a
-  hold or via point, which a joint-space replan would drop.
+- `plan_to_pose` could take a continuous joint (1/3/5/7) the long way round
+  when IK landed it on a 2\*pi branch away from the start: a full revolution
+  for a goal at the arm's current pose with joint_3 parked at -pi (#14). A
+  plan that ends off the start's branch is now replanned in joint space to
+  its final configuration moved onto that branch — the same correction
+  `plan_to_joints` already applied. If that replan fails the original plan is
+  returned with a warning in `PlanResult.error`, which the node appends to the
+  result `message`. Plans with a hold or via point are not replanned (a
+  joint-space replan would drop them) but are logged as a warning.
 
 ## [1.1.0] — 2026-10-02
 

@@ -58,7 +58,7 @@ class PlanResult:
     success: bool
     joint_traj: Optional[Trajectory]
     timing: float  # planner wall time, s
-    error: Optional[str]  # human-readable, when failed
+    error: Optional[str]  # human-readable, when failed (or a warning on success)
     status: str = ""  # raw cuRobo status string
     validated: bool = False  # library validation ran clean
     final_joints: Optional[np.ndarray] = None  # last trajectory point

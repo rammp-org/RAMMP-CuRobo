@@ -716,35 +716,44 @@ def test_a_path_violation_is_reported_before_the_endpoint():
 
 
 class _StubLimits:
-    """Just enough of CuRoboPlanner for _winds, called unbound: joint 0 is
-    continuous (range wider than 2*pi), joint 1 is not."""
+    """Just enough of CuRoboPlanner for _nearest_branch, called unbound:
+    joint a is continuous (the Gen3 URDF's +/-6.0), joint b is not."""
+
+    joint_names = ["a", "b"]
 
     def joint_limits(self):
-        return {"position": np.array([[-10.0, -2.0], [10.0, 2.0]])}
+        return {"position": np.array([[-6.0, -2.0], [6.0, 2.0]])}
 
 
-def _winds(path_j0, path_j1=None):
+def _off_start_branch(final, start):
+    """plan_to_pose's #14 trigger: the plan ends on a 2*pi branch other
+    than the start's."""
     from rammp_curobo.planner import CuRoboPlanner
 
-    j1 = np.zeros(len(path_j0)) if path_j1 is None else path_j1
-    return CuRoboPlanner._winds(_StubLimits(), np.column_stack([path_j0, j1]))
+    final = [float(v) for v in final]
+    return CuRoboPlanner._nearest_branch(_StubLimits(), final, start) != final
 
 
-def test_a_revolution_back_to_the_same_angle_is_winding():
+def test_a_revolution_back_to_the_same_angle_is_off_branch():
     # #14: -pi -> +pi through zero is the same physical angle, a full turn
-    assert _winds(np.linspace(-math.pi, math.pi, 50))
+    assert _off_start_branch([math.pi, 0.0], [-math.pi, 0.0])
 
 
-def test_a_direct_move_is_not_winding():
-    assert not _winds(np.linspace(-math.pi, -math.pi + 0.3, 50))
-    assert not _winds(np.linspace(0.0, 1.2 * math.pi, 50))  # one-way, past pi
+def test_a_move_the_long_way_round_is_off_branch():
+    # 216 deg the long way instead of 144 deg the short way: the #14 bug
+    # class, not only the pure revolution
+    assert _off_start_branch([1.2 * math.pi, 0.0], [0.0, 0.0])
 
 
-def test_an_out_and_back_detour_beyond_pi_is_winding():
-    out = np.linspace(0.0, 2.0, 25)
-    assert _winds(np.concatenate([out, out[::-1]]))
+def test_a_direct_move_is_on_branch():
+    assert not _off_start_branch([-math.pi + 0.3, 0.0], [-math.pi, 0.0])
+    assert not _off_start_branch([0.9 * math.pi, 0.0], [0.0, 0.0])
 
 
-def test_only_continuous_joints_are_checked():
-    out = np.linspace(0.0, 1.9, 25)
-    assert not _winds(np.zeros(50), np.concatenate([out, out[::-1]]))
+def test_a_detour_back_to_the_start_is_on_branch():
+    # an out-and-back detour ends where it began: nothing to shift
+    assert not _off_start_branch([0.4, 0.0], [0.4, 0.0])
+
+
+def test_only_continuous_joints_are_shifted():
+    assert not _off_start_branch([0.0, 1.9], [0.0, -1.9])
