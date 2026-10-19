@@ -2,7 +2,11 @@
 # collision world is the MEASURED real bench — nothing sim-related loads.
 # Use this on hardware:
 #
-#   ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml execute:=true
+#   ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml
+#
+# The robot model is the arm's own URDF from /arm/robot_description (plans and
+# the world are in arm_mount); from Python pass it as a file:
+#   CuRoboPlanner.from_config('gen3_real.yaml', urdf_path=path)
 #
 # Every unlisted knob inherits the same defaults gen3.yaml spells out
 # (config.PLANNER_DEFAULTS); see gen3.yaml for the commentary on each.

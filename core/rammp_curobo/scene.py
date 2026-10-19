@@ -16,6 +16,7 @@ base frame) plus roll/pitch/yaw in DEGREES.
 import yaml
 
 from rammp_curobo.geometry import euler_deg_to_quat_xyzw
+from rammp_curobo.urdf_model import ROOT_LINK
 
 
 class Obstacle:
@@ -121,18 +122,57 @@ class Scene:
         return None
 
 
-def load_scene(path):
+SCENE_KEYS = ("base_frame", "obstacles", "objects", "targets")
+LIST_KEYS = ("obstacles", "objects", "targets")
+
+
+def load_scene(path, frame=ROOT_LINK):
+    """Parse a world YAML. Refuses a mis-keyed file: a typo'd or missing
+    `obstacles` would otherwise load as an empty world without a word, so
+    an empty world must say `obstacles: []`.
+
+    `base_frame` is required and must be `frame`, the frame the planner
+    plans in (arm_mount): the numbers are applied in that frame whatever
+    the file says, so a world authored in another frame (the arm's tilted
+    base) would put every box in the wrong place, silently.
+    """
     with open(path, "r") as f:
         data = yaml.safe_load(f)
+    if not isinstance(data, dict):
+        raise ValueError("world file %s is empty or not a mapping" % path)
+    for key in data:
+        if key not in SCENE_KEYS:
+            raise ValueError(
+                "world file %s: unknown top-level key %r (expected %s)"
+                % (path, key, ", ".join(SCENE_KEYS))
+            )
+    if "obstacles" not in data:
+        raise ValueError(
+            "world file %s has no 'obstacles' key; write `obstacles: []` "
+            "for an empty world" % path
+        )
+    for key in LIST_KEYS:
+        value = data.get(key, [])
+        if not isinstance(value, list):
+            got = "null" if value is None else type(value).__name__
+            raise ValueError(
+                "world file %s: %r is %s, not a list; write `%s: []` for none"
+                % (path, key, got, key)
+            )
+    if data.get("base_frame") != frame:
+        raise ValueError(
+            "world file %s: base_frame is %r, expected %r (the planning frame)"
+            % (path, data.get("base_frame"), frame)
+        )
     return Scene(
-        base_frame=data.get("base_frame", "base_link"),
-        obstacles=[Obstacle(o) for o in data.get("obstacles", [])],
+        base_frame=frame,
+        obstacles=[Obstacle(o) for o in data["obstacles"]],
         targets=[Target(t) for t in data.get("targets", [])],
         objects=[SceneObject(o) for o in data.get("objects", [])],
     )
 
 
-def scene_from_obstacles(entries, base_frame="base_link"):
+def scene_from_obstacles(entries, base_frame=ROOT_LINK):
     """Build a Scene from plain dicts (the `update_world(obstacles)` path).
 
     Each entry follows the YAML object schema: name + position required,

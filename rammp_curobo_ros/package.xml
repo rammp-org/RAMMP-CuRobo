@@ -12,7 +12,9 @@
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
+  <depend>rcl_interfaces</depend>
   <depend>rammp_curobo_interfaces</depend>
+  <depend>std_msgs</depend>
   <depend>trajectory_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>builtin_interfaces</depend>

@@ -2,7 +2,7 @@
 
     from rammp_curobo import CuRoboPlanner
 
-    planner = CuRoboPlanner.from_config('gen3.yaml')
+    planner = CuRoboPlanner.from_config('gen3.yaml', urdf_path='robot_description.urdf')
     res = planner.plan_to_pose([0.45, 0.0, 0.35], [1, 0, 0, 0], q_now, quat_order='wxyz')
     res = planner.plan_to_joints(q_goal, q_now)
     planner.update_world([{'name': 'box', 'position': [0.5, 0, 0], 'dims': [0.1, 0.1, 0.1]}])
@@ -38,6 +38,7 @@ from rammp_curobo.constraints import PoseConstraint, ViaPoint
 from rammp_curobo.robot_config import load_robot_config
 from rammp_curobo.scene import Scene, load_scene, scene_from_obstacles
 from rammp_curobo.types import PlanResult, Trajectory
+from rammp_curobo.urdf_model import ROOT_LINK
 from rammp_curobo.validate import validate_trajectory
 from rammp_curobo.world import make_world_config
 
@@ -51,7 +52,7 @@ class CuRoboPlanner:
     the Orin the first time) — build once, keep it alive.
     """
 
-    def __init__(self, config, config_dir=None):
+    def __init__(self, config, config_dir=None, *, urdf_path=None):
         self._cfg = config
         self._config_dir = config_dir
         p = config["planner"]
@@ -80,22 +81,37 @@ class CuRoboPlanner:
 
         robot_path = resolve_config(config["robot"], relative_to=config_dir)
         world_path = resolve_config(config["world"], relative_to=config_dir)
-        self._robot_cfg = load_robot_config(robot_path)
+        # The arm's model: the URDF from /arm/robot_description, as a file.
+        self._robot_cfg = load_robot_config(robot_path, urdf_path=urdf_path)
+        # The frame every Cartesian input and trajectory is in. cuRobo calls the
+        # root of the chain it plans in "base_link"; for us that is arm_mount,
+        # the gravity-aligned root, NOT the arm's own arm_base_link. A robot
+        # YAML naming another root would plan (and stamp) in that frame, which
+        # kinova-gen3-ros2 refuses only at execution: refuse it here instead.
+        self.base_frame = str(self._robot_cfg["kinematics"]["base_link"])
+        if self.base_frame != ROOT_LINK:
+            raise ValueError(
+                "robot config %s: kinematics.base_link is %r, expected %r (the "
+                "URDF's root)" % (robot_path, self.base_frame, ROOT_LINK)
+            )
+        # The link plan_to_pose goals and fk() poses are for (arm_tool_frame).
+        self.ee_link = str(self._robot_cfg["kinematics"]["ee_link"])
         # The IK seed / null-space reference, in controller order. A planner
         # fact (it fixes the elbow family), NOT a statement about where the
         # arm belongs — this planner has no such opinion (issue #6).
         cspace = self._robot_cfg["kinematics"]["cspace"]
         by_name = dict(zip(cspace["joint_names"], cspace["retract_config"]))
         self.retract_pose = [float(by_name[n]) for n in self.joint_names]
-        self._scene = load_scene(world_path)
+        self._scene = load_scene(world_path, frame=self.base_frame)
         self._init_curobo(warmup=bool(p["warmup"]))
 
     @classmethod
-    def from_config(cls, name_or_path):
+    def from_config(cls, name_or_path, *, urdf_path=None):
         """Build from a planner YAML (packaged name like 'gen3.yaml' or a
-        filesystem path). See configs/gen3.yaml for the schema."""
+        filesystem path). See configs/gen3.yaml for the schema. urdf_path is
+        the arm's model as a file (urdf_model.write_urdf)."""
         cfg, cfg_dir = load_planner_config(name_or_path)
-        return cls(cfg, config_dir=cfg_dir)
+        return cls(cfg, config_dir=cfg_dir, urdf_path=urdf_path)
 
     # ------------------------------------------------------------ cuRobo setup
     def _init_curobo(self, warmup=True):
@@ -123,6 +139,10 @@ class CuRoboPlanner:
             padding=self.world_padding,
             no_pad_names=self.no_pad_names,
             cache_obb=self.collision_cache_obb,
+            allow_empty=True,
+        )
+        log.info(
+            "Collision world: %d boxes (%s)", len(world.cuboid), self._cfg["world"]
         )
         log.info("Loading cuRobo MotionGen (%s)...", self._cfg["robot"])
         cfg = MotionGenConfig.load_from_robot_config(
@@ -164,8 +184,8 @@ class CuRoboPlanner:
     ):
         """Plan a collision-free trajectory to an end-effector pose.
 
-        position: [x, y, z] metres in the robot base frame.
-        quaternion: orientation of cuRobo's ee_link (tool_frame — for the
+        position: [x, y, z] metres in arm_mount (base_frame).
+        quaternion: orientation of cuRobo's ee_link (arm_tool_frame — for the
             Gen3 config that is 0.120 m beyond the wrist flange, roughly the
             fingertip midpoint). quat_order says how it is packed: 'xyzw'
             (ROS, the default) or 'wxyz' (cuRobo).
@@ -453,10 +473,18 @@ class CuRoboPlanner:
         """
         if isinstance(world, Scene):
             scene = world
+            if scene.base_frame != self.base_frame:
+                raise ValueError(
+                    "scene base_frame is %r, expected %r (the planning frame)"
+                    % (scene.base_frame, self.base_frame)
+                )
         elif isinstance(world, (list, tuple)):
-            scene = scene_from_obstacles(world)
+            scene = scene_from_obstacles(world, base_frame=self.base_frame)
         else:
-            scene = load_scene(resolve_config(world, relative_to=self._config_dir))
+            scene = load_scene(
+                resolve_config(world, relative_to=self._config_dir),
+                frame=self.base_frame,
+            )
         wc = make_world_config(
             scene,
             padding=self.world_padding,
@@ -714,12 +742,11 @@ class CuRoboPlanner:
         """Clamp a controller-order joint vector into the model's position
         limits, or explain why that's not okay.
 
-        Real arms park slightly OUTSIDE conservative model limits — the
-        Gen3's factory park pose puts joint_4 ~0.8 deg past cuRobo's URDF
-        bound, and cuRobo hard-refuses such a start. Violations up to
-        `limit_clamp_rad` are clamped inward (the executor's start-state
-        tolerance absorbs the difference); anything larger is a genuine
-        configuration problem and is refused with the joint named.
+        cuRobo hard-refuses a start outside its limits, so small
+        model-vs-arm disagreements, up to `limit_clamp_rad`, are clamped
+        inward; anything larger is refused with the joint named. The Gen3's
+        park pose (arm_joint_4 ~ -2.674) is 0.10 rad past the URDF's +-2.57
+        and is refused (tracked in kinova-gen3-ros2#49).
 
         Returns (clamped_q or None, error or None). q may be None (nothing
         to clamp).
@@ -909,6 +936,7 @@ class CuRoboPlanner:
             velocities=vel,
             accelerations=acc,
             dt=float(result.interpolation_dt),
+            frame_id=self.base_frame,
         )
 
         lim = self.joint_limits()
@@ -960,8 +988,8 @@ class CuRoboPlanner:
             return (
                 "no collision-free joint solution AT the goal — move it "
                 "away from obstacles or relax the orientation. The goal "
-                "is the tool_frame (fingertip midpoint); the flange sits "
-                "12 cm behind it along the tool axis."
+                "is arm_tool_frame (fingertip midpoint) in arm_mount; the "
+                "flange sits 12 cm behind it along the tool axis."
             )
         if "INVALID_START" in s:
             return (

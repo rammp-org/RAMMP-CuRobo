@@ -12,11 +12,128 @@ that heading to the new version and bumps the five places the number lives.
 
 ## [Unreleased]
 
+The planner plans against the arm's own model, in `arm_mount`, for tilted arm
+mounts (rammp-deployments `docs/superpowers/specs/2026-10-15-tilted-arm-mount-design.md`).
+Breaking: move a pin only together with kinova-gen3-ros2's `arm_` names and
+`arm_mount` (#47), on every robot, dojo included. The two move together: the
+new kinova-gen3-ros2 refuses every pose plan from an older planner, and this
+planner exits without the new kinova-gen3-ros2's `arm_state_publisher`.
+
+**Deploying.** The image's default CMD loads `gen3_real.yaml`, whose world is
+`world_real_bench.yaml`: dojo's bench. On flatbot either move the pin together
+with the per-robot worlds, or choose `world_empty.yaml` for flatbot alone in the
+sheppy manifest (rammp-deployments `december_2026/sheppy-manifest.yaml`):
+
+```yaml
+- id: curobo_planner
+  kind: docker
+  ros_node_name: rammp_curobo          # key for the params file sheppy writes
+  container:
+    image: ghcr.io/rammp-org/rammp-curobo:<release with #38>
+    # ... (network, runtime, volumes as today)
+    # sheppy appends --ros-args --params-file only after a command; without
+    # one it replaces the image CMD and the container exits 2.
+    command:
+      - /opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node
+      - --ros-args
+      - -p
+      - config:=gen3_real.yaml
+  params:
+    world: world_real_bench.yaml       # dojo's bench; flatbot overrides
+```
+
+and in flatbot's profile `overrides: {planner: {world: world_empty.yaml}}` (sheppy
+applies overrides only to params the alternative declares, so the `params:` entry is
+required).
+
+Why this and not a plain `-p world:=world_empty.yaml`: `params:` without a
+`command:` makes sheppy replace the image CMD with `--ros-args --params-file ...`
+alone, which `/entrypoint.sh` cannot exec, and the container exits 2; hard-coding the
+world in the shared manifest's `command:` drops dojo's bench, so dojo plans through
+real objects.
+
+The planner exits 1 when no model arrives within 30 s
+(`robot_description_timeout_s`; a slow first `arm_state_publisher` start does it), and
+sheppy does not restart it: after fixing `arm_state_publisher`, restart the planner
+(`sheppy restart planner`).
+
+### Changed (breaking)
+
+- **A required topic.** The node builds its robot model from the URDF
+  `arm_state_publisher` latches on `/arm/robot_description` (RELIABLE +
+  TRANSIENT_LOCAL), waiting `robot_description_timeout_s` (default 30 s); no
+  model in time is a FATAL naming `arm_state_publisher` and exit 1. No URDF
+  ships here any more. The model is read once: a later, different model is
+  never used, and the node logs an ERROR each time one arrives ("a DIFFERENT
+  model was published on /arm/robot_description; ... restart the planner"),
+  so restart the planner when the robot's mount changes. In `core`,
+  `CuRoboPlanner(...)` / `from_config(...)` take the model as a file,
+  `urdf_path=` (keyword); the baked config refuses to load without one.
+- **Joint names** `joint_1..7` → `arm_joint_1..7`, on goals, in
+  `gen3.yaml` and on every returned trajectory.
+- **Frame.** Goals and plans are in `arm_mount`, the URDF's root (level with
+  the chair), with the tool at `arm_tool_frame` (was `base_link` /
+  `tool_frame`). On a level mount the numbers are unchanged; on a tilted one
+  they are the arm's tilt apart, as intended.
+- **Joint limits** are the URDF's, the ones the driver enforces: j2/j4/j6
+  ±2.41/±2.66/±2.23 → **±2.24/±2.57/±2.09** rad (continuous j1/3/5/7 parse as
+  ±6.28). `limit_clamp_rad` stays 0.05, so a plan from the Gen3's park pose
+  (`arm_joint_4` ≈ -2.674) is now **refused**, naming `arm_joint_4`
+  (kinova-gen3-ros2#49).
+- **The container's CMD** execs the planner node directly (PID 1) instead of
+  `ros2 launch`, so the container's exit code is the node's: a missing model
+  is a non-zero exit, and `docker stop` exits 0 promptly.
+- **World files are strict.** A world file with an unknown top-level key is
+  refused, and so is one without an `obstacles` key (`obstacles: null` and a
+  missing key are both refused; an empty list is `obstacles: []`). Both used
+  to load. `obstacles`, `objects` and `targets` must each be a list.
+- **World files must say `base_frame: arm_mount`.** The boxes are applied in
+  the planning frame whatever the file says, so a world in any other frame is
+  refused, naming the file and the value — including one with no
+  `base_frame`, which used to default to `base_link`. The packaged worlds
+  already say `arm_mount`. In `core`, `load_scene(path, frame="arm_mount")`,
+  and `update_world` refuses a `Scene` in another frame.
+- **A drifted model is refused.** The collision spheres sit on the link
+  frames of `arm_level.urdf`; `make bake` records every joint below
+  `arm_base_link` in `configs/arm_kinematics.json`. A model whose joints
+  differ from it (an origin by more than 1 mm or 0.1°, an axis by more than
+  0.1°, a parent, child, type or mimic, or a joint missing or extra) is a
+  FATAL naming the joint, and exit 1. The mount (`arm_base_joint`) may vary.
+  Limit differences are logged as a WARNING and the model's are used. An
+  upstream description change that moves a link means a re-bake and a
+  release.
+
+### Added
+
+- **Every plan states its frame:** `trajectory.header.frame_id` is
+  `arm_mount` on pose and joint plans alike (core: `Trajectory.frame_id`).
+  kinova-gen3-ros2's `GoToEEPose` refuses any pose plan not stamped
+  `arm_mount` (#47), on every mount.
+- **`world_empty.yaml`**: plan against the arm alone (flatbot). Accepted at
+  construction only (the node's `world` parameter is applied before the
+  planner is built); `update_world` / `set_world` still refuse an empty
+  world. The startup log reports `Collision world: N boxes (<file>)`.
+
+### Unchanged on purpose
+
+- **The collision spheres** are moved onto the upstream links through FK of
+  both models, not re-tuned: same count and radii, every sphere and
+  `arm_tool_frame` within 1 mm (and 0.1°) of NVIDIA's model, which stays the
+  sphere source. `make bake` now runs inside the image.
+- **The gripper** is still locked open, now by its actuated joint only
+  (`arm_robotiq_85_left_knuckle_joint`); cuRobo holds the five mimics with it.
+  The URDF gives the mimic joints no limits, so they are filled in for cuRobo
+  from the joint each follows (kinova-gen3-ros2#48 may add them upstream).
+- **The retract seed's values**, `[0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]`.
+- **`HOLD_LEVEL`'s maths.** Its documented limitation is now the real one:
+  it holds level relative to `arm_mount`, which is level with the chair, not
+  with gravity — on a ramp it is off by the ramp angle.
+
 ### Fixed
 
 - `plan_to_pose` could take a continuous joint (1/3/5/7) the long way round
   when IK landed it on a 2\*pi branch away from the start: a full revolution
-  for a goal at the arm's current pose with joint_3 parked at -pi (#14). A
+  for a goal at the arm's current pose with arm_joint_3 parked at -pi (#14). A
   plan that ends off the start's branch is now replanned in joint space to
   its final configuration moved onto that branch — the same correction
   `plan_to_joints` already applied. If that replan fails the original plan is
