@@ -15,8 +15,9 @@ writes it to a temp file and hands `core` the path
 (`CuRoboPlanner.from_config(..., urdf_path=path)`; `core` stays file-based,
 and loading the baked config without one is refused). No model in time =
 a FATAL naming `arm_state_publisher` and exit 1. The model is read ONCE, at
-startup: a later, different model on the topic is ignored, so restart the
-planner whenever the robot's mount changes. Planning is in the model's root,
+startup: a later, different model on the topic is never used (the node logs
+an ERROR each time one arrives), so restart the planner whenever the robot's
+mount changes. Planning is in the model's root,
 `arm_mount` (level with the chair, not with gravity), with `ee_link`
 `arm_tool_frame` and joints `arm_joint_1..7`; every returned trajectory is
 stamped `header.frame_id: arm_mount`, joint plans included
@@ -87,7 +88,10 @@ plus the gripper services (2026-08-24, issue #6).
   `<visual>`, `<collision>` and `<ros2_control>` are stripped (the mesh
   paths point at packages this image lacks; the spheres are the collision
   model), and a model that is not ours (root not `arm_mount`, no
-  `arm_tool_frame`, unprefixed names) is refused by name.
+  `arm_tool_frame`, unprefixed names) is refused by name. So is a model whose
+  joints below `arm_base_link` drift from `configs/arm_kinematics.json` (what
+  the spheres were baked on: 1 mm / 0.1°, structure, joint set; the mount
+  joint may vary, limit differences are only logged).
 - The gripper is locked open by its ACTUATED joint only
   (`lock_joints: {arm_robotiq_85_left_knuckle_joint: 0.0}`; cuRobo v0.7.8
   refuses mimic joints in `lock_joints` and folds the five mimics in itself).
@@ -98,6 +102,8 @@ plus the gripper services (2026-08-24, issue #6).
   `limit_clamp_rad` stays 0.05, so a start from the Gen3 park pose
   (`arm_joint_4` ≈ -2.674) is REFUSED, naming the joint
   (kinova-gen3-ros2#49). Don't widen the clamp or the limit to hide it.
+- A world file must say `base_frame: arm_mount`; any other frame, or none,
+  is refused (`load_scene`), since the boxes are applied in `arm_mount`.
 - `world_empty.yaml` (no obstacles) is accepted at CONSTRUCTION only: the
   node applies its `world` parameter to the config before building the
   planner, and `update_world` still refuses an empty world. The startup log

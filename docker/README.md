@@ -82,8 +82,9 @@ docker run --rm -it --runtime nvidia --network host --ipc host \
 - **The model.** The node waits up to `robot_description_timeout_s`
   (default 30 s) for `arm_state_publisher` on `/arm/robot_description`
   (`ros2 launch kinova_gen3_description description.launch.py mount_file:=<robot>/mount.yaml`),
-  in the same ROS domain. A later, different model is ignored: **restart the
-  container whenever the robot's mount changes.**
+  in the same ROS domain. A later, different model is never used, and the
+  node logs an ERROR each time one arrives: **restart the container whenever
+  the robot's mount changes.**
 - **Exit codes.** The image's CMD execs the planner node itself (PID 1), not
   `ros2 launch`, so the container's exit code is the node's: no model in
   time is a FATAL naming `arm_state_publisher` and a **non-zero exit (1)**,
@@ -92,7 +93,7 @@ docker run --rm -it --runtime nvidia --network host --ipc host \
   `-p` args, e.g. `... rammp-curobo:jp6 /opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node --ros-args -p config:=gen3_real.yaml -p world:=world_empty.yaml`
   (`world_empty.yaml`: the arm alone, for a robot with nothing in reach to
   model). `ros2 launch rammp_curobo_ros planner.launch.py ...` still works
-  but always exits 0.
+  but always exits 0. Under sheppy, see below.
 - **Verify the bridge on first start** (the container runs as root; mixed
   root/non-root Fast DDS shared memory is a classic silent-delivery
   failure): from a host shell, `ros2 action list | grep rammp_curobo`
@@ -100,6 +101,44 @@ docker run --rm -it --runtime nvidia --network host --ipc host \
   discovery works but calls hang, run the container with
   `--user $(id -u):$(id -g) -e HOME=/tmp` (move the cache volume to
   `/tmp/.cache`) so DDS shared memory is same-UID as the host nodes.
+
+### Under sheppy (rammp-deployments)
+
+One manifest serves dojo and flatbot. To give flatbot `world_empty.yaml` and keep
+dojo's bench:
+
+```yaml
+- id: curobo_planner
+  kind: docker
+  ros_node_name: rammp_curobo          # key for the params file sheppy writes
+  container:
+    image: ghcr.io/rammp-org/rammp-curobo:<release with #38>
+    # ... (network, runtime, volumes as today)
+    # sheppy appends --ros-args --params-file only after a command; without
+    # one it replaces the image CMD and the container exits 2.
+    command:
+      - /opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node
+      - --ros-args
+      - -p
+      - config:=gen3_real.yaml
+  params:
+    world: world_real_bench.yaml       # dojo's bench; flatbot overrides
+```
+
+and in flatbot's profile `overrides: {planner: {world: world_empty.yaml}}` (sheppy
+applies overrides only to params the alternative declares, so the `params:` entry is
+required).
+
+Why this and not a plain `-p world:=world_empty.yaml`: `params:` without a
+`command:` makes sheppy replace the image CMD with `--ros-args --params-file ...`
+alone, which `/entrypoint.sh` cannot exec, and the container exits 2; hard-coding the
+world in the shared manifest's `command:` drops dojo's bench, so dojo plans through
+real objects.
+
+The planner exits 1 when no model arrives within 30 s
+(`robot_description_timeout_s`; a slow first `arm_state_publisher` start does it), and
+sheppy does not restart it: after fixing `arm_state_publisher`, restart the planner
+(`sheppy restart planner`).
 
 ## Client side (your codebase)
 

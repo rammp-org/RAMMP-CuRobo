@@ -21,7 +21,41 @@ planner exits without the new kinova-gen3-ros2's `arm_state_publisher`.
 
 **Deploying.** The image's default CMD loads `gen3_real.yaml`, whose world is
 `world_real_bench.yaml`: dojo's bench. On flatbot either move the pin together
-with the per-robot worlds, or run the planner with `-p world:=world_empty.yaml`.
+with the per-robot worlds, or choose `world_empty.yaml` for flatbot alone in the
+sheppy manifest (rammp-deployments `december_2026/sheppy-manifest.yaml`):
+
+```yaml
+- id: curobo_planner
+  kind: docker
+  ros_node_name: rammp_curobo          # key for the params file sheppy writes
+  container:
+    image: ghcr.io/rammp-org/rammp-curobo:<release with #38>
+    # ... (network, runtime, volumes as today)
+    # sheppy appends --ros-args --params-file only after a command; without
+    # one it replaces the image CMD and the container exits 2.
+    command:
+      - /opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node
+      - --ros-args
+      - -p
+      - config:=gen3_real.yaml
+  params:
+    world: world_real_bench.yaml       # dojo's bench; flatbot overrides
+```
+
+and in flatbot's profile `overrides: {planner: {world: world_empty.yaml}}` (sheppy
+applies overrides only to params the alternative declares, so the `params:` entry is
+required).
+
+Why this and not a plain `-p world:=world_empty.yaml`: `params:` without a
+`command:` makes sheppy replace the image CMD with `--ros-args --params-file ...`
+alone, which `/entrypoint.sh` cannot exec, and the container exits 2; hard-coding the
+world in the shared manifest's `command:` drops dojo's bench, so dojo plans through
+real objects.
+
+The planner exits 1 when no model arrives within 30 s
+(`robot_description_timeout_s`; a slow first `arm_state_publisher` start does it), and
+sheppy does not restart it: after fixing `arm_state_publisher`, restart the planner
+(`sheppy restart planner`).
 
 ### Changed (breaking)
 
@@ -30,7 +64,9 @@ with the per-robot worlds, or run the planner with `-p world:=world_empty.yaml`.
   TRANSIENT_LOCAL), waiting `robot_description_timeout_s` (default 30 s); no
   model in time is a FATAL naming `arm_state_publisher` and exit 1. No URDF
   ships here any more. The model is read once: a later, different model is
-  ignored, so restart the planner when the robot's mount changes. In `core`,
+  never used, and the node logs an ERROR each time one arrives ("a DIFFERENT
+  model was published on /arm/robot_description; ... restart the planner"),
+  so restart the planner when the robot's mount changes. In `core`,
   `CuRoboPlanner(...)` / `from_config(...)` take the model as a file,
   `urdf_path=` (keyword); the baked config refuses to load without one.
 - **Joint names** `joint_1..7` → `arm_joint_1..7`, on goals, in
@@ -50,7 +86,22 @@ with the per-robot worlds, or run the planner with `-p world:=world_empty.yaml`.
 - **World files are strict.** A world file with an unknown top-level key is
   refused, and so is one without an `obstacles` key (`obstacles: null` and a
   missing key are both refused; an empty list is `obstacles: []`). Both used
-  to load.
+  to load. `obstacles`, `objects` and `targets` must each be a list.
+- **World files must say `base_frame: arm_mount`.** The boxes are applied in
+  the planning frame whatever the file says, so a world in any other frame is
+  refused, naming the file and the value — including one with no
+  `base_frame`, which used to default to `base_link`. The packaged worlds
+  already say `arm_mount`. In `core`, `load_scene(path, frame="arm_mount")`,
+  and `update_world` refuses a `Scene` in another frame.
+- **A drifted model is refused.** The collision spheres sit on the link
+  frames of `arm_level.urdf`; `make bake` records every joint below
+  `arm_base_link` in `configs/arm_kinematics.json`. A model whose joints
+  differ from it (an origin by more than 1 mm or 0.1°, an axis by more than
+  0.1°, a parent, child, type or mimic, or a joint missing or extra) is a
+  FATAL naming the joint, and exit 1. The mount (`arm_base_joint`) may vary.
+  Limit differences are logged as a WARNING and the model's are used. An
+  upstream description change that moves a link means a re-bake and a
+  release.
 
 ### Added
 
