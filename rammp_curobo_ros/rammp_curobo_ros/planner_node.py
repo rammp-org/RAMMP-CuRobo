@@ -22,7 +22,9 @@ from the planner to the driver's IDL. Do not reintroduce any of it.
 The robot model is the arm's own: the URDF arm_state_publisher latches on
 /arm/robot_description. The node waits for it before building the planner,
 so it plans in that model's root frame (arm_mount) with its joint names and
-limits, and every returned trajectory says arm_mount in its header.
+limits, and every returned trajectory says arm_mount in its header. The
+model is read once; a different one published later is reported as an
+ERROR, every time, and never used — restart the planner to take it.
 """
 
 import logging
@@ -78,6 +80,12 @@ def check_start_joints(start_joints, joint_names):
 
 
 ROBOT_DESCRIPTION_TOPIC = "/arm/robot_description"
+# What robot_state_publisher latches with: a later subscriber still gets it.
+MODEL_QOS = QoSProfile(
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
 
 
 def planner_config(config, world):
@@ -170,8 +178,9 @@ class RammpCuroboNode(Node):
         self._plan_lock = threading.Lock()
 
         # The model first: no planner and no servers until a valid one is in.
+        model = self._wait_for_model(timeout_s)
         try:
-            xml = prepare_urdf(self._wait_for_model(timeout_s))
+            xml = prepare_urdf(model)
         except ValueError as exc:
             self.get_logger().fatal("model on %s: %s" % (ROBOT_DESCRIPTION_TOPIC, exc))
             raise SystemExit(1)
@@ -195,6 +204,7 @@ class RammpCuroboNode(Node):
                 ", ".join(self.planner.joint_names),
             )
         )
+        self._model_sub = self._watch_model(model)
 
         ActionServer(
             self,
@@ -243,13 +253,8 @@ class RammpCuroboNode(Node):
         as a clean exit.
         """
         got = []
-        qos = QoSProfile(
-            depth=1,
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        )
         sub = self.create_subscription(
-            String, ROBOT_DESCRIPTION_TOPIC, lambda m: got.append(m.data), qos
+            String, ROBOT_DESCRIPTION_TOPIC, lambda m: got.append(m.data), MODEL_QOS
         )
         self.get_logger().info(
             "Waiting up to %.0f s for the model on %s..."
@@ -270,6 +275,28 @@ class RammpCuroboNode(Node):
             )
             raise SystemExit(1)
         return got[0]
+
+    def _watch_model(self, model):
+        """Keep listening on /arm/robot_description, and log an ERROR each
+        time a model other than `model` (the one in use) arrives.
+
+        The model in use never changes: the planner, its spheres' links and
+        every plan in flight are built on it. A re-measured mount means a
+        restart, and this makes a missed restart visible in the planner's
+        own log. The latched copy of `model` itself is not reported.
+        """
+
+        def check(msg):
+            if msg.data != model:
+                self.get_logger().error(
+                    "a DIFFERENT model was published on %s; this planner is "
+                    "still using the one it started with -- restart the "
+                    "planner" % ROBOT_DESCRIPTION_TOPIC
+                )
+
+        return self.create_subscription(
+            String, ROBOT_DESCRIPTION_TOPIC, check, MODEL_QOS
+        )
 
     # ---------------------------------------------------------------- planning
     def _plan_to_pose_cb(self, goal_handle):
