@@ -114,6 +114,22 @@ sheppy does not restart it: after fixing `arm_state_publisher`, restart the plan
   planner is built); `update_world` / `set_world` still refuse an empty
   world. The startup log reports `Collision world: N boxes (<file>)`.
 
+### Removed
+
+- `execution.speed_scale` / `execution.max_speed_scale` from `gen3.yaml` and the
+  config defaults, and `CuRoboPlanner.execution` (#22). Nothing ever read them,
+  so the "quarter speed" bring-up default they declared was never applied: the
+  arm ran every plan at full speed. Speed scaling is the executor's job
+  (`kinova-gen3-ros2#37`). A config that still carries an `execution:` block
+  loads as before, with a warning that the block is ignored. Library-side
+  retiming (`Trajectory.scaled()`, `retime.py`) is unchanged.
+- Semver note: `CuRoboPlanner` is in `__all__`, so dropping its `.execution`
+  attribute is, read strictly, a breaking change. It is listed here and not
+  under *Changed (breaking)* because no consumer references it
+  (`kinova_arm_ros2` uses only `rammp_curobo_interfaces`, never the core API),
+  so on its own it would not force a MAJOR. That is a waiver for this one
+  attribute, not a precedent: other removals from an exported class stay MAJOR.
+
 ### Unchanged on purpose
 
 - **The collision spheres** are moved onto the upstream links through FK of

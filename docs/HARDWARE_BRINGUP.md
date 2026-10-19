@@ -28,8 +28,10 @@ pgrep -af "arm_driver|teleop_socket|trajectory_run|kortex" ; ls /tmp/kinova.lock
 
 Note: `arm_driver` persists joint speed soft-limits (MEDIUM: 25 deg/s) and a
 10-degree following-error threshold on the arm's controller. If a previous
-`arm_driver` session ran, those limits still apply — harmless for our slow
-first runs (an extra speed cap on top of ours), but know they're there.
+`arm_driver` session ran, those limits still apply — harmless for slow first
+runs (an extra speed cap on top of whatever `speed_scale` the executor
+applies; this repo plans at full speed and caps nothing), but know they're
+there.
 
 ## 1. Measure the bench, edit the world
 
