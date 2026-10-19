@@ -240,6 +240,7 @@ def _finish(consistent, acc_limit=25.0, scale_a=1.0):
     plan = _Plan(g["dense"], g["dense_v"], g["dense_a"] * scale_a)
     stub = types.SimpleNamespace(
         joint_names=JOINTS,
+        base_frame="arm_mount",  # _finish stamps it once #38 lands
         _resample=lambda plan, result: (plan, consistent),
         _recheck_constraints=lambda plan: [],
         joint_limits=lambda: {
