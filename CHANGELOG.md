@@ -21,6 +21,11 @@ that heading to the new version and bumps the five places the number lives.
   (`kinova-gen3-ros2#37`). A config that still carries an `execution:` block
   loads as before, with a warning that the block is ignored. Library-side
   retiming (`Trajectory.scaled()`, `retime.py`) is unchanged.
+- Semver note: `CuRoboPlanner` is in `__all__`, so dropping its `.execution`
+  attribute is, read strictly, a breaking change. This MINOR release knowingly
+  waives that rule for this one attribute because no consumer references it
+  (`kinova_arm_ros2` uses only `rammp_curobo_interfaces`, never the core API).
+  It is not a precedent: other removals from an exported class stay MAJOR.
 
 ## [1.1.0] — 2026-10-02
 
