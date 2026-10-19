@@ -8,7 +8,6 @@ code out of the process.
 """
 
 import os
-import random
 import subprocess
 import sys
 import time
@@ -40,7 +39,7 @@ class _FakePlanner:
 
 
 @pytest.fixture
-def make_node(monkeypatch):
+def make_node(monkeypatch, domain_id):
     monkeypatch.setattr(rammp_curobo, "CuRoboPlanner", _FakePlanner)
     _FakePlanner.made.clear()
     nodes = []
@@ -50,7 +49,7 @@ def make_node(monkeypatch):
             planner_node.RammpCuroboNode, "_wait_for_model", lambda self, t: model
         )
         args = ["--ros-args"] + [a for p in params for a in ("-p", p)]
-        rclpy.init(args=args, domain_id=random.randint(100, 200))
+        rclpy.init(args=args, domain_id=domain_id)
         nodes.append(planner_node.RammpCuroboNode())
         return nodes[-1]
 
@@ -93,8 +92,8 @@ def test_the_models_temp_dir_goes_with_the_node(make_node):
     assert not Path(urdf_path).parent.exists()
 
 
-def test_main_exits_1_when_no_model_arrives():
-    env = dict(os.environ, ROS_DOMAIN_ID=str(random.randint(100, 200)))
+def test_main_exits_1_when_no_model_arrives(domain_id):
+    env = dict(os.environ, ROS_DOMAIN_ID=str(domain_id))
     t0 = time.monotonic()
     r = subprocess.run(
         [

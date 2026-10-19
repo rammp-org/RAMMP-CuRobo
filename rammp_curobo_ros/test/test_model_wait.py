@@ -8,7 +8,6 @@ _wait_for_model and _watch_model use only Node API, so they run here on a
 plain node.
 """
 
-import random
 import time
 
 import pytest
@@ -26,9 +25,8 @@ from rammp_curobo_ros.planner_node import (  # noqa: E402
 
 
 @pytest.fixture
-def node():
-    # a private domain: a real arm_state_publisher nearby must not answer
-    rclpy.init(domain_id=random.randint(100, 200))
+def node(domain_id):
+    rclpy.init(domain_id=domain_id)  # conftest.py: private, never reused
     n = rclpy.create_node("model_wait_test")
     yield n
     n.destroy_node()
