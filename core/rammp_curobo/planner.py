@@ -268,6 +268,40 @@ class CuRoboPlanner:
                 timing=time.monotonic() - t0,
             )
         out = self._finish(result, t0)
+        # IK can land a continuous joint on a 2*pi branch away from the
+        # start, and the plan then goes the long way round -- a full
+        # revolution for a goal at the start's own angle (#14). cuRobo
+        # already seeds IK with the start, but +/-pi cost the same and
+        # plan_single takes no seed of its own. So: if the plan ENDS off the
+        # start's branch, replan in joint space to the end moved onto it.
+        # A plan that ends on the branch can only have detoured, not wound.
+        # 'js' only: 'auto' could fall back into this path.
+        if out.success:
+            final = [float(v) for v in out.final_joints]
+            if self._nearest_branch(final, start) != final:
+                held = (constraint is not None and constraint.is_active()) or (
+                    via is not None and via.is_active()
+                )
+                if held:
+                    # a joint-space replan would drop the hold or via
+                    log.warning(
+                        "plan ends on a 2*pi branch away from the start "
+                        "(it goes the long way round); not replanned "
+                        "under a hold or via"
+                    )
+                else:
+                    res = self.plan_to_joints(final, start, method="js")
+                    if res.success:
+                        res.goal_mismatch_rad = None
+                        res.timing = time.monotonic() - t0
+                        return res
+                    out.error = (
+                        "plan ends on a 2*pi branch away from the start (it "
+                        "goes the long way round) and the replan onto the "
+                        "start's branch failed (%s); returning it as planned"
+                        % res.status
+                    )
+                    log.warning("%s", out.error)
         # A hold is a COST, so a returned plan is a proposal, not a promise.
         # Measure it and refuse rather than hand over a trajectory that quietly
         # tipped the thing we were asked to keep upright.

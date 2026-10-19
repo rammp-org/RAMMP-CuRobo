@@ -869,6 +869,51 @@ def test_a_path_violation_is_reported_before_the_endpoint():
     assert why is not None and "tilt (roll/pitch)" in why
 
 
+class _StubLimits:
+    """Just enough of CuRoboPlanner for _nearest_branch, called unbound:
+    joint a is continuous (no <limit> in the URDF, so +/-6.2832), joint b
+    is not."""
+
+    joint_names = ["a", "b"]
+
+    def joint_limits(self):
+        return {"position": np.array([[-6.2832, -2.0], [6.2832, 2.0]])}
+
+
+def _off_start_branch(final, start):
+    """plan_to_pose's #14 trigger: the plan ends on a 2*pi branch other
+    than the start's."""
+    from rammp_curobo.planner import CuRoboPlanner
+
+    final = [float(v) for v in final]
+    return CuRoboPlanner._nearest_branch(_StubLimits(), final, start) != final
+
+
+def test_a_revolution_back_to_the_same_angle_is_off_branch():
+    # #14: -pi -> +pi through zero is the same physical angle, a full turn
+    assert _off_start_branch([math.pi, 0.0], [-math.pi, 0.0])
+
+
+def test_a_move_the_long_way_round_is_off_branch():
+    # 216 deg the long way instead of 144 deg the short way: the #14 bug
+    # class, not only the pure revolution
+    assert _off_start_branch([1.2 * math.pi, 0.0], [0.0, 0.0])
+
+
+def test_a_direct_move_is_on_branch():
+    assert not _off_start_branch([-math.pi + 0.3, 0.0], [-math.pi, 0.0])
+    assert not _off_start_branch([0.9 * math.pi, 0.0], [0.0, 0.0])
+
+
+def test_a_detour_back_to_the_start_is_on_branch():
+    # an out-and-back detour ends where it began: nothing to shift
+    assert not _off_start_branch([0.4, 0.0], [0.4, 0.0])
+
+
+def test_only_continuous_joints_are_shifted():
+    assert not _off_start_branch([0.0, 1.9], [0.0, -1.9])
+
+
 def test_meshes_are_stripped_and_missing_files_load():
     xml = prepare_urdf(read("arm_level.urdf"))
     root = ET.fromstring(xml)

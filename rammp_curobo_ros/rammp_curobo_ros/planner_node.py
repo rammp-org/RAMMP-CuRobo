@@ -392,6 +392,8 @@ class RammpCuroboNode(Node):
                 res.joint_traj.n_points,
                 res.joint_traj.duration,
             )
+            if res.error:
+                result.message += " — warning: " + res.error
             result.trajectory = trajectory_to_msg(res.joint_traj)
             self.get_logger().info(result.message)
             goal_handle.succeed()

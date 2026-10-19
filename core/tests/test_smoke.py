@@ -21,6 +21,7 @@ if not torch.cuda.is_available():
 
 from rammp_curobo import CuRoboPlanner  # noqa: E402
 from rammp_curobo.config import resolve_config  # noqa: E402
+from rammp_curobo.types import PlanResult, Trajectory  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -209,6 +210,116 @@ def test_joint_goal_normalized_to_start_branch(planner):
     j3 = res.joint_traj.positions[:, 2]
     assert abs(j3[-1] - (-3.1416)) < 0.05  # stayed on the start's branch
     assert np.abs(np.diff(j3)).sum() < 0.2  # no winding
+
+
+def _inject_wound_plan(planner, monkeypatch, start, j, wound_end):
+    """Make the next plan_single come back wound: its one _finish result is
+    a plan moving joint j alone from start to wound_end. Which branch IK
+    picks depends on its random seeds -- #14 did not recur in ~270 plans
+    here -- and cuRobo's trajopt will not produce that path on demand. The
+    real plan_single is skipped: its result would be discarded, and the
+    subject is what plan_to_pose does next. The replan stays real."""
+    real_finish = planner._finish
+    real_plan_single = planner._motion_gen.plan_single
+
+    def no_plan(*a, **k):
+        monkeypatch.setattr(planner._motion_gen, "plan_single", real_plan_single)
+
+    monkeypatch.setattr(planner._motion_gen, "plan_single", no_plan)
+
+    def wound_plan(result, t0, q_goal=None):
+        monkeypatch.setattr(planner, "_finish", real_finish)
+        pos = np.tile(start, (200, 1))
+        pos[:, j] = np.linspace(start[j], wound_end, 200)
+        return PlanResult(
+            success=True,
+            joint_traj=Trajectory(
+                list(planner.joint_names),
+                pos,
+                None,
+                None,
+                0.05,
+                frame_id=planner.base_frame,
+            ),
+            timing=0.0,
+            error=None,
+            status="OK",
+            validated=True,
+            final_joints=pos[-1].copy(),
+        )
+
+    monkeypatch.setattr(planner, "_finish", wound_plan)
+
+
+@pytest.mark.parametrize("move", [0.0, 0.6 * math.pi])
+@pytest.mark.parametrize("parked", [-math.pi, math.pi])
+@pytest.mark.parametrize("j", [0, 2, 4, 6])  # joints 1/3/5/7, the continuous ones
+def test_pose_goal_normalized_to_start_branch(planner, j, parked, move, monkeypatch):
+    # #14: the arm parks a continuous joint on the +/-pi boundary, and IK
+    # lands that joint on the OTHER 2*pi branch from the goal it should
+    # reach (observed live: arm at -pi, a goal at its own pose, IK returned
+    # +pi), so the plan goes the long way round. move=0 is that same-pose
+    # revolution; move=0.6*pi is a real move whose wound plan travels
+    # 1.4*pi, which a path-vs-net-change heuristic misses.
+    start = list(planner.retract_pose)
+    start[j] = parked
+    ok, why = planner.check_state_valid(start)
+    assert ok, why
+    goal = list(start)
+    goal[j] = parked + math.copysign(move, parked)  # inside +/-6.2832
+    _inject_wound_plan(
+        planner, monkeypatch, start, j, goal[j] - math.copysign(2 * math.pi, parked)
+    )
+    pos, quat = planner.fk(goal)
+    res = planner.plan_to_pose(pos, quat, start=start)
+    assert res.success, res.error
+    assert res.validated
+    assert res.goal_mismatch_rad is None
+    assert res.error is None
+    assert res.joint_traj.frame_id == "arm_mount"  # the replan is stamped too
+    q = res.joint_traj.positions
+    assert np.abs(np.diff(q[:, j])).sum() < move + 0.2  # the short way
+    assert abs(q[-1, j] - goal[j]) < 0.05  # on the start's branch
+
+
+def test_a_failed_unwinding_replan_says_so(planner, monkeypatch):
+    # the wound plan is still returned (it is valid and collision-free) but
+    # not silently: error carries the warning to the consumer
+    start = list(planner.retract_pose)
+    start[2] = -math.pi
+    _inject_wound_plan(planner, monkeypatch, start, 2, math.pi)
+    monkeypatch.setattr(
+        planner,
+        "plan_to_joints",
+        lambda *a, **k: PlanResult.failure("TRAJOPT_FAIL", "injected"),
+    )
+    pos, quat = planner.fk(start)
+    res = planner.plan_to_pose(pos, quat, start=start)
+    assert res.success
+    assert res.error and "2*pi branch" in res.error
+
+
+def test_winding_under_a_hold_is_warned_not_replanned(planner, monkeypatch):
+    from rammp_curobo import planner as planner_module
+    from rammp_curobo.constraints import HOLD_LEVEL, PoseConstraint
+
+    start = list(planner.retract_pose)
+    start[2] = -math.pi
+    _inject_wound_plan(planner, monkeypatch, start, 2, math.pi)
+    replans = []
+    monkeypatch.setattr(planner, "plan_to_joints", lambda *a, **k: replans.append(a))
+    # the module logger's calls are recorded directly: caplog intermittently
+    # captured nothing in the full Jetson-image run
+    warned = []
+    monkeypatch.setattr(
+        planner_module.log, "warning", lambda msg, *a: warned.append(msg % a)
+    )
+    pos, quat = planner.fk(start)
+    planner.plan_to_pose(
+        pos, quat, start=start, constraint=PoseConstraint(hold=HOLD_LEVEL)
+    )
+    assert not replans
+    assert any("2*pi branch" in w for w in warned), warned
 
 
 def _rotmat(q_xyzw):
