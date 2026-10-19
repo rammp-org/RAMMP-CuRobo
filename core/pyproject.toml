@@ -23,4 +23,4 @@ test = ["pytest"]
 include = ["rammp_curobo*"]
 
 [tool.setuptools.package-data]
-rammp_curobo = ["configs/*.yaml"]
+rammp_curobo = ["configs/*.yaml", "configs/*.json"]

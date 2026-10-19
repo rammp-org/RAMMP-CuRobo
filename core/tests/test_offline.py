@@ -944,6 +944,65 @@ def test_foreign_model_is_refused_by_name():
             prepare_urdf(broken)
 
 
+def test_the_tilted_mount_matches_the_kinematic_reference():
+    # arm_base_joint is the mount: it may differ, nothing below it may
+    prepare_urdf(read("arm_tilt30.urdf"))
+
+
+def test_kinematic_drift_is_refused_by_name():
+    knuckle = '<origin rpy="0 0 0" xyz="0.03060114 0.0 0.05490452" />'
+    assert read("arm_level.urdf").count(knuckle) == 1
+    for broken, why in [
+        # a 2 mm gripper offset: the spheres would sit 2 mm off the links
+        (
+            read("arm_level.urdf").replace(
+                knuckle, '<origin rpy="0 0 0" xyz="0.03260114 0.0 0.05490452" />'
+            ),
+            "'arm_robotiq_85_left_knuckle_joint' is 2.000 mm",
+        ),
+        (
+            read("arm_level.urdf").replace(
+                knuckle, '<origin rpy="0 0 0.0035" xyz="0.03060114 0.0 0.05490452" />'
+            ),
+            "'arm_robotiq_85_left_knuckle_joint' is 0.000 mm / 0.201 deg",
+        ),
+        (
+            read("arm_level.urdf").replace(
+                '<axis xyz="0 -1 0" /><origin rpy="0 0 0" xyz="0.0127 ',
+                '<axis xyz="0 1 0" /><origin rpy="0 0 0" xyz="0.0127 ',
+            ),
+            "'arm_robotiq_85_left_inner_knuckle_joint'.*axis 180",
+        ),
+        (
+            read("arm_level.urdf").replace(
+                "</robot>",
+                '<link name="cam"/><joint name="cam_joint" type="fixed">'
+                '<parent link="arm_bracelet_link"/><child link="cam"/></joint></robot>',
+            ),
+            "extra \\['cam_joint'\\]",
+        ),
+        (
+            read("arm_level.urdf").replace(
+                '<mimic joint="arm_robotiq_85_left_knuckle_joint" /></joint></robot>',
+                "</joint></robot>",
+            ),
+            "'arm_robotiq_85_right_finger_tip_joint' mimic",
+        ),
+    ]:
+        assert broken != read("arm_level.urdf")
+        with pytest.raises(ValueError, match=why):
+            prepare_urdf(broken)
+
+
+def test_kinematic_reference_limit_differences_are_logged_not_refused(caplog):
+    xml = read("arm_level.urdf").replace(
+        'lower="-2.57" upper="2.57"', 'lower="-2.6" upper="2.6"'
+    )
+    with caplog.at_level("WARNING", logger="rammp_curobo"):
+        prepare_urdf(xml)
+    assert "'arm_joint_4' limit" in caplog.text
+
+
 def test_robot_config_takes_the_urdf_path(tmp_path, monkeypatch):
     p = write_urdf(read("arm_level.urdf"), tmp_path)
     kin = load_robot_config("robot_gen3_2f85.yaml", urdf_path=p)["kinematics"]

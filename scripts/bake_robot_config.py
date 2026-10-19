@@ -31,7 +31,10 @@ The rename / lock / sphere move is build_robot_config(), a pure function of
 the NVIDIA-frame config and the moves. The bake writes the gripper moves to
 core/tests/data/robot_gen3_2f85_moves.yaml (the arm links' are identity), so
 an offline test rebuilds the committed YAML from robot_gen3_2f85_nvidia.yaml
-and those moves without cuRobo, yourdfpy or NVIDIA's URDF.
+and those moves without cuRobo, yourdfpy or NVIDIA's URDF. It also records
+what the spheres were moved onto, every joint below arm_base_link in --urdf,
+in core/rammp_curobo/configs/arm_kinematics.json; prepare_urdf refuses a live
+model that drifts from it.
 
 Run in the image (needs the pinned cuRobo v0.7.8 content tree and yourdfpy):
     make bake
@@ -42,6 +45,8 @@ or, with both installed:
 import argparse
 import copy
 import io
+import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import numpy as np
@@ -49,7 +54,13 @@ import yaml
 
 from rammp_curobo.config import PLANNER_DEFAULTS
 from rammp_curobo.robot_config import URDF_SENTINEL
-from rammp_curobo.urdf_model import ARM_JOINTS, EE_LINK, ROOT_LINK
+from rammp_curobo.urdf_model import (
+    ARM_JOINTS,
+    EE_LINK,
+    KINEMATICS_REFERENCE,
+    ROOT_LINK,
+    kinematic_reference,
+)
 
 REPO = Path(__file__).resolve().parent.parent
 OUT = REPO / "core" / "rammp_curobo" / "configs" / "robot_gen3_2f85.yaml"
@@ -312,6 +323,14 @@ def main():
     )
     kin["collision_spheres"] = spheres
     cfg = build_robot_config(cfg, moves)
+    # What the spheres were moved onto: prepare_urdf refuses a model whose
+    # joints below arm_base_link differ from this.
+    ref = kinematic_reference(ET.parse(args.urdf).getroot())
+    KINEMATICS_REFERENCE.write_text(  # one joint per line
+        "{\n"
+        + ",\n".join(" %s: %s" % (json.dumps(n), json.dumps(j)) for n, j in ref.items())
+        + "\n}\n"
+    )
 
     buf = io.StringIO()
     yaml.safe_dump(cfg, buf, sort_keys=False, default_flow_style=None, width=100)

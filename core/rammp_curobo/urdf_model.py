@@ -20,8 +20,21 @@ follow; a limitless joint that follows nothing is refused by name.
 The 2F-85 gripper is required: the robot config locks its joints and puts
 collision spheres on its links, so a gripperless model cannot load, and it is
 refused here by name rather than failing inside cuRobo.
+
+The kinematics below the arm's base must be the ones the spheres were moved
+onto. The bake (scripts/bake_robot_config.py) records every joint below
+`arm_base_link` from arm_level.urdf in configs/arm_kinematics.json, and a
+model whose joints differ from it (an origin by more than 1 mm or 0.1 deg,
+an axis by more than 0.1 deg, a parent, child, type or mimic, or a joint
+missing or extra) is refused by name: an upstream description change would
+otherwise shift the baked spheres off the links, silently. `arm_base_joint`
+is the mount and may vary. Limit differences are logged, not refused: the
+limits are the model's to set (they are what the driver enforces).
 """
 
+import json
+import logging
+import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -36,6 +49,12 @@ GRIPPER_JOINTS = (
     "arm_robotiq_85_left_finger_tip_joint",
     "arm_robotiq_85_right_finger_tip_joint",
 )
+BASE_LINK = "arm_base_link"
+KINEMATICS_REFERENCE = Path(__file__).parent / "configs" / "arm_kinematics.json"
+ORIGIN_TOL_M = 1e-3
+ANGLE_TOL_DEG = 0.1
+
+log = logging.getLogger("rammp_curobo")
 
 
 def prepare_urdf(xml):
@@ -65,6 +84,9 @@ def prepare_urdf(xml):
     missing = [j for j in ARM_JOINTS + GRIPPER_JOINTS if j not in joints]
     if missing:
         raise ValueError("robot model is missing joints %s" % missing)
+    check_kinematics(
+        kinematic_reference(root), json.loads(KINEMATICS_REFERENCE.read_text())
+    )
 
     for link in root.findall("link"):
         for tag in ("visual", "collision"):
@@ -74,6 +96,107 @@ def prepare_urdf(xml):
         root.remove(el)
     _fill_mimic_limits(root)
     return ET.tostring(root, encoding="unicode")
+
+
+def kinematic_reference(root):
+    """{joint: its kinematics} for every joint below `arm_base_link`, from a
+    parsed URDF: parent, child, type, origin xyz/rpy, axis (None on a fixed
+    joint), mimic and limit, URDF defaults filled in."""
+    below, out = {BASE_LINK}, {}
+    grew = True
+    while grew:  # the joints may come in any order
+        grew = False
+        for j in root.findall("joint"):
+            name, parent = j.get("name"), j.find("parent").get("link")
+            if parent not in below or name in out:
+                continue
+            child = j.find("child").get("link")
+            below.add(child)
+            grew = True
+            origin, axis = j.find("origin"), j.find("axis")
+            mimic, limit = j.find("mimic"), j.find("limit")
+            fixed = j.get("type") == "fixed"
+            out[name] = {
+                "parent": parent,
+                "child": child,
+                "type": j.get("type"),
+                "xyz": _floats(origin, "xyz"),
+                "rpy": _floats(origin, "rpy"),
+                "axis": None if fixed else _floats(axis, "xyz", "1 0 0"),
+                "mimic": None
+                if mimic is None
+                else {
+                    "joint": mimic.get("joint"),
+                    "multiplier": float(mimic.get("multiplier", 1.0)),
+                    "offset": float(mimic.get("offset", 0.0)),
+                },
+                "limit": None
+                if limit is None
+                else {k: float(v) for k, v in sorted(limit.attrib.items())},
+            }
+    return out
+
+
+def check_kinematics(live, ref):
+    """Refuse `live` (kinematic_reference of the model) unless it matches
+    `ref` within ORIGIN_TOL_M / ANGLE_TOL_DEG, naming the joint; log limit
+    differences."""
+    extra, missing = sorted(set(live) - set(ref)), sorted(set(ref) - set(live))
+    if extra or missing:
+        raise ValueError(
+            "robot model joints below %s differ from the reference the spheres "
+            "were baked on: missing %s, extra %s" % (BASE_LINK, missing, extra)
+        )
+    for name, want in ref.items():
+        got = live[name]
+        for key in ("parent", "child", "type", "mimic"):
+            if got[key] != want[key]:
+                raise ValueError(
+                    "robot model joint %r %s is %r, the reference's is %r"
+                    % (name, key, got[key], want[key])
+                )
+        moved_m = math.dist(got["xyz"], want["xyz"])
+        turned = _angle_deg(_rotation(got["rpy"]), _rotation(want["rpy"]))
+        axis = 0.0 if want["axis"] is None else _axis_deg(got["axis"], want["axis"])
+        if moved_m > ORIGIN_TOL_M or turned > ANGLE_TOL_DEG or axis > ANGLE_TOL_DEG:
+            raise ValueError(
+                "robot model joint %r is %.3f mm / %.3f deg (axis %.3f deg) from "
+                "the reference the spheres were baked on (max %g mm / %g deg)"
+                % (name, 1e3 * moved_m, turned, axis, 1e3 * ORIGIN_TOL_M, ANGLE_TOL_DEG)
+            )
+        if got["limit"] != want["limit"]:
+            log.warning(
+                "robot model joint %r limit %s differs from the reference's %s; "
+                "planning with the model's",
+                name,
+                got["limit"],
+                want["limit"],
+            )
+
+
+def _floats(el, attr, default="0 0 0"):
+    text = default if el is None else el.get(attr, default)
+    return [float(v) for v in text.split()]
+
+
+def _rotation(rpy):
+    """URDF fixed-axis roll-pitch-yaw -> 3x3 rotation (Rz @ Ry @ Rx)."""
+    (cr, sr), (cp, sp), (cy, sy) = ((math.cos(a), math.sin(a)) for a in rpy)
+    return [
+        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+        [-sp, cp * sr, cp * cr],
+    ]
+
+
+def _angle_deg(a, b):
+    trace = sum(a[i][k] * b[i][k] for i in range(3) for k in range(3))
+    return math.degrees(math.acos(max(-1.0, min(1.0, (trace - 1) / 2))))
+
+
+def _axis_deg(a, b):
+    cos = sum(x * y for x, y in zip(a, b)) / (math.hypot(*a) * math.hypot(*b))
+    return math.degrees(math.acos(max(-1.0, min(1.0, cos))))
 
 
 def _fill_mimic_limits(root):
