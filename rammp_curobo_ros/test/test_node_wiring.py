@@ -22,7 +22,10 @@ import rammp_curobo  # noqa: E402
 
 from rammp_curobo_ros import planner_node  # noqa: E402
 
-FIXTURE = Path(rammp_curobo.__file__).parents[1] / "tests" / "data" / "arm_level.urdf"
+# from the checkout: in the image, rammp_curobo is installed in site-packages
+FIXTURE = (
+    Path(__file__).resolve().parents[2] / "core" / "tests" / "data" / "arm_level.urdf"
+)
 
 
 class _FakePlanner:
