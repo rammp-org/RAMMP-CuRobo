@@ -6,8 +6,10 @@ warmup takes a minute or two on the Orin the first time) and a handful of
 plans in the sim-kitchen world.
 """
 
+import json
 import math
 import time
+from pathlib import Path
 
 import yaml
 
@@ -184,18 +186,52 @@ def test_empty_world_constructs_and_plans(urdf_level, tmp_path):
     assert all(empty.check_state_valid(q)[0] for q in res.joint_traj.positions)
 
 
-def test_small_limit_violation_is_clamped(planner):
-    # Tiny violations (up to limit_clamp_rad, 0.05) clamp inward and plan;
-    # larger ones are refused by name -- the real Gen3 park pose is one
-    # (test_model_parity.test_park_pose_beyond_clamp_is_refused_by_name).
-    park = list(planner.retract_pose)
-    park[3] = -2.60  # URDF limit is ±2.57
-    clamped, err = planner._clamp_to_limits(park, "start")
-    assert err is None
-    assert clamped[3] == pytest.approx(-2.57, abs=1e-6)
+def test_a_start_inside_the_limit_margin_is_refused_and_one_outside_plans(planner):
+    # The Gen3 rest preset sits 22 mrad inside arm_joint_4's -2.57: inside
+    # the 0.1 rad margin, so refused by name rather than moved. The CPU
+    # suite covers the 0.05 rad clamp past the limit, with no margin.
+    near = list(planner.retract_pose)
+    near[3] = -2.548
+    res = planner.plan_to_joints(planner.retract_pose, start=near)
+    assert res.status == "START_IN_LIMIT_MARGIN"
+    assert "arm_joint_4" in res.error
 
-    res = planner.plan_to_joints(planner.retract_pose, start=park)
+    near[3] = -2.46
+    res = planner.plan_to_joints(planner.retract_pose, start=near)
     assert res.success, res.error
+
+
+def test_curobo_plans_inside_the_margin(planner):
+    lo, hi = planner.joint_limits()["position"]  # the URDF's
+    lim = planner._motion_gen.kinematics.get_joint_limits().position
+    order = [planner._curobo_joint_names.index(n) for n in planner.joint_names]
+    curobo = lim.detach().cpu().numpy()[:, order]
+    np.testing.assert_allclose(curobo[0], lo + 0.1, atol=1e-6)
+    np.testing.assert_allclose(curobo[1], hi - 0.1, atol=1e-6)
+
+
+def test_a_goal_on_a_joint_limit_is_not_planned_to_it(planner):
+    """2026-10-19: cuRobo's IK put this GoToEEPose goal's arm_joint_4 ON its
+    2.57 limit; the quintic resample passed it and the re-check rejected the
+    plan (core/tests/data/curobo_at_limit.json). With the margin, every plan
+    keeps 0.1 rad from every limit, or the goal fails cleanly."""
+    with open(Path(__file__).parent / "data" / "curobo_at_limit.json") as f:
+        start = json.load(f)["start"]
+    goal = (
+        [0.4566828134433112, 0.0013347502139383046, 0.4336047009472797],
+        [0.500044674874822, 0.5001091592170074, 0.49989060359678683, 0.499955534455047],
+    )
+    lo, hi = planner.joint_limits()["position"]
+    try:
+        planner.update_world("world_real_bench.yaml")  # where it was captured
+        for _ in range(8):  # cuRobo hit the limit on ~1 in 7 of these
+            res = planner.plan_to_pose(*goal, start)
+            assert res.status != "LIBRARY_VALIDATION_FAILED", res.error
+            if res.success:
+                q = res.joint_traj.positions
+                assert np.minimum(q - lo, hi - q).min() > 0.1 - 1e-3
+    finally:
+        planner.update_world("world_sim_kitchen.yaml")
 
 
 def test_joint_goal_normalized_to_start_branch(planner):

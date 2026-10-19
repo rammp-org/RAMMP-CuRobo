@@ -98,13 +98,45 @@ def test_a_robot_config_rooted_elsewhere_is_refused(monkeypatch, urdf_level):
 
 
 def test_park_pose_is_refused_by_name_and_a_near_miss_clamped(cpu_planner):
+    cpu_planner.joint_limit_margin_rad = 0.0  # the clamp alone
     park = list(cpu_planner.retract_pose)
     park[3] = -2.674  # the Gen3 park pose, 0.104 rad past the URDF's -2.57
     q, err = cpu_planner._clamp_to_limits(park, "start")
-    assert q is None and "arm_joint_4" in err
+    assert q is None and err[0] == "START_OUTSIDE_LIMITS"
+    assert "arm_joint_4" in err[1]
     park[3] = -2.60
     q, err = cpu_planner._clamp_to_limits(park, "start")
     assert err is None and q[3] == pytest.approx(-2.57)
+
+
+def test_the_joint_limit_margin_defaults_to_a_tenth_of_a_radian(cpu_planner):
+    assert cpu_planner.joint_limit_margin_rad == 0.1
+    assert cpu_planner._robot_cfg["kinematics"]["cspace"]["position_limit_clip"] == 0.1
+
+
+@pytest.mark.parametrize("what", ["start", "goal"])
+def test_a_joint_inside_the_margin_is_refused_by_name_not_moved(cpu_planner, what):
+    q = list(cpu_planner.retract_pose)
+    q[3] = -2.548  # the Gen3 rest preset: 22 mrad inside the URDF's -2.57
+    out, err = cpu_planner._clamp_to_limits(q, what)
+    assert out is None and err[0] == "%s_IN_LIMIT_MARGIN" % what.upper()
+    assert "arm_joint_4" in err[1] and "0.022" in err[1] and "0.100" in err[1]
+    # Past the limit by less than the clamp: still refused, not clamped onto
+    # the limit, because the limit is inside the margin.
+    q[3] = -2.60
+    assert cpu_planner._clamp_to_limits(q, what)[1][0].endswith("_IN_LIMIT_MARGIN")
+    q[3] = -2.46  # 0.11 inside: planned from as given
+    assert cpu_planner._clamp_to_limits(q, what) == (q, None)
+
+
+def test_a_negative_joint_limit_margin_is_refused(monkeypatch, urdf_level):
+    from rammp_curobo.config import load_planner_config
+
+    monkeypatch.setattr(CuRoboPlanner, "_init_curobo", lambda self, warmup: None)
+    cfg, cfg_dir = load_planner_config("gen3.yaml")
+    cfg["planner"]["joint_limit_margin_rad"] = -0.01
+    with pytest.raises(ValueError, match="joint_limit_margin_rad"):
+        CuRoboPlanner(cfg, config_dir=cfg_dir, urdf_path=urdf_level)
 
 
 def test_update_world_refuses_before_reaching_curobo(
