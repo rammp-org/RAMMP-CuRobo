@@ -38,6 +38,7 @@ from rammp_curobo.constraints import PoseConstraint, ViaPoint
 from rammp_curobo.robot_config import load_robot_config
 from rammp_curobo.scene import Scene, load_scene, scene_from_obstacles
 from rammp_curobo.types import PlanResult, Trajectory
+from rammp_curobo.urdf_model import ROOT_LINK
 from rammp_curobo.validate import validate_trajectory
 from rammp_curobo.world import make_world_config
 
@@ -82,8 +83,17 @@ class CuRoboPlanner:
         world_path = resolve_config(config["world"], relative_to=config_dir)
         # The arm's model: the URDF from /arm/robot_description, as a file.
         self._robot_cfg = load_robot_config(robot_path, urdf_path=urdf_path)
-        # The frame every Cartesian input and trajectory is in (arm_mount).
+        # The frame every Cartesian input and trajectory is in. cuRobo calls the
+        # root of the chain it plans in "base_link"; for us that is arm_mount,
+        # the gravity-aligned root, NOT the arm's own arm_base_link. A robot
+        # YAML naming another root would plan (and stamp) in that frame, which
+        # kinova-gen3-ros2 refuses only at execution: refuse it here instead.
         self.base_frame = str(self._robot_cfg["kinematics"]["base_link"])
+        if self.base_frame != ROOT_LINK:
+            raise ValueError(
+                "robot config %s: kinematics.base_link is %r, expected %r (the "
+                "URDF's root)" % (robot_path, self.base_frame, ROOT_LINK)
+            )
         # The link plan_to_pose goals and fk() poses are for (arm_tool_frame).
         self.ee_link = str(self._robot_cfg["kinematics"]["ee_link"])
         # The IK seed / null-space reference, in controller order. A planner

@@ -79,6 +79,24 @@ def test_finish_stamps_the_models_root(cpu_planner):
     assert res.joint_traj.scaled(0.5).frame_id == "arm_mount"
 
 
+def test_a_robot_config_rooted_elsewhere_is_refused(monkeypatch, urdf_level):
+    from rammp_curobo import planner as planner_mod
+
+    real = planner_mod.load_robot_config
+
+    def rooted_at_arm_base_link(*args, **kwargs):
+        cfg = real(*args, **kwargs)
+        cfg["kinematics"]["base_link"] = "arm_base_link"
+        return cfg
+
+    monkeypatch.setattr(planner_mod, "load_robot_config", rooted_at_arm_base_link)
+    monkeypatch.setattr(CuRoboPlanner, "_init_curobo", lambda self, warmup: None)
+    with pytest.raises(
+        ValueError, match="base_link is .arm_base_link., expected .arm_mount."
+    ):
+        CuRoboPlanner.from_config("gen3.yaml", urdf_path=urdf_level)
+
+
 def test_park_pose_is_refused_by_name_and_a_near_miss_clamped(cpu_planner):
     park = list(cpu_planner.retract_pose)
     park[3] = -2.674  # the Gen3 park pose, 0.104 rad past the URDF's -2.57
