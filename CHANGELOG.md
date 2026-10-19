@@ -114,6 +114,22 @@ sheppy does not restart it: after fixing `arm_state_publisher`, restart the plan
   planner is built); `update_world` / `set_world` still refuse an empty
   world. The startup log reports `Collision world: N boxes (<file>)`.
 
+### Removed
+
+- `execution.speed_scale` / `execution.max_speed_scale` from `gen3.yaml` and the
+  config defaults, and `CuRoboPlanner.execution` (#22). Nothing ever read them,
+  so the "quarter speed" bring-up default they declared was never applied: the
+  arm ran every plan at full speed. Speed scaling is the executor's job
+  (`kinova-gen3-ros2#37`). A config that still carries an `execution:` block
+  loads as before, with a warning that the block is ignored. Library-side
+  retiming (`Trajectory.scaled()`, `retime.py`) is unchanged.
+- Semver note: `CuRoboPlanner` is in `__all__`, so dropping its `.execution`
+  attribute is, read strictly, a breaking change. It is listed here and not
+  under *Changed (breaking)* because no consumer references it
+  (`kinova_arm_ros2` uses only `rammp_curobo_interfaces`, never the core API),
+  so on its own it would not force a MAJOR. That is a waiver for this one
+  attribute, not a precedent: other removals from an exported class stay MAJOR.
+
 ### Unchanged on purpose
 
 - **The collision spheres** are moved onto the upstream links through FK of
@@ -131,6 +147,28 @@ sheppy does not restart it: after fixing `arm_state_publisher`, restart the plan
 
 ### Fixed
 
+- `trajectory_to_msg` now copies the planned accelerations into each
+  `JointTrajectoryPoint` (#15); they were computed and then dropped at the
+  message boundary. A consumer that picks its interpolation order from what
+  the points carry (`joint_trajectory_controller`, the kinova driver) moves
+  from cubic to quintic on our plans with no change on its side.
+- The dense plan's positions, velocities and accelerations now agree (#15).
+  cuRobo's `LINEAR_CUDA` resample lerps each one independently between its
+  optimized knots, so on any plan optimized coarser than `interpolation_dt`
+  the positions kinked at every knot while the accelerations claimed a
+  smooth ramp (measured 95-368% apart). The planner now samples all three
+  from one quintic spline through the same knots, landing on the goal at
+  rest, before validation and the constraint re-check, so both see exactly
+  what ships. Measured on the Jetson over 22 plans: a consumer's quintic
+  peak jerk drops from a median 7397 to 227 rad/s^3, its peak acceleration
+  from 4.1x to 1.02x the planned one, at 1.6 ms per plan; positions move by
+  at most 6.1 mrad. If the knots do not reproduce cuRobo's resample, the
+  plan ships as cuRobo returned it but without accelerations, so a consumer
+  stays on cubic. The core now depends on `scipy` (already in the Jetson
+  image via cuRobo).
+- Shipped accelerations are validated against the robot's acceleration
+  limit, with the same 1% slack as velocities; `joint_limits()` now reports
+  `acceleration` too.
 - `plan_to_pose` could take a continuous joint (1/3/5/7) the long way round
   when IK landed it on a 2\*pi branch away from the start: a full revolution
   for a goal at the arm's current pose with arm_joint_3 parked at -pi (#14). A

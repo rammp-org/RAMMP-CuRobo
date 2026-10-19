@@ -77,7 +77,7 @@ def test_planner_config_loads_and_merges():
     assert cfg["joint_names"] == ["arm_joint_%d" % i for i in range(1, 8)]
     assert cfg["planner"]["enable_graph"] is False
     assert cfg["planner"]["joint_space_method"] == "auto"
-    assert cfg["execution"]["speed_scale"] == 0.25
+    assert "execution" not in cfg
     assert resolve_config(cfg["world"], relative_to=cfg_dir).is_file()
 
 
@@ -89,7 +89,7 @@ def test_gen3_yaml_matches_planner_defaults():
     from rammp_curobo.config import PLANNER_DEFAULTS
 
     cfg, _ = load_planner_config("gen3.yaml")
-    for section in ("planner", "tool", "execution"):
+    for section in ("planner", "tool"):
         assert cfg[section] == PLANNER_DEFAULTS[section], section
     assert cfg["joint_names"] == PLANNER_DEFAULTS["joint_names"]
     assert cfg["joint_names"] == ["arm_joint_%d" % i for i in range(1, 8)]
@@ -338,8 +338,35 @@ def test_real_arm_config_loads():
     assert cfg["robot"] == "robot_gen3_2f85.yaml"
     # inherits the same planner defaults gen3.yaml declares explicitly
     assert cfg["planner"]["enable_graph"] is False
-    assert cfg["execution"]["speed_scale"] == 0.25
+    assert "execution" not in cfg
     assert resolve_config(cfg["world"], relative_to=cfg_dir).is_file()
+
+
+def test_legacy_execution_block_is_dropped_with_a_warning(tmp_path, caplog):
+    # A config copied from <= v1.1.0 gen3.yaml still carries execution:
+    # speed_scale: 0.25, which nothing ever read (issue #22). It must keep
+    # loading, but say out loud that it limits nothing, and not survive into
+    # the config where it could be mistaken for a live setting.
+    path = tmp_path / "old_gen3.yaml"
+    path.write_text(
+        "robot: robot_gen3_2f85.yaml\n"
+        "world: world_sim_kitchen.yaml\n"
+        "execution:\n"
+        "  speed_scale: 0.25\n"
+        "  max_speed_scale: 1.0\n"
+    )
+    with caplog.at_level("WARNING", logger="rammp_curobo"):
+        cfg, _ = load_planner_config(str(path))
+    assert "execution" not in cfg
+    (rec,) = [r for r in caplog.records if r.name == "rammp_curobo"]
+    assert rec.levelname == "WARNING"
+    assert "ignoring the 'execution' block" in rec.getMessage()
+
+    # the packaged config carries no such block, so it must load silently
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="rammp_curobo"):
+        load_planner_config("gen3.yaml")
+    assert not [r for r in caplog.records if r.name == "rammp_curobo"]
 
 
 def test_wrap_aware_start_match():

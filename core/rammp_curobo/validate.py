@@ -24,6 +24,7 @@ def validate_trajectory(
     velocity_limits,
     position_margin=1e-3,
     continuity_slack=CONTINUITY_SLACK,
+    acceleration_limits=None,
 ):
     """Return a list of violation strings — empty means the trajectory passed.
 
@@ -32,6 +33,8 @@ def validate_trajectory(
     continuity_slack: a step between consecutive points may use at most
         slack * v_limit * dt — anything bigger is a discontinuity (stale
         buffer tail, wrong joint order, corrupted plan), not motion.
+    acceleration_limits: (dof,) absolute limits, same order; checked like
+        velocities when given and the trajectory carries accelerations.
     """
     problems = []
     pos = np.asarray(traj.positions, dtype=float)
@@ -65,6 +68,18 @@ def validate_trajectory(
             if v > vmax[j] * 1.01:
                 problems.append(
                     "%s velocity %.3f > limit %.3f rad/s" % (name, v, vmax[j])
+                )
+
+    if acceleration_limits is not None and traj.accelerations is not None:
+        amax = np.asarray(acceleration_limits, dtype=float)
+        acc = np.asarray(traj.accelerations, dtype=float)
+        if not np.isfinite(acc).all():
+            problems.append("non-finite accelerations")
+        for j, name in enumerate(traj.joint_names):
+            a = np.abs(acc[:, j]).max()
+            if a > amax[j] * 1.01:
+                problems.append(
+                    "%s acceleration %.3f > limit %.3f rad/s^2" % (name, a, amax[j])
                 )
 
     if pos.shape[0] > 1:

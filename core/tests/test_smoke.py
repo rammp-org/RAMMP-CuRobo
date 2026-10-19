@@ -361,6 +361,28 @@ def _yawed_goal(planner, start, d_xyz, yaw):
 _TILTING_GOAL = ([-0.15, 0.30, -0.15], 1.2)
 
 
+def test_accelerations_match_positions_and_limits(planner, start):
+    """#15: on a plan cuRobo optimized coarser than interpolation_dt, the
+    shipped accelerations are the positions' own (LINEAR_CUDA's missed by
+    ~95%), within the acceleration limit, and the plan ends on the goal at
+    rest."""
+    q_goal = list(
+        np.asarray(planner.retract_pose) + [1.2, -0.2, 0.3, 0.5, -0.4, 0, -1.0]
+    )
+    res = planner.plan_to_joints(q_goal, start)
+    assert res.success, res.error
+    t = res.joint_traj
+    assert t.accelerations is not None
+    p, v, a, dt = t.positions, t.velocities, t.accelerations, t.dt
+    a_fd = (p[2:] - 2 * p[1:-1] + p[:-2]) / dt**2
+    assert np.abs(a_fd - a[1:-1]).max() < 0.1 * np.abs(a).max()
+    lim = planner.joint_limits()["acceleration"]
+    assert lim.shape == (7,) and (lim > 0).all()
+    assert (np.abs(a).max(axis=0) <= lim * 1.01).all()
+    np.testing.assert_allclose(v[-1], 0.0, atol=1e-9)
+    np.testing.assert_allclose(a[-1], 0.0, atol=1e-9)
+
+
 def test_constrained_plan_holds_orientation(planner, start):
     """LEVEL keeps the tilt for the WHOLE path, on a goal where an unconstrained
     plan demonstrably does not -- and still ends on the goal's yaw."""
