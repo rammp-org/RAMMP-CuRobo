@@ -23,7 +23,7 @@ pytest.importorskip("scipy")
 GOLDEN = json.loads(
     (Path(__file__).parent / "data" / "curobo_linear_resample.json").read_text()
 )
-JOINTS = ["joint_%d" % i for i in range(1, 8)]
+JOINTS = ["arm_joint_%d" % i for i in range(1, 8)]
 
 
 def _golden(name):
@@ -288,7 +288,7 @@ def test_validate_checks_accelerations_only_when_given_limits():
     problems = validate_trajectory(
         traj, pos_lim, vel_lim, acceleration_limits=np.full(7, 25.0)
     )
-    assert problems and "joint_3 acceleration 30.000 > limit 25.000" in problems[0]
+    assert problems and "arm_joint_3 acceleration 30.000 > limit 25.000" in problems[0]
     traj.accelerations[4, 2] = 25.2  # inside the same 1% slack velocities get
     assert (
         validate_trajectory(

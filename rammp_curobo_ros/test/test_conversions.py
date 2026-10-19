@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover
         allow_module_level=True,
     )
 
-JOINTS = ["joint_%d" % i for i in range(1, 8)]
+JOINTS = ["arm_joint_%d" % i for i in range(1, 8)]
 
 
 def _traj(velocities=True, accelerations=True, n=4, dt=0.02):
@@ -30,12 +30,14 @@ def _traj(velocities=True, accelerations=True, n=4, dt=0.02):
         velocities=rng.normal(size=(n, 7)) if velocities else None,
         accelerations=rng.normal(size=(n, 7)) if accelerations else None,
         dt=dt,
+        frame_id="arm_mount",
     )
 
 
 def test_all_derivatives_copied_per_point():
     traj = _traj()
     msg = trajectory_to_msg(traj)
+    assert msg.header.frame_id == "arm_mount"
     assert list(msg.joint_names) == JOINTS
     assert len(msg.points) == traj.n_points
     for k, p in enumerate(msg.points):

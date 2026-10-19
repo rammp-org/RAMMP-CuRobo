@@ -9,6 +9,8 @@ plans in the sim-kitchen world.
 import math
 import time
 
+import yaml
+
 import numpy as np
 import pytest
 
@@ -18,11 +20,12 @@ if not torch.cuda.is_available():
     pytest.skip("CUDA is not available", allow_module_level=True)
 
 from rammp_curobo import CuRoboPlanner  # noqa: E402
+from rammp_curobo.config import resolve_config  # noqa: E402
 
 
 @pytest.fixture(scope="session")
-def planner():
-    return CuRoboPlanner.from_config("gen3.yaml")
+def planner(urdf_level):
+    return CuRoboPlanner.from_config("gen3.yaml", urdf_path=urdf_level)
 
 
 @pytest.fixture
@@ -92,7 +95,7 @@ def test_unreachable_goal_fails_cleanly(planner, start):
 
 
 def test_retimed_trajectory_stays_valid(planner, start):
-    # +joint_1 swings toward the kitchen's open left side (-0.5 rad heads
+    # +arm_joint_1 swings toward the kitchen's open left side (-0.5 rad heads
     # into the cabinet corner and rightly IK_FAILs on goal collision).
     q_target = list(planner.retract_pose)
     q_target[0] += 0.2
@@ -119,7 +122,7 @@ def test_check_state_valid(planner):
     ok, _ = planner.check_state_valid(planner.retract_pose)
     assert ok
     bad = list(planner.retract_pose)
-    bad[1] = 3.0  # joint_2 limit is ±2.41 rad
+    bad[1] = 3.0  # arm_joint_2 limit is ±2.24 rad
     ok, _ = planner.check_state_valid(bad)
     assert not ok
 
@@ -149,32 +152,57 @@ def test_update_world_guards_and_round_trip(planner, start):
     assert res.success, res.error
 
 
-def test_park_pose_outside_model_limits_is_clamped(planner):
-    # The real Gen3 parks with joint_4 ~0.8 deg past cuRobo's URDF bound
-    # (found on first hardware contact) — tiny violations clamp inward,
-    # large ones are refused with the joint named.
+def test_empty_world_constructs_and_plans(urdf_level, tmp_path):
+    # Allowed at construction only (flatbot has no table); update_world
+    # still refuses an empty world, since cuRobo would keep the old one.
+    cfg = yaml.safe_load(resolve_config("gen3.yaml").read_text())
+    cfg["world"] = "world_empty.yaml"
+    path = tmp_path / "gen3_empty.yaml"
+    path.write_text(yaml.safe_dump(cfg))
+    empty = CuRoboPlanner.from_config(str(path), urdf_path=urdf_level)
+
+    q_goal = list(empty.retract_pose)
+    q_goal[1] -= 0.25
+    q_goal[3] += 0.30
+    res = empty.plan_to_joints(q_goal, list(empty.retract_pose))
+    assert res.success, res.error
+    with pytest.raises(ValueError, match="empty"):
+        empty.update_world([])
+
+    # A real world on top takes effect: a box on the tool puts the start in
+    # collision, and the kitchen replaces it and is planned around.
+    pos, _ = empty.fk(empty.retract_pose)
+    empty.update_world([{"name": "block", "position": pos, "dims": [0.3, 0.3, 0.3]}])
+    assert not empty.check_state_valid(empty.retract_pose)[0]
+    res = empty.plan_to_joints(q_goal, list(empty.retract_pose))
+    assert not res.success and "WORLD_COLLISION" in str(res.status), res.status
+    empty.update_world("world_sim_kitchen.yaml")
+    assert empty.check_state_valid(empty.retract_pose)[0]
+    res = empty.plan_to_joints(q_goal, list(empty.retract_pose))
+    assert res.success, res.error
+    assert all(empty.check_state_valid(q)[0] for q in res.joint_traj.positions)
+
+
+def test_small_limit_violation_is_clamped(planner):
+    # Tiny violations (up to limit_clamp_rad, 0.05) clamp inward and plan;
+    # larger ones are refused by name -- the real Gen3 park pose is one
+    # (test_model_parity.test_park_pose_beyond_clamp_is_refused_by_name).
     park = list(planner.retract_pose)
-    park[3] = -2.674  # model limit is ±2.66
+    park[3] = -2.60  # URDF limit is ±2.57
     clamped, err = planner._clamp_to_limits(park, "start")
     assert err is None
-    assert clamped[3] == pytest.approx(-2.66, abs=1e-6)
-
-    park[3] = -3.0  # far outside
-    clamped, err = planner._clamp_to_limits(park, "start")
-    assert clamped is None and "joint_4" in err
+    assert clamped[3] == pytest.approx(-2.57, abs=1e-6)
 
     res = planner.plan_to_joints(planner.retract_pose, start=park)
-    assert not res.success
-    assert res.status == "START_OUTSIDE_LIMITS"
-    assert "joint_4" in res.error
+    assert res.success, res.error
 
 
 def test_joint_goal_normalized_to_start_branch(planner):
-    # arm reports joint_3 = -pi (wrapped), goal authored at +pi: the plan
+    # arm reports arm_joint_3 = -pi (wrapped), goal authored at +pi: the plan
     # must NOT wind a full revolution — the goal shifts to the -pi branch
     start = list(planner.retract_pose)
     start[2] = -3.1416
-    goal = list(planner.retract_pose)  # joint_3 = +3.142
+    goal = list(planner.retract_pose)  # arm_joint_3 = +3.142
     goal[0] = 0.15
     res = planner.plan_to_joints(goal, start=start)
     assert res.success, res.error

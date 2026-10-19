@@ -19,13 +19,13 @@ PACKAGED_CONFIG_DIR = Path(__file__).resolve().parent / "configs"
 # what each knob does.
 PLANNER_DEFAULTS = {
     "joint_names": [
-        "joint_1",
-        "joint_2",
-        "joint_3",
-        "joint_4",
-        "joint_5",
-        "joint_6",
-        "joint_7",
+        "arm_joint_1",
+        "arm_joint_2",
+        "arm_joint_3",
+        "arm_joint_4",
+        "arm_joint_5",
+        "arm_joint_6",
+        "arm_joint_7",
     ],
     "planner": {
         "interpolation_dt": 0.02,

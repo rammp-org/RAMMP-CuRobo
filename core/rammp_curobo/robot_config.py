@@ -7,17 +7,25 @@ carry RAMMP-Kinova's audit-tuned patches — the boosted arm spheres, the
 are patched in memory, and nothing is re-applied at load: the baked YAML is
 what plans, retract_config (the IK seed) included.
 
-The YAML's urdf_path/asset_root_path stay RELATIVE (robot/kinova/...): cuRobo
-resolves them against its own installed content directory, so the URDF and
-meshes are never vendored into this repo. Loading a stock bundled config by
-bare name (e.g. 'kinova_gen3.yml') also works — spheres referenced as a
-`spheres/*.yml` string are inlined the way cuRobo's own loader would.
+The robot model itself is the URDF the arm publishes on
+/arm/robot_description (see urdf_model.py). The baked YAML's urdf_path is the
+sentinel `from_robot_description`; the caller passes the file it wrote the
+URDF to as `urdf_path`, and loading without one is refused. A YAML with a
+real urdf_path (a stock bundled config, e.g. 'kinova_gen3.yml') keeps it,
+resolved by cuRobo against its own content directory — spheres referenced
+as a `spheres/*.yml` string are inlined the way cuRobo's own loader would.
 """
+
+from pathlib import Path
 
 import yaml
 
+from rammp_curobo.config import resolve_config
 
-def load_robot_config(path):
+URDF_SENTINEL = "from_robot_description"
+
+
+def load_robot_config(path, urdf_path=None):
     """Robot-config YAML -> the robot_cfg dict MotionGenConfig accepts.
 
     retract_config comes from the YAML as-is. It is the IK seed, and the
@@ -30,10 +38,23 @@ def load_robot_config(path):
     Nothing here rewrites the seed at load time. The planner holds no pose
     of its own to rewrite it with — where the arm belongs is the arm
     layer's business, not the planner's (issue #6).
+
+    `urdf_path` is the arm's model as a file (urdf_model.write_urdf); it
+    replaces the YAML's urdf_path, and its directory the asset root.
     """
-    with open(path, "r") as f:
+    with open(resolve_config(path), "r") as f:
         cfg = yaml.safe_load(f)["robot_cfg"]
     kin = cfg["kinematics"]
+
+    if urdf_path is not None:
+        urdf_path = Path(urdf_path).absolute()
+        kin["urdf_path"] = str(urdf_path)
+        kin["asset_root_path"] = str(urdf_path.parent)
+    elif kin.get("urdf_path") == URDF_SENTINEL:
+        raise ValueError(
+            "robot model required: pass the URDF from /arm/robot_description "
+            "as urdf_path (%s has urdf_path: %s)" % (path, URDF_SENTINEL)
+        )
 
     spheres = kin.get("collision_spheres")
     if isinstance(spheres, str):

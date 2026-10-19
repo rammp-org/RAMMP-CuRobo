@@ -5,7 +5,8 @@ in RAMMP-Kinova):
   * Cylinder/Sphere entries in a WorldConfig are SILENTLY DROPPED by the
     collision checkers — every body goes in as a cuboid bounding box.
   * update_world() with ZERO cuboids silently keeps the previous world
-    (early return before the disable line) — an empty world is refused here.
+    (early return before the disable line) — an empty world is refused here,
+    except at construction (`allow_empty`), where there is no old world.
   * More cuboids than the collision cache raises from inside cuRobo —
     refused here with a message that names the fix.
 """
@@ -44,16 +45,25 @@ def world_cuboids(scene, padding=0.02, ignore=frozenset(), no_pad_names=frozense
 
 
 def make_world_config(
-    scene, padding=0.02, ignore=frozenset(), no_pad_names=frozenset(), cache_obb=40
+    scene,
+    padding=0.02,
+    ignore=frozenset(),
+    no_pad_names=frozenset(),
+    cache_obb=40,
+    allow_empty: bool = False,
 ):
-    """A guarded cuRobo WorldConfig for this scene (see module docstring)."""
+    """A guarded cuRobo WorldConfig for this scene (see module docstring).
+
+    `allow_empty` is for building a planner only: an empty scene then gives
+    an empty WorldConfig. Never pass it on update.
+    """
     from curobo.geom.types import WorldConfig
 
     cuboids = world_cuboids(
         scene, padding=padding, ignore=ignore, no_pad_names=no_pad_names
     )
     n = len(cuboids)
-    if n < 1:
+    if n < 1 and not allow_empty:
         raise ValueError(
             "collision world is empty; refusing to build it — cuRobo would "
             "silently keep the previous world on update"

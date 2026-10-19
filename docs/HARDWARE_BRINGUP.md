@@ -38,8 +38,9 @@ the arm is bolted nearly flush to a caster-mounted table, e-stop clamped
 at the front edge.)
 
 Edit `core/rammp_curobo/configs/world_real_bench.yaml` (or a copy):
-measure from the arm's base_link origin (+x forward, +z up) and set at
-minimum the real table top height/extents plus anything within reach.
+measure in `arm_mount`, the root of the arm's URDF (origin at the arm's
+base, +x forward, +z up when the chair is level; on dojo's level mount it is
+the arm's base) and set at minimum the real table top height/extents plus anything within reach.
 **Err tall on the table** — modeled-too-tall costs workspace, never safety.
 The sim kitchen world does NOT exist on the bench; never plan against it
 on hardware (the node warns if you try).
@@ -81,10 +82,25 @@ ros2 topic hz /joint_states     # streaming
 
 ## 3. Planner node — plans only, always
 
+The planner builds its robot model from the URDF that `arm_state_publisher`
+latches on `/arm/robot_description` (the kortex bringup above publishes
+`/robot_description`, which the planner does not read). Start it first, from
+the kinova-gen3-ros2 image or stack, with this robot's mount file:
+
 ```bash
+# terminal 2 — the arm's model (kinova-gen3-ros2):
+ros2 launch kinova_gen3_description description.launch.py \
+    mount_file:=<robot>/mount.yaml
+
+# terminal 3 — the planner:
 source ~/RAMMP-CuRobo/install/setup.zsh    # on top of the two above
 ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml
 ```
+
+Without `arm_state_publisher` the node waits `robot_description_timeout_s`
+(default 30 s), logs a FATAL naming `arm_state_publisher` and exits 1
+(`ros2 launch` itself still exits 0, so read the log). It reads the model
+once: restart the planner if the mount changes.
 
 There is no arming step, because there is nothing to arm: this node has no
 execution surface. Sanity-check a plan of a tiny move from wherever the arm
@@ -92,7 +108,7 @@ is. Read the arm's configuration yourself (the bringup publishes it) and
 hand it to the planner as `start_joints`:
 
 ```bash
-ros2 topic echo /joint_states --once          # note joint_1..7 positions
+ros2 topic echo /joint_states --once          # note the 7 arm joint positions, 1..7
 ros2 action send_goal /rammp_curobo/plan_to_joints \
     rammp_curobo_interfaces/action/PlanToJoints \
     "{target_joints: [<q1+0.15>, <q2>, <q3>, <q4>, <q5>, <q6>, <q7>],
@@ -100,7 +116,7 @@ ros2 action send_goal /rammp_curobo/plan_to_joints \
 ```
 
 Expect `success: true`, a low `goal_mismatch_rad`, and a trajectory whose
-last point is ~0.15 rad from the start on joint_1 and ~0 elsewhere. If the
+last point is ~0.15 rad from the start on `arm_joint_1` and ~0 elsewhere. If the
 plan fails or looks wrong, stop here — a bad plan is a bad plan whoever
 runs it.
 
