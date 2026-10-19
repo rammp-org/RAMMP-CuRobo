@@ -74,6 +74,7 @@ def test_finish_stamps_the_models_root(cpu_planner):
     res = cpu_planner._finish(result, 0.0)
     assert res.success, res.error
     assert cpu_planner.base_frame == "arm_mount"
+    assert cpu_planner.ee_link == "arm_tool_frame"  # what the node logs
     assert res.joint_traj.frame_id == "arm_mount"
     assert res.joint_traj.scaled(0.5).frame_id == "arm_mount"
 

@@ -44,7 +44,7 @@ from std_msgs.msg import String
 
 from rammp_curobo import PoseConstraint, ViaPoint
 from rammp_curobo.config import load_planner_config
-from rammp_curobo.urdf_model import EE_LINK, prepare_urdf, write_urdf
+from rammp_curobo.urdf_model import prepare_urdf, write_urdf
 from rammp_curobo_interfaces.action import PlanToJoints, PlanToPose
 from rammp_curobo_interfaces.srv import SetWorld
 from rammp_curobo_ros.conversions import trajectory_to_msg
@@ -150,13 +150,21 @@ class RammpCuroboNode(Node):
         self.world = self.declare_parameter("world", "").value
         # dynamic_typing: `-p robot_description_timeout_s:=3` is an INTEGER,
         # which a DOUBLE-typed declaration refuses with a traceback.
-        timeout_s = float(
-            self.declare_parameter(
-                "robot_description_timeout_s",
-                30.0,
-                ParameterDescriptor(dynamic_typing=True),
-            ).value
-        )
+        timeout = self.declare_parameter(
+            "robot_description_timeout_s",
+            30.0,
+            ParameterDescriptor(dynamic_typing=True),
+        ).value
+        try:
+            timeout_s = float(timeout)
+        except (TypeError, ValueError):
+            timeout_s = math.nan
+        if not (math.isfinite(timeout_s) and timeout_s > 0):
+            self.get_logger().fatal(
+                "robot_description_timeout_s must be a positive number of "
+                "seconds, got %r" % (timeout,)
+            )
+            raise SystemExit(1)
 
         # Refuse to double-serve. Two planner nodes on the same action names
         # answer every goal twice and race each other — on hardware this
@@ -184,7 +192,9 @@ class RammpCuroboNode(Node):
         except ValueError as exc:
             self.get_logger().fatal("model on %s: %s" % (ROBOT_DESCRIPTION_TOPIC, exc))
             raise SystemExit(1)
-        urdf_path = write_urdf(xml, tempfile.mkdtemp())
+        # Removed in destroy_node; inside the container it dies with it anyway.
+        self._model_dir = tempfile.TemporaryDirectory(prefix="rammp_curobo_")
+        urdf_path = write_urdf(xml, self._model_dir.name)
 
         # Heavy GPU init BEFORE the servers exist: a goal sent during the
         # (possibly minutes-long) warmup must not silently queue and then
@@ -200,7 +210,7 @@ class RammpCuroboNode(Node):
             % (
                 ROBOT_DESCRIPTION_TOPIC,
                 self.planner.base_frame,
-                EE_LINK,
+                self.planner.ee_link,
                 ", ".join(self.planner.joint_names),
             )
         )
@@ -390,6 +400,10 @@ class RammpCuroboNode(Node):
             self.get_logger().error("Plan failed — " + result.message)
             goal_handle.abort()
         return result
+
+    def destroy_node(self):
+        super().destroy_node()
+        self._model_dir.cleanup()
 
     # ---------------------------------------------------------------- services
     def _set_world_cb(self, request, response):

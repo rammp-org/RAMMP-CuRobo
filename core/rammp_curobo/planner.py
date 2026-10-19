@@ -84,6 +84,8 @@ class CuRoboPlanner:
         self._robot_cfg = load_robot_config(robot_path, urdf_path=urdf_path)
         # The frame every Cartesian input and trajectory is in (arm_mount).
         self.base_frame = str(self._robot_cfg["kinematics"]["base_link"])
+        # The link plan_to_pose goals and fk() poses are for (arm_tool_frame).
+        self.ee_link = str(self._robot_cfg["kinematics"]["ee_link"])
         # The IK seed / null-space reference, in controller order. A planner
         # fact (it fixes the elbow family), NOT a statement about where the
         # arm belongs — this planner has no such opinion (issue #6).

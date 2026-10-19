@@ -75,6 +75,21 @@ def test_the_sanitised_model_and_the_world_param_reach_the_planner(make_node):
     assert node.count_subscribers(planner_node.ROBOT_DESCRIPTION_TOPIC) == 1
 
 
+@pytest.mark.parametrize("value", ["0.0", "-1", "abc", ".nan"])
+def test_a_bad_timeout_exits_1_before_the_wait(make_node, value):
+    with pytest.raises(SystemExit) as exc:
+        make_node(FIXTURE.read_text(), "robot_description_timeout_s:=" + value)
+    assert exc.value.code == 1 and not _FakePlanner.made
+
+
+def test_the_models_temp_dir_goes_with_the_node(make_node):
+    node = make_node(FIXTURE.read_text())
+    ((_cfg, _cfg_dir, urdf_path),) = _FakePlanner.made
+    assert Path(urdf_path).is_file()
+    node.destroy_node()
+    assert not Path(urdf_path).parent.exists()
+
+
 def test_main_exits_1_when_no_model_arrives():
     env = dict(os.environ, ROS_DOMAIN_ID=str(random.randint(100, 200)))
     t0 = time.monotonic()

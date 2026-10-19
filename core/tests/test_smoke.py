@@ -169,6 +169,19 @@ def test_empty_world_constructs_and_plans(urdf_level, tmp_path):
     with pytest.raises(ValueError, match="empty"):
         empty.update_world([])
 
+    # A real world on top takes effect: a box on the tool puts the start in
+    # collision, and the kitchen replaces it and is planned around.
+    pos, _ = empty.fk(empty.retract_pose)
+    empty.update_world([{"name": "block", "position": pos, "dims": [0.3, 0.3, 0.3]}])
+    assert not empty.check_state_valid(empty.retract_pose)[0]
+    res = empty.plan_to_joints(q_goal, list(empty.retract_pose))
+    assert not res.success and "WORLD_COLLISION" in str(res.status), res.status
+    empty.update_world("world_sim_kitchen.yaml")
+    assert empty.check_state_valid(empty.retract_pose)[0]
+    res = empty.plan_to_joints(q_goal, list(empty.retract_pose))
+    assert res.success, res.error
+    assert all(empty.check_state_valid(q)[0] for q in res.joint_traj.positions)
+
 
 def test_small_limit_violation_is_clamped(planner):
     # Tiny violations (up to limit_clamp_rad, 0.05) clamp inward and plan;
