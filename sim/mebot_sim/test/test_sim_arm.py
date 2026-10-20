@@ -549,9 +549,23 @@ def test_the_sim_arm_looks_for_another_driver_before_it_serves_anything(
 
 
 def test_the_sim_arm_will_not_start_beside_another_driver(monkeypatch):
-    # the second it gives discovery is not needed: this graph is a stub's
-    monkeypatch.setattr(sim_arm.time, "sleep", lambda seconds: None)
+    # the time it gives discovery passes on a clock of the test's own
+    clock = [0.0]
+    monkeypatch.setattr(sim_arm.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        sim_arm.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s)
+    )
     sim_arm._refuse_a_second_driver(Node())
+    assert clock[0] >= sim_arm.DISCOVERY_S
+    # a driver discovery finds late, after 2 s of looking, is refused too
+    late = Node()
+    late.count_publishers = lambda topic: int(
+        topic == "/joint_states" and clock[0] >= 2.0
+    )
+    clock[0] = 0.0
+    with pytest.raises(SystemExit, match="already serves"):
+        sim_arm._refuse_a_second_driver(late)
+    assert 2.0 <= clock[0] < sim_arm.DISCOVERY_S
     for node in (
         Node(publishers=1),
         Node(served=["/execute_joint_trajectory/_action/send_goal"]),

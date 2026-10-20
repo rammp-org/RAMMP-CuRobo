@@ -253,9 +253,17 @@ Layer boxes are in `arm_mount`, like every world.
   left out any prop named `m`, `u` or `g`.
 - Two boxes of one name are refused, naming both, instead of collapsing into
   one.
-- A box with a non-finite position or rpy, or dims that are not finite and
-  above 0, is refused: cuRobo loaded it as a box that never collides. So is a
-  `world_padding` below 0 or not finite.
+- A box with a non-finite position or rpy, a negative or non-finite dim, or a
+  dim of 0 that no padding grows (a `no_pad_names` box, or any box at
+  `world_padding: 0`) is refused: cuRobo loaded it as a box that never
+  collides. A padded 0 is a slab, as in 1.0.0. A `world_padding` below 0 or
+  not finite is refused too.
+- A failed plan whose world summary cannot be made is still reported, with
+  `[world summary unavailable: ...]` in its error.
+- The sim arm watches the ROS graph for 5 s, not one look after 1 s, before
+  it decides no driver already serves its names; `make sim` and
+  `make sim-test` export `ROS_LOCALHOST_ONLY=1`; and a slowed plan's
+  `time_from_start` never carries `nanosec` 1e9.
 - The world guards (empty world, cache overflow and the above) run before
   cuRobo is imported, so they hold without it.
 - A malformed world entry is a `ValueError` naming the file and the entry

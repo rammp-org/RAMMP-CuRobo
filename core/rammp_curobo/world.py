@@ -100,7 +100,8 @@ def compose_cuboids(
     Refused, all before cuRobo is imported: a padding below 0 or not
     finite; one layer from two files; an ignored layer that is not
     excludable, or whose name a prop shares; a position or rpy_deg that is
-    not 3 finite numbers, or dims that are not 3 finite numbers above 0;
+    not 3 finite numbers, or dims that are not 3 finite numbers >= 0 and
+    above 0 once padded (a padded 0 is a slab, as in v1.0.0);
     two boxes of one key; a scene with no content of its own; more boxes
     than `cache_obb`.
 
@@ -149,19 +150,22 @@ def compose_cuboids(
     cuboids, sources, owners = {}, {}, {}
 
     def add(key, source, owner, box, dims, p):
-        # before padding: padded, a dim of -0.01 would make a box 3 cm wide
-        for field, v, positive in (
-            ("position", box.position, False),
-            ("rpy_deg", box.rpy_deg, False),
-            ("dims", dims, True),
-        ):
-            if len(v) != 3 or not all(
-                math.isfinite(x) and (x > 0 or not positive) for x in v
-            ):
+        for field, v in (("position", box.position), ("rpy_deg", box.rpy_deg)):
+            if len(v) != 3 or not all(math.isfinite(x) for x in v):
                 raise ValueError(
-                    "collision box %r (%s): %r must be 3 finite numbers%s, got %r"
-                    % (key, owner, field, " greater than 0" if positive else "", v)
+                    "collision box %r (%s): %r must be 3 finite numbers, got %r"
+                    % (key, owner, field, v)
                 )
+        # before padding: padded, a dim of -0.01 would make a box 3 cm wide.
+        # A 0 is a slab once padded, as in v1.0.0; unpadded, cuRobo loads it
+        # as a box that never collides
+        if len(dims) != 3 or not all(
+            math.isfinite(x) and x >= 0 and x + p > 0 for x in dims
+        ):
+            raise ValueError(
+                "collision box %r (%s): 'dims' must be 3 finite numbers greater "
+                "than 0, or 0 on a padded box, got %r" % (key, owner, dims)
+            )
         if key in owners:
             raise ValueError(
                 "two collision boxes are named %r: %s and %s; rename one — a "

@@ -37,8 +37,11 @@ def dilate(traj, speed):
     executor's call, and here the client is that."""
     for p in traj.points:
         t = (p.time_from_start.sec + p.time_from_start.nanosec * 1e-9) / speed
-        p.time_from_start.sec = int(t)
-        p.time_from_start.nanosec = int(round((t - int(t)) * 1e9))
+        # in whole nanoseconds, so a time just under a second rounds up to
+        # the next second, never to nanosec 1e9, which C++ consumers refuse
+        p.time_from_start.sec, p.time_from_start.nanosec = divmod(
+            round(t * 1e9), 1_000_000_000
+        )
         p.velocities = [v * speed for v in p.velocities]
         p.accelerations = [a * speed * speed for a in p.accelerations]
 

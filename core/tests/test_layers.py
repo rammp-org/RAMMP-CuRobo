@@ -1323,7 +1323,10 @@ def test_boxes_curobo_would_silently_ignore_are_refused():
     )
 
     finite = "'%s' must be 3 finite numbers, got %s"
-    positive = "'dims' must be 3 finite numbers greater than 0, got %s"
+    positive = (
+        "'dims' must be 3 finite numbers greater than 0, or 0 on a padded box, "
+        "got %s"
+    )
     table = "collision box 'table' (scene obstacles[1]): "
     can = "collision box 'obj_can' (scene objects[1]): "
     slab = "collision box 'block/slab' (layer 'block' obstacles[1] in %s): " % path
@@ -1348,7 +1351,6 @@ def test_boxes_curobo_would_silently_ignore_are_refused():
             (),
             table + finite % ("rpy_deg", "[nan, 0.0, 0.0]"),
         ),
-        (obstacle(dims=[0.1, 0, 0.3]), (), table + positive % "[0.1, 0.0, 0.3]"),
         # before padding: padded, a dim of -0.01 would be a box 3 cm wide
         (obstacle(dims=[0.1, -0.01, 0.3]), (), table + positive % "[0.1, -0.01, 0.3]"),
         (obstacle(dims=[0.1, nan, 0.3]), (), table + positive % "[0.1, nan, 0.3]"),
@@ -1360,12 +1362,7 @@ def test_boxes_curobo_would_silently_ignore_are_refused():
             (),
             table + positive % "[0.1, 0.2, 0.3, 0.4]",
         ),
-        # a prop as the box cuRobo would get: a radius of 0 is a dim of 0
-        (
-            prop(type="cylinder", radius=0, height=0.12),
-            (),
-            can + positive % "[0.0, 0.0, 0.12]",
-        ),
+        # a prop as the box cuRobo would get
         (
             prop(type="cylinder", radius=0.03, height=-0.1),
             (),
@@ -1404,6 +1401,32 @@ def test_boxes_curobo_would_silently_ignore_are_refused():
         for kw in ({}, {"no_pad_names": {"table"}}, {"padding": 0}):
             with pytest.raises(ValueError) as exc:
                 compose_cuboids(scene, layers=layers, **kw)
+            assert str(exc.value) == refused, kw
+
+    # A 0 (a radius of 0 is a dim of 0) is a slab once padded, as in v1.0.0,
+    # and refused unpadded: cuRobo would load it as a box that never collides
+    pad = 0.04  # compose_cuboids' default padding, per side twice
+    for scene, key, refused, grown in (
+        (
+            obstacle(dims=[0.1, 0, 0.3]),
+            "table",
+            table + positive % "[0.1, 0.0, 0.3]",
+            [0.1 + pad, pad, 0.3 + pad],
+        ),
+        (
+            prop(type="cylinder", radius=0, height=0.12),
+            "obj_can",
+            can + positive % "[0.0, 0.0, 0.12]",
+            [pad, pad, 0.12 + pad],
+        ),
+    ):
+        cuboids, _ = compose_cuboids(scene)
+        assert cuboids[key]["dims"] == pytest.approx(grown)
+        for kw in ({"no_pad_names": {"table"}}, {"padding": 0}):
+            if key != "table" and "no_pad_names" in kw:
+                continue  # no_pad_names exempts scene obstacles only
+            with pytest.raises(ValueError) as exc:
+                compose_cuboids(scene, **kw)
             assert str(exc.value) == refused, kw
 
     # and the padding: below 0 it would shrink a thin box past 0, and a NaN or
@@ -1542,7 +1565,7 @@ def test_guards_run_without_curobo(tmp_path, monkeypatch):
         ),
         (scene_from_obstacles([crate, crate]), (), "named 'obj_crate'"),
         (
-            scene_from_obstacles([_box("crate", dims=[0.1, 0, 0.3])]),
+            scene_from_obstacles([_box("crate", dims=[0.1, -0.01, 0.3])]),
             (),
             "'dims' must be 3 finite numbers",
         ),
@@ -2315,6 +2338,19 @@ def test_attribution_explains_an_answer_and_never_changes_or_hides_it(
         "no result",
         "planning failed (no result) (attribution unavailable: %s)%s"
         % (unplaced, world),
+    )
+    # nor when the summary cannot be made (a subclass that builds its world
+    # the v1.0.0 way has no sources): the failure is still reported
+    monkeypatch.setattr(planner, "_world_sources", None)
+    with pytest.raises(Exception) as summary:
+        planner.world_summary()
+    res = planner._with_failure_note(
+        planner._finish(None, 0.0), None, start=q, q_goal=q
+    )
+    assert (res.success, res.error) == (
+        False,
+        "planning failed (no result) (attribution unavailable: %s) "
+        "[world summary unavailable: %s]" % (unplaced, summary.value),
     )
 
 

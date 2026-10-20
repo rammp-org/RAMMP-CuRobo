@@ -69,6 +69,7 @@ GRIPPER_JOINT = "g_left_driver_joint"
 PREEMPTED = -6  # ExecuteJointTrajectory's result codes
 SUCCESSFUL = 0
 LATEST_WINS = 1  # its goal's preemption; anything else is QUEUE to the driver
+DISCOVERY_S = 5.0  # how long the graph is watched for a driver already there
 STOPPING = "the sim stopping"
 
 
@@ -644,22 +645,32 @@ class Driver:
         return result
 
 
-def _refuse_a_second_driver(node):
-    """Stop if anything on this domain already serves the driver's names: it
-    could be a real arm's driver, on a domain someone chose by hand."""
-    time.sleep(1.0)  # let discovery find what is already there
+def _serves_the_driver_names(node):
     served = {name for name, _types in node.get_service_names_and_types()}
-    if (
+    return bool(
         node.count_publishers("/joint_states")
         or node.count_publishers(stack.ARM_MODEL_TOPIC)
         or "/execute_joint_trajectory/_action/send_goal" in served
-    ):
-        raise SystemExit(
-            "something on ROS_DOMAIN_ID=%s already serves /joint_states, %s or "
-            "/execute_joint_trajectory, perhaps a real arm's driver: the sim arm "
-            "will not serve the same names beside it"
-            % (os.environ.get("ROS_DOMAIN_ID"), stack.ARM_MODEL_TOPIC)
-        )
+    )
+
+
+def _refuse_a_second_driver(node):
+    """Stop if anything on this domain already serves the driver's names: it
+    could be a real arm's driver, on a domain someone chose by hand. The graph
+    is looked at for DISCOVERY_S, not once: discovery may find
+    a driver that is already there only after a second or more (Cyclone on a
+    busy or non-localhost network)."""
+    deadline = time.monotonic() + DISCOVERY_S
+    while not _serves_the_driver_names(node):
+        if time.monotonic() >= deadline:
+            return
+        time.sleep(0.25)
+    raise SystemExit(
+        "something on ROS_DOMAIN_ID=%s already serves /joint_states, %s or "
+        "/execute_joint_trajectory, perhaps a real arm's driver: the sim arm "
+        "will not serve the same names beside it"
+        % (os.environ.get("ROS_DOMAIN_ID"), stack.ARM_MODEL_TOPIC)
+    )
 
 
 def _publish_arm_model(node):

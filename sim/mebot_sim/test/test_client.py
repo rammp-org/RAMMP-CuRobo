@@ -200,6 +200,10 @@ def test_a_plan_is_flown_slower_by_dilating_time():
     assert (p.time_from_start.sec, p.time_from_start.nanosec) == (6, 0)
     assert list(p.velocities) == [0.25] * 7
     assert list(p.accelerations) == [0.125] * 7
+    # a time that rounds up to a whole second carries into sec
+    point.time_from_start.sec, point.time_from_start.nanosec = 2, 999999999
+    client.dilate(traj, 2.999999999 / 2.9999999998)  # to 2.9999999998 s
+    assert (p.time_from_start.sec, p.time_from_start.nanosec) == (3, 0)
 
 
 def test_reports_in_words():
