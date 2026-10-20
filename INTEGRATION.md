@@ -7,12 +7,20 @@ with zero GPU-stack setup on your side. In every case the contract is:
 end position in → collision-free time-parameterized joint trajectory out;
 executing it is your side's job.
 
+**Frames and names.** Send Cartesian goals in **`arm_mount`** (the root of
+the arm's URDF: Z up when the chair is level, X forward, origin at the arm's
+base) for the tool frame `arm_tool_frame`; joints are `arm_joint_1..7`.
+Every returned trajectory carries `header.frame_id: "arm_mount"`, joint plans
+too. Read it: kinova-gen3-ros2's `GoToEEPose` refuses any pose plan not
+stamped `arm_mount` (#47), on every mount. On a level mount (dojo) `arm_mount`
+and the arm's base coincide, so the numbers are unchanged.
+
 ## Pure Python (no ROS) — the 5 lines
 
 ```python
 from rammp_curobo import CuRoboPlanner
 
-planner = CuRoboPlanner.from_config("gen3.yaml")   # ~20 s GPU init, keep it alive
+planner = CuRoboPlanner.from_config("gen3.yaml", urdf_path=urdf)  # ~20 s GPU init, keep it alive
 res = planner.plan_to_joints(q_goal, q_now)        # start is REQUIRED, not optional
 if res.success:                                     # res is a PlanResult
     hand_off(res.joint_traj)   # numpy: joint_names, positions (N,7), velocities, dt
@@ -31,6 +39,12 @@ will not guess — pass the arm's measured joints. `planner.retract_pose` is
 the IK seed read from the robot config; it is a planner parameter, not a
 home, and it is not a substitute for a measurement.
 
+`urdf_path` is REQUIRED: the arm's model as a file, i.e. what
+`/arm/robot_description` carries, written to disk (the ROS node does exactly
+that; `core/tests/data/arm_level.urdf` is a rendered example). Without it the
+baked robot config refuses to load. `pos`/`quat` are `arm_tool_frame` in
+`arm_mount`, and `res.joint_traj.frame_id` is `"arm_mount"`.
+
 Config is one YAML (`core/rammp_curobo/configs/gen3.yaml` — robot file,
 world file, obstacle layers, planner knobs). Copy it next to your code and
 point `from_config` at your copy to customize; bare names resolve to the
@@ -42,7 +56,9 @@ and `pip install --user --no-build-isolation -e <repo>/core`.
 ## Over ROS 2 (planning)
 
 Depend on `rammp_curobo_interfaces` (dependency-free rosidl package). With
-the planner node running (`ros2 launch rammp_curobo_ros planner.launch.py`):
+the planner node running (`ros2 launch rammp_curobo_ros planner.launch.py`;
+it needs `arm_state_publisher` latching `/arm/robot_description` in the same
+domain, and exits 1 without it — see the README):
 
 ```python
 from rammp_curobo_interfaces.action import PlanToJoints
@@ -56,6 +72,7 @@ goal = PlanToJoints.Goal(
 )
 plan = plan_client.send_goal(goal).result          # sync form; async works too
 if plan.success:
+    assert plan.trajectory.header.frame_id == 'arm_mount'
     execute(plan.trajectory)     # your controller, your gates, your e-stop
 ```
 
@@ -65,10 +82,13 @@ subscription and no view of any robot, so a goal without it is aborted with
 what makes the plan safe to run: its first point *is* where the arm is, so
 there is no stale-plan catch-up sweep to guard against.
 
-`/rammp_curobo/plan_to_pose` takes a `geometry_msgs/Pose`, plus two optional
+`/rammp_curobo/plan_to_pose` takes a `geometry_msgs/Pose` (`arm_tool_frame`
+in `arm_mount`; the goal has no frame field, so convert before sending), plus two optional
 trailing fields that default to off: `hold` (keep the tool's orientation:
 `HOLD_NONE`, `HOLD_LEVEL` or `HOLD_FIXED`) and `approach_via` (one blended via
-point). They cannot be combined. A held plan is checked, not trusted; when a
+point). They cannot be combined. `HOLD_LEVEL` holds level relative to
+`arm_mount`, which is level with the chair, not with gravity: on a ramp it is
+off by the ramp angle. A held plan is checked, not trusted; when a
 check fails the result has `success = false` and `message` starts with the
 status:
 
@@ -91,7 +111,7 @@ person in it (layer `person`, 8 boxes) are then in every collision world the
 planner builds. Nothing models the rest of the chair: its seat, backrest,
 armrests and footplate, or the plate the arm is mounted on. Nor does the
 person layer cover the column carved around the arm's base (±0.105 m about
-its axis in x and y, z -0.040 to 0.409 m in `base_link`): most of it is open
+its axis in x and y, z -0.040 to 0.409 m in `arm_mount`): most of it is open
 space beside the shoulder that the arm can move through, so the occupant's
 right hip, elbow or forearm beside the mount is not kept from the arm there.
 See the README's **Obstacle layers** for how the layers are made and what

@@ -3,6 +3,8 @@
 # platform and no person. The same request planned here and with
 # control_floor_platform.yaml differs by the platform layer alone.
 
-base_frame: base_link
+base_frame: arm_mount
+
+obstacles: []
 
 layers: [layer_mebot_floor.yaml]

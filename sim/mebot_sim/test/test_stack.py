@@ -171,11 +171,13 @@ def test_trajectory_rows_are_read_as_the_driver_reads_them():
     assert times == [0.5, 1.5]
     assert rows[1] == pytest.approx([1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6])
 
-    # The driver takes each point's positions as joint_1..joint_7 and never
-    # reads the names: read by name, these would fly here as the arm would
-    # not fly them.
+    # The driver takes each point's positions as arm_joint_1..arm_joint_7 and
+    # never reads the names: read by name, these would fly here as the arm
+    # would not fly them. Menagerie's names are the MuJoCo model's, not the
+    # driver's.
     for names in (
         list(reversed(stack.JOINTS)),
+        list(stack.MUJOCO_JOINTS),
         stack.JOINTS[:6] + ["joint_9"],
         stack.JOINTS + ["joint_8"],
         [],
@@ -197,3 +199,26 @@ def test_the_requests_are_tied_to_the_generated_layer_files(monkeypatch):
     assert len(expected) == 3
     monkeypatch.setattr(stack, "CHAIR_CONFIG", "gen3.yaml")
     assert stack.layer_digests() == expected
+
+
+def test_the_arm_model_is_the_one_the_planner_takes_with_the_drivers_names():
+    # what /mebot_sim latches on /arm/robot_description and find_pairs plans
+    # with: the planner node refuses any other model before cuRobo sees it
+    stack.core()
+    import xml.etree.ElementTree as ET
+
+    from rammp_curobo.urdf_model import ROOT_LINK, prepare_urdf
+
+    root = ET.fromstring(prepare_urdf(stack.arm_model()))
+    joints = {j.get("name"): j for j in root.findall("joint")}
+    assert all(name in joints for name in stack.JOINTS)
+    # the mount is level, so arm_mount is the arm's base: the layers' frame
+    mount = joints["arm_base_joint"]
+    assert mount.find("parent").get("link") == ROOT_LINK
+    origin = mount.find("origin")
+    assert [float(v) for v in origin.get("rpy").split()] == [0.0] * 3
+    assert [float(v) for v in origin.get("xyz").split()] == [0.0] * 3
+    # the driver publishes the knuckle under the model's name for it
+    from mebot_sim import sim_arm
+
+    assert sim_arm.KNUCKLE in joints

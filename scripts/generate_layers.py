@@ -10,7 +10,7 @@ core/rammp_curobo/configs/layer_mebot_{platform,person,floor}.yaml:
 
   * platform: the MEBot drive base. The URDF's collision primitives (boxes
     and cylinders, every joint at zero) are bounded exactly, placed in the
-    arm's base_link and merged pairwise down to a box budget. A merge only
+    arm's mount frame, arm_mount, and merged pairwise down to a box budget. A merge only
     ever grows a box, so the layer covers every primitive (asserted); what
     merging adds is measured exactly and held to a budget.
   * person: any seated occupant from the 5th-percentile woman to the
@@ -269,7 +269,7 @@ def _origin(element, what):
 
 
 def _link_poses(robot, mount_xyz):
-    """{link name: (element, base_link pose)} with every joint held at zero."""
+    """{link name: (element, arm_mount pose)} with every joint held at zero."""
     links = {}
     for link in robot.findall("link"):
         name = link.get("name")
@@ -326,7 +326,7 @@ def _link_poses(robot, mount_xyz):
         raise ValueError(
             "the URDF must have exactly one root link, found %s" % (roots or "none")
         )
-    # The root sits at -mount, so every pose below is already in base_link.
+    # The root sits at -mount, so every pose below is already in arm_mount.
     poses = {roots[0]: _transform([-v for v in mount_xyz], [0.0, 0.0, 0.0])}
     reached = list(roots)
     while reached:
@@ -351,15 +351,15 @@ def _writes_plain(name):
 
 
 def urdf_primitives(urdf_bytes, mount_xyz, perturb=0.0):
-    """Every collision primitive of the URDF at all joints zero, in base_link.
+    """Every collision primitive of the URDF at all joints zero, in arm_mount.
 
     One dict per <collision>, in URDF order: `name` (the link's, or
     <link>_<i> when a link has several), `link`, `kind` ("box" with size
     [x, y, z], or "cylinder" with size [radius, length]), `pose` (4x4,
-    base_link from the primitive), `lo` and `hi` (its exact axis-aligned
+    arm_mount from the primitive), `lo` and `hi` (its exact axis-aligned
     bounds, metres) and `box` (those bounds snapped outward, ticks).
 
-    base_link is the URDF's root frame moved by -`mount_xyz`. Anything that
+    arm_mount is the URDF's root frame moved by -`mount_xyz`. Anything that
     cannot be bounded exactly or held at zero is refused, naming the link or
     joint. `perturb` scales every bound by (1 + perturb): it stands in for
     another platform's libm when testing that the output does not change.
@@ -439,13 +439,18 @@ def urdf_primitives(urdf_bytes, mount_xyz, perturb=0.0):
 
 # ------------------------------------------------------------------- keep-out
 def keep_out_spheres(data):
-    """The arm's joint-independent spheres in base_link: [(centre, radius, link)].
+    """The arm's joint-independent spheres in arm_mount: [(centre, radius, link)].
 
-    base_link's spheres never move. shoulder_link's turn about the joint_1
-    axis, so the ones ON that axis stay put too; one off it is refused, since
+    arm_base_link's spheres never move. arm_shoulder_link's turn about the
+    arm_joint_1 axis, so the ones ON that axis stay put too; one off it is refused, since
     it sweeps a ring this keep-out would not cover. Radii include the robot
     config's collision_sphere_buffer, as cuRobo's do. A sphere that is not
-    finite, in the config or through shoulder_link's origin, is refused too.
+    finite, in the config or through arm_shoulder_link's origin, is refused too.
+
+    The column is placed for a level mount: arm_mount -> arm_base_link
+    (arm_base_joint) taken as the identity, as it is on the MEBot. A tilted
+    mount moves the column in arm_mount; the planner's FK-based guard, which
+    refuses a layer box touching the live column, covers that case.
     """
     keep_out = data["keep_out"]
     path = PACKAGED_CONFIG_DIR / keep_out["robot_config"]
@@ -468,23 +473,25 @@ def keep_out_spheres(data):
                 )
             yield c, radius
 
-    spheres = [(tuple(c), radius, "base_link") for c, radius in listed("base_link")]
+    spheres = [
+        (tuple(c), radius, "arm_base_link") for c, radius in listed("arm_base_link")
+    ]
     origin = keep_out["shoulder_link_origin"]
-    # ... and so would every shoulder_link sphere, placed by a pose that is
+    # ... and so would every arm_shoulder_link sphere, placed by a pose that is
     # not finite.
     if not all(math.isfinite(v) for v in (*origin["xyz"], *origin["rpy"])):
         raise ValueError("keep_out shoulder_link_origin %s is not finite" % origin)
     pose = _transform(origin["xyz"], origin["rpy"])
-    for c, radius in listed("shoulder_link"):
+    for c, radius in listed("arm_shoulder_link"):
         if c[0] != 0.0 or c[1] != 0.0:
             raise ValueError(
-                "%s: the shoulder_link sphere at %s is off the joint_1 axis, so it"
+                "%s: the arm_shoulder_link sphere at %s is off the arm_joint_1 axis, so it"
                 " is not joint-independent" % (path, c)
             )
         centre = tuple(
             sum(pose[i][k] * c[k] for k in range(3)) + pose[i][3] for i in range(3)
         )
-        spheres.append((centre, radius, "shoulder_link"))
+        spheres.append((centre, radius, "arm_shoulder_link"))
     return spheres
 
 
@@ -808,7 +815,7 @@ def _layer_text(layer, excludable, about, meta, boxes):
         "# GENERATED by scripts/generate_layers.py from scripts/mebot_layers.yaml"
         " -- do not hand-edit; `make layers`.",
         "# " + about,
-        "# Metres in the arm's base_link frame, UNPADDED: the planner adds"
+        "# Metres in the arm's mount frame, arm_mount, UNPADDED: the planner adds"
         " world_padding per side.",
         "layer: %s" % layer,
         "excludable: %s" % ("true" if excludable else "false"),
@@ -947,7 +954,7 @@ def generate(data, urdf_bytes, perturb=0.0):
     if any(mount["rpy_deg"]):
         raise ValueError(
             "mount rpy_deg %s is not supported: the boxes are axis-aligned in"
-            " base_link, so the arm must be mounted square to the chair"
+            " arm_mount, so the arm must be mounted square to the chair"
             % mount["rpy_deg"]
         )
     # The arm's spheres come from the rammp_curobo that is imported, and a

@@ -10,11 +10,11 @@ floor, the platform and the person. --control then plans it again from the
 same start on /rammp_curobo_control in a world of the floor and the platform
 only: the same request without the person layer.
 
-Coordinates are metres in the arm's base_link frame, x forward, y left and z
-up; the occupant sits at y = +0.27, the seat pan at z = +0.09. A tool goal is
-cuRobo's tool_frame, the fingertip midpoint, and --rpy-deg its orientation as
-ROS fixed-axis roll, pitch and yaw: the default, 90 0 90, points the gripper
-forward and level.
+Coordinates are metres in the arm's arm_mount frame (level, at its base),
+x forward, y left and z up; the occupant sits at y = +0.27, the seat pan at
+z = +0.09. A tool goal is cuRobo's arm_tool_frame, the fingertip midpoint,
+and --rpy-deg its orientation as ROS fixed-axis roll, pitch and yaw: the
+default, 90 0 90, points the gripper forward and level.
 """
 
 import argparse

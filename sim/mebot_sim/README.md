@@ -5,11 +5,11 @@ the way a consumer uses the planner: over ROS. A MuJoCo Gen3 stands in for
 the arm driver, with the driver's names, beside two of this repo's planner
 nodes, on a ROS domain of its own:
 
-| Node                    | What it is                                                                                                                                                                                           |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/mebot_sim`            | the menagerie Gen3 + 2F-85 with physics, the exact MEBot (its pinned URDF through MuJoCo's own importer), a seated stand-in and the floor; `/joint_states`, `/execute_joint_trajectory`, a live view |
-| `/rammp_curobo`         | the planner with `config:=gen3_mebot.yaml`: the platform and person layers in every world, what a consumer on the chair gets                                                                         |
-| `/rammp_curobo_control` | the planner with `config:=gen3.yaml`, which composes no layers: the suite pushes it scenes that list only some, so that the same request is planned without a layer                                  |
+| Node                    | What it is                                                                                                                                                                                                                                                                                                  |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/mebot_sim`            | the menagerie Gen3 + 2F-85 with physics, the exact MEBot (its pinned URDF through MuJoCo's own importer), a seated stand-in and the floor; `/joint_states`, `/execute_joint_trajectory`, the arm's model latched on `/arm/robot_description` (`core/tests/data/arm_level.urdf`, a level mount), a live view |
+| `/rammp_curobo`         | the planner with `config:=gen3_mebot.yaml`: the platform and person layers in every world, what a consumer on the chair gets                                                                                                                                                                                |
+| `/rammp_curobo_control` | the planner with `config:=gen3.yaml`, which composes no layers: the suite pushes it scenes that list only some, so that the same request is planned without a layer                                                                                                                                         |
 
 Contacts are MuJoCo's, against the true shapes: any arm or gripper contact
 with the MEBot, the stand-in or the floor pressing with more than 1 N. A
@@ -26,8 +26,8 @@ nothing.
 bench's ROS domain, 0. When `ROS_DOMAIN_ID` is unset, 0, or anything but a
 plain domain from 1 to 232, the launch files and every node move to 88 and
 say so; another domain from 1 to 232 is kept. `/mebot_sim` also refuses to
-start beside anything that already serves `/joint_states` or
-`/execute_joint_trajectory`, and the client flies nothing unless the sim
+start beside anything that already serves `/joint_states`,
+`/arm/robot_description` or `/execute_joint_trajectory`, and the client flies nothing unless the sim
 alone does. No node here can reach an arm.
 
 ## Run it

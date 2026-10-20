@@ -11,7 +11,7 @@
 # planner given these files refuses this world as empty instead of planning
 # without the chair.
 
-base_frame: base_link
+base_frame: arm_mount
 
 layers: [layer_mebot_floor.yaml]
 

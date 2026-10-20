@@ -27,6 +27,7 @@ import yaml
 
 from rammp_curobo.config import resolve_config
 from rammp_curobo.geometry import euler_deg_to_quat_xyzw
+from rammp_curobo.urdf_model import ROOT_LINK
 
 
 class Obstacle:
@@ -397,15 +398,55 @@ def load_layers(refs, relative_to, listed_in):
     return layers
 
 
-def load_scene(path):
+SCENE_KEYS = ("base_frame", "obstacles", "objects", "targets", "layers")
+LIST_KEYS = ("obstacles", "objects", "targets")
+
+
+def load_scene(path, frame=ROOT_LINK):
+    """Parse a world YAML. Refuses a mis-keyed file: a typo'd or missing
+    `obstacles` would otherwise load as an empty world without a word, so
+    an empty world must say `obstacles: []`.
+
+    `base_frame` is required and must be `frame`, the frame the planner
+    plans in (arm_mount): the numbers are applied in that frame whatever
+    the file says, so a world authored in another frame (the arm's tilted
+    base) would put every box in the wrong place, silently. The layers the
+    file lists are in that frame too.
+    """
     # UTF-8 whatever the locale: the packaged worlds have non-ASCII comments.
     # A key written twice is refused, as in a layer file: plain PyYAML keeps
     # the last one, so a second `layers:` would drop the layers of the first
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.load(f, Loader=_StrictLoader)
+    if not isinstance(data, dict):
+        raise ValueError("world file %s is empty or not a mapping" % path)
+    for key in data:
+        if key not in SCENE_KEYS:
+            raise ValueError(
+                "world file %s: unknown top-level key %r (expected %s)"
+                % (path, key, ", ".join(SCENE_KEYS))
+            )
+    if "obstacles" not in data:
+        raise ValueError(
+            "world file %s has no 'obstacles' key; write `obstacles: []` "
+            "for an empty world" % path
+        )
+    for key in LIST_KEYS:
+        value = data.get(key, [])
+        if not isinstance(value, list):
+            got = "null" if value is None else type(value).__name__
+            raise ValueError(
+                "world file %s: %r is %s, not a list; write `%s: []` for none"
+                % (path, key, got, key)
+            )
+    if data.get("base_frame") != frame:
+        raise ValueError(
+            "world file %s: base_frame is %r, expected %r (the planning frame)"
+            % (path, data.get("base_frame"), frame)
+        )
     return Scene(
-        base_frame=data.get("base_frame", "base_link"),
-        obstacles=_entries(Obstacle, data.get("obstacles", []), path, "obstacles"),
+        base_frame=frame,
+        obstacles=_entries(Obstacle, data["obstacles"], path, "obstacles"),
         targets=_entries(Target, data.get("targets", []), path, "targets"),
         objects=_entries(SceneObject, data.get("objects", []), path, "objects"),
         layers=load_layers(
@@ -414,7 +455,7 @@ def load_scene(path):
     )
 
 
-def scene_from_obstacles(entries, base_frame="base_link"):
+def scene_from_obstacles(entries, base_frame=ROOT_LINK):
     """Build a Scene from plain dicts (the `update_world(obstacles)` path).
 
     Each entry follows the YAML object schema: name + position required,

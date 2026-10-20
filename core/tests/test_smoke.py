@@ -13,10 +13,12 @@ naming what it tried. A test that pushes a world puts back the one it
 found.
 """
 
+import json
 import math
 import re
 import time
 from collections import Counter
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -28,8 +30,9 @@ if not torch.cuda.is_available():
     pytest.skip("CUDA is not available", allow_module_level=True)
 
 from rammp_curobo import CuRoboPlanner  # noqa: E402
-from rammp_curobo.config import PACKAGED_CONFIG_DIR  # noqa: E402
+from rammp_curobo.config import PACKAGED_CONFIG_DIR, resolve_config  # noqa: E402
 from rammp_curobo.scene import Obstacle, Scene  # noqa: E402
+from rammp_curobo.types import PlanResult, Trajectory  # noqa: E402
 from rammp_curobo.world import sphere_box_penetration  # noqa: E402
 
 # a box out of the arm's reach: a world with nothing in the way
@@ -40,8 +43,8 @@ PERSON = "layer_mebot_person.yaml"
 
 
 @pytest.fixture(scope="session")
-def planner():
-    gen3 = CuRoboPlanner.from_config("gen3.yaml")
+def planner(urdf_level):
+    gen3 = CuRoboPlanner.from_config("gen3.yaml", urdf_path=urdf_level)
     # read back as construction loaded it: the tests before the read-back
     # test push worlds on this planner and put the kitchen back through
     # update_world
@@ -50,10 +53,10 @@ def planner():
 
 
 @pytest.fixture(scope="session")
-def chair_planner():
+def chair_planner(urdf_level):
     """The Gen3 on the MEBot: the generated platform and person layers in
     every world. Built only when a test asks for it."""
-    return CuRoboPlanner.from_config("gen3_mebot.yaml")
+    return CuRoboPlanner.from_config("gen3_mebot.yaml", urdf_path=urdf_level)
 
 
 @pytest.fixture
@@ -123,7 +126,7 @@ def test_unreachable_goal_fails_cleanly(planner, start):
 
 
 def test_retimed_trajectory_stays_valid(planner, start):
-    # +joint_1 swings toward the kitchen's open left side (-0.5 rad heads
+    # +arm_joint_1 swings toward the kitchen's open left side (-0.5 rad heads
     # into the cabinet corner and rightly IK_FAILs on goal collision).
     q_target = list(planner.retract_pose)
     q_target[0] += 0.2
@@ -150,7 +153,7 @@ def test_check_state_valid(planner):
     ok, _ = planner.check_state_valid(planner.retract_pose)
     assert ok
     bad = list(planner.retract_pose)
-    bad[1] = 3.0  # joint_2 limit is ±2.41 rad
+    bad[1] = 3.0  # arm_joint_2 limit is ±2.24 rad
     ok, _ = planner.check_state_valid(bad)
     assert not ok
 
@@ -186,32 +189,91 @@ def test_update_world_guards_and_round_trip(planner, start):
     assert res.success, res.error
 
 
-def test_park_pose_outside_model_limits_is_clamped(planner):
-    # The real Gen3 parks with joint_4 ~0.8 deg past cuRobo's URDF bound
-    # (found on first hardware contact) — tiny violations clamp inward,
-    # large ones are refused with the joint named.
-    park = list(planner.retract_pose)
-    park[3] = -2.674  # model limit is ±2.66
-    clamped, err = planner._clamp_to_limits(park, "start")
-    assert err is None
-    assert clamped[3] == pytest.approx(-2.66, abs=1e-6)
+def test_empty_world_constructs_and_plans(urdf_level, tmp_path):
+    # Allowed at construction only (flatbot has no table); update_world
+    # still refuses an empty world, since cuRobo would keep the old one.
+    cfg = yaml.safe_load(resolve_config("gen3.yaml").read_text())
+    cfg["world"] = "world_empty.yaml"
+    path = tmp_path / "gen3_empty.yaml"
+    path.write_text(yaml.safe_dump(cfg))
+    empty = CuRoboPlanner.from_config(str(path), urdf_path=urdf_level)
 
-    park[3] = -3.0  # far outside
-    clamped, err = planner._clamp_to_limits(park, "start")
-    assert clamped is None and "joint_4" in err
+    q_goal = list(empty.retract_pose)
+    q_goal[1] -= 0.25
+    q_goal[3] += 0.30
+    res = empty.plan_to_joints(q_goal, list(empty.retract_pose))
+    assert res.success, res.error
+    with pytest.raises(ValueError, match="empty"):
+        empty.update_world([])
 
-    res = planner.plan_to_joints(planner.retract_pose, start=park)
-    assert not res.success
-    assert res.status == "START_OUTSIDE_LIMITS"
-    assert "joint_4" in res.error
+    # A real world on top takes effect: a box on the tool puts the start in
+    # collision, and the kitchen replaces it and is planned around.
+    pos, _ = empty.fk(empty.retract_pose)
+    empty.update_world([{"name": "block", "position": pos, "dims": [0.3, 0.3, 0.3]}])
+    assert not empty.check_state_valid(empty.retract_pose)[0]
+    res = empty.plan_to_joints(q_goal, list(empty.retract_pose))
+    assert not res.success and "WORLD_COLLISION" in str(res.status), res.status
+    empty.update_world("world_sim_kitchen.yaml")
+    assert empty.check_state_valid(empty.retract_pose)[0]
+    res = empty.plan_to_joints(q_goal, list(empty.retract_pose))
+    assert res.success, res.error
+    assert all(empty.check_state_valid(q)[0] for q in res.joint_traj.positions)
+
+
+def test_a_start_inside_the_limit_margin_is_refused_and_one_outside_plans(planner):
+    # The Gen3 rest preset sits 22 mrad inside arm_joint_4's -2.57: inside
+    # the 0.1 rad margin, so refused by name rather than moved. The CPU
+    # suite covers the 0.05 rad clamp past the limit, with no margin.
+    near = list(planner.retract_pose)
+    near[3] = -2.548
+    res = planner.plan_to_joints(planner.retract_pose, start=near)
+    assert res.status == "START_IN_LIMIT_MARGIN"
+    assert "arm_joint_4" in res.error
+
+    near[3] = -2.46
+    res = planner.plan_to_joints(planner.retract_pose, start=near)
+    assert res.success, res.error
+
+
+def test_curobo_plans_inside_the_margin(planner):
+    lo, hi = planner.joint_limits()["position"]  # the URDF's
+    lim = planner._motion_gen.kinematics.get_joint_limits().position
+    order = [planner._curobo_joint_names.index(n) for n in planner.joint_names]
+    curobo = lim.detach().cpu().numpy()[:, order]
+    np.testing.assert_allclose(curobo[0], lo + 0.1, atol=1e-6)
+    np.testing.assert_allclose(curobo[1], hi - 0.1, atol=1e-6)
+
+
+def test_a_goal_on_a_joint_limit_is_not_planned_to_it(planner):
+    """2026-10-19: cuRobo's IK put this GoToEEPose goal's arm_joint_4 ON its
+    2.57 limit; the quintic resample passed it and the re-check rejected the
+    plan (core/tests/data/curobo_at_limit.json). With the margin, every plan
+    keeps 0.1 rad from every limit, or the goal fails cleanly."""
+    with open(Path(__file__).parent / "data" / "curobo_at_limit.json") as f:
+        start = json.load(f)["start"]
+    goal = (
+        [0.4566828134433112, 0.0013347502139383046, 0.4336047009472797],
+        [0.500044674874822, 0.5001091592170074, 0.49989060359678683, 0.499955534455047],
+    )
+    lo, hi = planner.joint_limits()["position"]
+    try:
+        planner.update_world("world_real_bench.yaml")  # where it was captured
+        for _ in range(8):  # cuRobo hit the limit on ~1 in 7 of these
+            res = planner.plan_to_pose(*goal, start)
+            assert res.status != "LIBRARY_VALIDATION_FAILED", res.error
+            if res.success:
+                q = res.joint_traj.positions
+                assert np.minimum(q - lo, hi - q).min() > 0.1 - 1e-3
+    finally:
+        planner.update_world("world_sim_kitchen.yaml")
 
 
 def test_joint_goal_normalized_to_start_branch(planner):
-    # arm reports joint_3 = -pi (wrapped), goal authored at +pi: the plan
+    # arm reports arm_joint_3 = -pi (wrapped), goal authored at +pi: the plan
     # must NOT wind a full revolution — the goal shifts to the -pi branch
     start = list(planner.retract_pose)
     start[2] = -3.1416
-    goal = list(planner.retract_pose)  # joint_3 = +3.142
+    goal = list(planner.retract_pose)  # arm_joint_3 = +3.142
     goal[0] = 0.15
     res = planner.plan_to_joints(goal, start=start)
     assert res.success, res.error
@@ -220,11 +282,123 @@ def test_joint_goal_normalized_to_start_branch(planner):
     assert np.abs(np.diff(j3)).sum() < 0.2  # no winding
 
 
+def _inject_wound_plan(planner, monkeypatch, start, j, wound_end):
+    """Make the next plan_single come back wound: its one _finish result is
+    a plan moving joint j alone from start to wound_end. Which branch IK
+    picks depends on its random seeds -- #14 did not recur in ~270 plans
+    here -- and cuRobo's trajopt will not produce that path on demand. The
+    real plan_single is skipped: its result would be discarded, and the
+    subject is what plan_to_pose does next. The replan stays real."""
+    real_finish = planner._finish
+    real_plan_single = planner._motion_gen.plan_single
+
+    def no_plan(*a, **k):
+        monkeypatch.setattr(planner._motion_gen, "plan_single", real_plan_single)
+
+    monkeypatch.setattr(planner._motion_gen, "plan_single", no_plan)
+
+    def wound_plan(result, t0, q_goal=None):
+        monkeypatch.setattr(planner, "_finish", real_finish)
+        pos = np.tile(start, (200, 1))
+        pos[:, j] = np.linspace(start[j], wound_end, 200)
+        return PlanResult(
+            success=True,
+            joint_traj=Trajectory(
+                list(planner.joint_names),
+                pos,
+                None,
+                None,
+                0.05,
+                frame_id=planner.base_frame,
+            ),
+            timing=0.0,
+            error=None,
+            status="OK",
+            validated=True,
+            final_joints=pos[-1].copy(),
+        )
+
+    monkeypatch.setattr(planner, "_finish", wound_plan)
+
+
+@pytest.mark.parametrize("move", [0.0, 0.6 * math.pi])
+@pytest.mark.parametrize("parked", [-math.pi, math.pi])
+@pytest.mark.parametrize("j", [0, 2, 4, 6])  # joints 1/3/5/7, the continuous ones
+def test_pose_goal_normalized_to_start_branch(planner, j, parked, move, monkeypatch):
+    # #14: the arm parks a continuous joint on the +/-pi boundary, and IK
+    # lands that joint on the OTHER 2*pi branch from the goal it should
+    # reach (observed live: arm at -pi, a goal at its own pose, IK returned
+    # +pi), so the plan goes the long way round. move=0 is that same-pose
+    # revolution; move=0.6*pi is a real move whose wound plan travels
+    # 1.4*pi, which a path-vs-net-change heuristic misses.
+    start = list(planner.retract_pose)
+    start[j] = parked
+    ok, why = planner.check_state_valid(start)
+    assert ok, why
+    goal = list(start)
+    goal[j] = parked + math.copysign(move, parked)  # inside +/-6.2832
+    _inject_wound_plan(
+        planner, monkeypatch, start, j, goal[j] - math.copysign(2 * math.pi, parked)
+    )
+    pos, quat = planner.fk(goal)
+    res = planner.plan_to_pose(pos, quat, start=start)
+    assert res.success, res.error
+    assert res.validated
+    assert res.goal_mismatch_rad is None
+    assert res.error is None
+    assert res.joint_traj.frame_id == "arm_mount"  # the replan is stamped too
+    q = res.joint_traj.positions
+    assert np.abs(np.diff(q[:, j])).sum() < move + 0.2  # the short way
+    assert abs(q[-1, j] - goal[j]) < 0.05  # on the start's branch
+
+
+def test_a_failed_unwinding_replan_says_so(planner, monkeypatch):
+    # the wound plan is still returned (it is valid and collision-free) but
+    # not silently: error carries the warning to the consumer
+    start = list(planner.retract_pose)
+    start[2] = -math.pi
+    _inject_wound_plan(planner, monkeypatch, start, 2, math.pi)
+    monkeypatch.setattr(
+        planner,
+        "plan_to_joints",
+        lambda *a, **k: PlanResult.failure("TRAJOPT_FAIL", "injected"),
+    )
+    pos, quat = planner.fk(start)
+    res = planner.plan_to_pose(pos, quat, start=start)
+    assert res.success
+    assert res.error and "2*pi branch" in res.error
+
+
+def test_winding_under_a_hold_is_warned_not_replanned(planner, monkeypatch):
+    from rammp_curobo import planner as planner_module
+    from rammp_curobo.constraints import HOLD_LEVEL, PoseConstraint
+
+    start = list(planner.retract_pose)
+    start[2] = -math.pi
+    _inject_wound_plan(planner, monkeypatch, start, 2, math.pi)
+    replans = []
+    monkeypatch.setattr(planner, "plan_to_joints", lambda *a, **k: replans.append(a))
+    # the module logger's calls are recorded directly: caplog intermittently
+    # captured nothing in the full Jetson-image run
+    warned = []
+    monkeypatch.setattr(
+        planner_module.log, "warning", lambda msg, *a: warned.append(msg % a)
+    )
+    pos, quat = planner.fk(start)
+    planner.plan_to_pose(
+        pos, quat, start=start, constraint=PoseConstraint(hold=HOLD_LEVEL)
+    )
+    assert not replans
+    assert any("2*pi branch" in w for w in warned), warned
+
+
 # ------------------------------------------------------------ obstacle layers
 
 
 def _scene(path, **sections):
-    """Write a world file holding `sections` (obstacles, objects, layers)."""
+    """Write a world file holding `sections` (obstacles, objects, layers),
+    in the planning frame; with no obstacles, it says `obstacles: []`."""
+    sections = dict({"base_frame": "arm_mount", "obstacles": []}, **sections)
     path.write_text(yaml.safe_dump(sections))
     return path
 
@@ -301,7 +475,7 @@ def _search_box(planner, around=None, radius=math.inf):
 
 def _free_plan(planner, tmp_path):
     """The request the box-on-the-path tests block, from the retract to the retract
-    turned 1 rad on joint_1, planned in a free world (one far box), where it
+    turned 1 rad on arm_joint_1, planned in a free world (one far box), where it
     goes straight. Returns the start, the goal and the free plan's path."""
     start = list(planner.retract_pose)
     goal = list(start)
@@ -621,7 +795,7 @@ def test_chair_layers_survive_every_push(chair_planner, platform_state, tmp_path
     pushes = {
         "list": [FAR],
         "path": _scene(tmp_path / "far.yaml", obstacles=[FAR]),
-        "Scene": Scene("base_link", [Obstacle(FAR)], []),
+        "Scene": Scene("arm_mount", [Obstacle(FAR)], []),
     }
     try:
         for form, world in pushes.items():
@@ -867,6 +1041,28 @@ def _yawed_goal(planner, start, d_xyz, yaw):
 # tool ~19.7 deg on the way; held LEVEL, ~0.5 deg. A goal that a plain base
 # rotation reaches would pass whether or not the hold were applied.
 _TILTING_GOAL = ([-0.15, 0.30, -0.15], 1.2)
+
+
+def test_accelerations_match_positions_and_limits(planner, start):
+    """#15: on a plan cuRobo optimized coarser than interpolation_dt, the
+    shipped accelerations are the positions' own (LINEAR_CUDA's missed by
+    ~95%), within the acceleration limit, and the plan ends on the goal at
+    rest."""
+    q_goal = list(
+        np.asarray(planner.retract_pose) + [1.2, -0.2, 0.3, 0.5, -0.4, 0, -1.0]
+    )
+    res = planner.plan_to_joints(q_goal, start)
+    assert res.success, res.error
+    t = res.joint_traj
+    assert t.accelerations is not None
+    p, v, a, dt = t.positions, t.velocities, t.accelerations, t.dt
+    a_fd = (p[2:] - 2 * p[1:-1] + p[:-2]) / dt**2
+    assert np.abs(a_fd - a[1:-1]).max() < 0.1 * np.abs(a).max()
+    lim = planner.joint_limits()["acceleration"]
+    assert lim.shape == (7,) and (lim > 0).all()
+    assert (np.abs(a).max(axis=0) <= lim * 1.01).all()
+    np.testing.assert_allclose(v[-1], 0.0, atol=1e-9)
+    np.testing.assert_allclose(a[-1], 0.0, atol=1e-9)
 
 
 def test_constrained_plan_holds_orientation(planner, start):

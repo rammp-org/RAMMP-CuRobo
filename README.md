@@ -8,15 +8,24 @@ to execute. The planner never touches the arm: it holds no driver, no
 controller client and no `/joint_states` subscription, and execution is
 entirely the caller's.
 
+It plans against the arm's own model: the URDF `arm_state_publisher`
+(kinova-gen3-ros2) latches on `/arm/robot_description`. No URDF ships here.
+Goals and plans are in that model's root frame, **`arm_mount`** (Z up when
+the chair is level, X forward, origin at the arm's base), with the tool at
+`arm_tool_frame` and joints `arm_joint_1..7`; every returned trajectory
+says so in `header.frame_id`.
+
 ```
 core/                     Layer 1 — pip package `rammp-curobo`: pure-Python
-                          cuRobo wrapper, NO ROS imports (configs baked in)
+                          cuRobo wrapper, NO ROS imports (configs baked in;
+                          the robot model is a URDF path you pass)
 rammp_curobo_interfaces/  ROS 2 action/srv definitions (dependency-free)
 rammp_curobo_ros/         Layer 2 — plan-only planner node + tour_demo
                           (the showcase: 4 random points chain-planned
                           into one merged trajectory; nothing moves)
 examples/                 plan_only.py (no ROS)
-scripts/                  config baking; generate_layers.py (the MEBot
+scripts/                  config baking (`make bake`, runs in the image);
+                          generate_layers.py (the MEBot
                           layers: the chair and floor from its URDF, the
                           person from ANSUR II sizes)
 sim/                      mebot_sim: the planner on the MEBot in a MuJoCo
@@ -100,14 +109,22 @@ python3 -m pytest core/tests -q
 The offline tests run anywhere; the GPU tests plan real collision-free
 trajectories in the sim-kitchen world and on the MEBot wheelchair (first
 run compiles kernels — takes a minute or two; warm, they take ~30 s and
-the whole suite ~45 s). Without CUDA, torch or cuRobo the GPU tests skip,
-and the suite passes on the offline tests alone; where they must run, as
-on the Jetson, set `RAMMP_CUROBO_GPU=1` and a skip fails instead.
-`make verify` sets it. Or plan one motion directly:
+the whole suite ~45 s). They plan on `core/tests/data/arm_level.urdf`
+and `arm_tilt30.urdf`, the arm's model rendered by kinova-gen3-ros2's
+`kinova_gen3_render` for a level and a 30° mount (how: that directory's
+README). Without CUDA, torch or cuRobo the GPU tests skip, and the suite
+passes on the offline tests alone; where they must run, as on the Jetson,
+set `RAMMP_CUROBO_GPU=1` and a skip fails instead. `make verify` sets it.
+Or plan one motion directly on the level-mount fixture:
 
 ```bash
-python3 examples/plan_only.py --joints 0.3 0.262 3.142 -2.269 0.0 0.960 1.571
+python3 examples/plan_only.py --urdf core/tests/data/arm_level.urdf \
+    --start 0.0 0.262 3.142 -2.269 0.0 0.960 1.571 \
+    --joints 0.3 0.262 3.142 -2.269 0.0 0.960 1.571
 ```
+
+On a robot the model comes from `/arm/robot_description` (rendered by
+kinova-gen3-ros2); write it to a file and pass that as `--urdf`.
 
 > Shell note: the Jetson's default shell is **zsh** — source the `.zsh`
 > setup files as shown. From bash, use the `.bash` variants instead
@@ -129,6 +146,34 @@ arm) and return the trajectory. See **INTEGRATION.md** for client code,
 and **docker/** to run the same thing as a container. With the arm on the
 MEBot wheelchair, run `config:=gen3_mebot.yaml` instead (see **Obstacle
 layers** below).
+
+The node first waits for the model on `/arm/robot_description` (latched;
+`robot_description_timeout_s`, default 30 s), so `arm_state_publisher`
+must be up in the same ROS domain:
+`ros2 launch kinova_gen3_description description.launch.py mount_file:=<robot>/mount.yaml`.
+Without it the node logs a FATAL naming `arm_state_publisher` and exits 1.
+It reads the model **once**: a later, different model on the topic is
+ignored, so **restart the planner whenever the robot's mount changes**.
+Once built it logs the model (`base arm_mount, ee arm_tool_frame, joints [arm_joint_1, …]`) and the world (`Collision world: N boxes (<file>)`).
+
+- **Joint limits are the URDF's**, the ones the driver enforces (j2/j4/j6
+  ±2.24/±2.57/±2.09). A start more than `limit_clamp_rad` (0.05) outside
+  them is refused naming the joint — including the Gen3's park pose
+  (`arm_joint_4` ≈ -2.674; kinova-gen3-ros2#49).
+- **Plans keep `joint_limit_margin_rad` (0.1) from every limit.** cuRobo
+  plans inside the narrowed limits, so a goal reachable only near a limit
+  fails as `IK_FAIL`. A start or joint goal within the margin is refused
+  naming the joint (`START_IN_LIMIT_MARGIN` / `GOAL_IN_LIMIT_MARGIN`), never
+  moved; jog the arm away from the limit first.
+- **The gripper is locked open** by its actuated joint
+  (`arm_robotiq_85_left_knuckle_joint`); cuRobo holds the five mimic joints
+  with it. Their limits are filled in from that joint for cuRobo, since the
+  URDF gives none (kinova-gen3-ros2#48 may add them upstream).
+- **Nothing in reach to model** (flatbot)? `world:=world_empty.yaml` plans
+  against the arm alone. An empty world is accepted only at startup;
+  `set_world` / `update_world` still refuse one.
+- **`HOLD_LEVEL` is level with `arm_mount`**, which is level with the chair,
+  not with gravity: on a ramp it is off by the ramp angle.
 
 ## The showcase
 
@@ -218,7 +263,7 @@ only geometry.
 
 The person layer leaves a gap of its own: the column carved around the
 arm's base, ±0.105 m about the arm's axis in x and y and from z -0.040 to
-0.409 m (`base_link`), which no person box enters, since a padded box there
+0.409 m (`arm_mount`), which no person box enters, since a padded box there
 would put every start state in collision. The arm's base and shoulder fill
 the middle of it; nearly two thirds of what the carve takes out of the
 person lies beside them, where the arm can move. So a part of the occupant
@@ -295,7 +340,7 @@ The platform's under- and over-coverage are in its file's `meta`, which the
 regeneration freezes with the boxes; the share of the true shapes is
 measured on a 1 mm lattice. Every padded box clears the arm's
 joint-independent collision spheres (its base, and the shoulder on the
-joint_1 axis) by at least 4 mm, or the generator writes nothing: the
+arm_joint_1 axis) by at least 4 mm, or the generator writes nothing: the
 platform by 53.4 mm, the person by 5.1 mm.
 
 **What the person costs.** The arm's base is 0.265 m from the occupant's
@@ -371,6 +416,9 @@ that cuRobo honours them.
 | `plan_single_js` fails / `DT_EXCEPTION` on older Jetson wheels     | known torch-wheel cuSOLVER gap; `joint_space_method: auto` falls back to FK-pose planning automatically. Keep `enable_graph: false` on Jetson always                                              |
 | plan succeeds but joints differ from a joint goal                  | FK-pose fallback reached the POSE via another joint family — check `goal_mismatch_rad` before acting on it                                                                                        |
 | goal aborted: "start_joints is required"                           | `start_joints` is not optional — the planner has no view of any arm, so the caller must send the configuration to plan from                                                                       |
+| node exits 1: "no model on /arm/robot_description"                 | `arm_state_publisher` is not running in this ROS domain (or not discoverable) — start it, then the planner                                                                                        |
+| plan refused naming `arm_joint_4` from the park pose               | the park pose (-2.674) is outside the URDF's ±2.57 by more than the 0.05 clamp — move out of park first (kinova-gen3-ros2#49)                                                                     |
+| plans ignore a new mount                                           | the model is read once at startup — restart the planner after changing the robot's mount                                                                                                          |
 | node warns about SIM world without sim time                        | you're (probably) on the real arm with the kitchen world — relaunch with `world:=world_real_bench.yaml` (measured!)                                                                               |
 | nodes can't see each other's topics                                | `ROS_LOCALHOST_ONLY=1` must be exported in EVERY shell (non-interactive shells skip `~/.zshrc` — export explicitly; RAMMP-Kinova's `tools/launch_stack.zsh` does)                                 |
 | both bringups fight / controllers flap                             | MuJoCo sim and kortex bringup both claim `/controller_manager` — run exactly one                                                                                                                  |

@@ -10,7 +10,7 @@
 # start-up world: what keeps the S2 requests off the stand-in after this push
 # is the person layer alone.
 
-base_frame: base_link
+base_frame: arm_mount
 
 obstacles:
   - {name: floor, position: [0.0, 0.0, -0.5093], dims: [3.0, 3.0, 0.1]}

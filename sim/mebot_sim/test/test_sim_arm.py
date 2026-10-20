@@ -244,7 +244,7 @@ def test_the_driver_interface_refuses_a_malformed_trajectory():
     eight = [[0.0] * 8, [0.1] * 8]
     for traj, why in (
         (trajectory([], []), "no points"),
-        # the driver takes positions as joint_1..joint_7, never by name
+        # the driver takes positions as arm_joint_1..arm_joint_7, never by name
         (trajectory([0.02, 0.04], good, names=stack.JOINTS[::-1]), "in order"),
         (trajectory([0.02, 0.04], good, names=stack.JOINTS[:6] + ["x"]), "in order"),
         (trajectory([0.02, 0.04], eight, names=stack.JOINTS + ["joint_8"]), "in order"),
@@ -279,10 +279,11 @@ class Node:
     """What Driver and _refuse_a_second_driver ask of an rclpy node, answered
     without a ROS graph. What the driver makes is kept: `made` by topic or
     service name, `timers` as (period, callback). The graph holds
-    `publishers` of /joint_states and the services `served`."""
+    `publishers` of /joint_states, `models` of the arm's model, and the
+    services `served`."""
 
-    def __init__(self, publishers=0, served=()):
-        self.publishers, self.served = publishers, served
+    def __init__(self, publishers=0, served=(), models=0):
+        self.publishers, self.served, self.models = publishers, served, models
         self.made, self.timers, self.logged = {}, [], []
 
     def create_publisher(self, kind, topic, qos):
@@ -311,7 +312,8 @@ class Node:
         return Clock()
 
     def count_publishers(self, topic):
-        return self.publishers if topic == "/joint_states" else 0
+        counts = {"/joint_states": self.publishers, stack.ARM_MODEL_TOPIC: self.models}
+        return counts.get(topic, 0)
 
     def get_service_names_and_types(self):
         return [(name, []) for name in self.served]
@@ -553,6 +555,21 @@ def test_the_sim_arm_will_not_start_beside_another_driver(monkeypatch):
     for node in (
         Node(publishers=1),
         Node(served=["/execute_joint_trajectory/_action/send_goal"]),
+        # a real arm's arm_state_publisher: its model is not the sim's
+        Node(models=1),
     ):
         with pytest.raises(SystemExit, match="already serves"):
             sim_arm._refuse_a_second_driver(node)
+
+
+def test_the_arm_model_is_latched_as_the_arm_latches_it():
+    # the planner nodes wait for it, RELIABLE and TRANSIENT_LOCAL, and plan
+    # in it; one published as anything else would never reach them
+    qos = pytest.importorskip("rclpy.qos")
+    pytest.importorskip("std_msgs.msg")
+    node = Node()
+    sim_arm._publish_arm_model(node)
+    model = node.made[stack.ARM_MODEL_TOPIC]
+    assert model.qos.reliability == qos.ReliabilityPolicy.RELIABLE
+    assert model.qos.durability == qos.DurabilityPolicy.TRANSIENT_LOCAL
+    assert [msg.data for msg in model.sent] == [stack.arm_model()]

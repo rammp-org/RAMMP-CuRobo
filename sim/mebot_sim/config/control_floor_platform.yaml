@@ -3,6 +3,8 @@
 # no person. The same request planned here and on the chair planner differs
 # by the person layer alone.
 
-base_frame: base_link
+base_frame: arm_mount
+
+obstacles: []
 
 layers: [layer_mebot_floor.yaml, layer_mebot_platform.yaml]

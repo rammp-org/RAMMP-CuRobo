@@ -286,13 +286,13 @@ def test_fk_and_mount_on_a_synthetic_urdf(data):
     for name, (link, kind, lo, hi) in want.items():
         p = primitives[name]
         assert (p["link"], p["kind"]) == (link, kind), name
-        # base_link is the root frame moved by -mount
+        # arm_mount is the root frame moved by -mount
         in_base = [[v - m for v, m in zip(bound, mount)] for bound in (lo, hi)]
         assert p["lo"] == pytest.approx(in_base[LO], abs=1e-12), name
         assert p["hi"] == pytest.approx(in_base[HI], abs=1e-12), name
     assert primitives["wheel"]["size"] == [0.1, 0.04]  # radius, length
     assert primitives["rod"]["size"] == [0.02, 0.04, 0.06]
-    # The pose is base_link from the primitive: the rod's axes land on z, x, y.
+    # The pose is arm_mount from the primitive: the rod's axes land on z, x, y.
     rod = np.array(primitives["rod"]["pose"])
     assert rod[:3, :3] == pytest.approx(np.array([[0, 1, 0], [0, 0, 1], [1, 0, 0]]))
     assert rod[:3, 3] == pytest.approx([1.1 - 1.0, 0.5 + 2.0, 0.0 - 0.5])
@@ -479,7 +479,7 @@ def test_unsupported_input_is_refused(data, tmp_path, monkeypatch):
         assert len(gen.urdf_primitives(pair(hinge), [0.0, 0.0, 0.0])) == 2
 
     # A rotated mount, about any axis and either way: the boxes are
-    # axis-aligned in base_link.
+    # axis-aligned in arm_mount.
     for rpy_deg in ([90, 0, 0], [0, 90, 0], [0, 0, 90], [0, -0.5, 0]):
         rotated = _inputs()
         rotated["mount"]["arm_base_in_mebot"]["rpy_deg"] = rpy_deg
@@ -584,17 +584,17 @@ def test_unsupported_input_is_refused(data, tmp_path, monkeypatch):
         assert part in str(caught.value)
 
     # A fixed sphere that is not finite, in the robot config or through the
-    # origin that places shoulder_link: min() and max() pass over a NaN, so
+    # origin that places arm_shoulder_link: min() and max() pass over a NaN, so
     # the sphere would drop out of the keep-out without a word, and the layers
     # be carved and gated without it.
     robot = tmp_path / "robot.yaml"
     packaged = (PACKAGED_CONFIG_DIR / data["keep_out"]["robot_config"]).read_text()
     for link, index, key, value in (
-        ("base_link", 0, "radius", math.nan),
-        ("base_link", 1, "center", [math.nan, 0.0, 0.125]),
-        ("shoulder_link", 1, "radius", math.inf),
-        ("shoulder_link", 2, "radius", math.nan),
-        ("shoulder_link", 2, "center", [0.0, 0.0, math.nan]),
+        ("arm_base_link", 0, "radius", math.nan),
+        ("arm_base_link", 1, "center", [math.nan, 0.0, 0.125]),
+        ("arm_shoulder_link", 1, "radius", math.inf),
+        ("arm_shoulder_link", 2, "radius", math.nan),
+        ("arm_shoulder_link", 2, "center", [0.0, 0.0, math.nan]),
     ):
         config = yaml.safe_load(packaged)
         spheres = config["robot_cfg"]["kinematics"]["collision_spheres"]
@@ -612,18 +612,18 @@ def test_unsupported_input_is_refused(data, tmp_path, monkeypatch):
         with pytest.raises(ValueError, match="shoulder_link_origin"):
             _generate(lost, FAR_BOX)
 
-    # A shoulder sphere off the joint_1 axis, in x or in y, moves with
-    # joint_1: it is not part of the fixed column, and treating it as fixed
+    # A shoulder sphere off the arm_joint_1 axis, in x or in y, moves with
+    # arm_joint_1: it is not part of the fixed column, and treating it as fixed
     # would be wrong.
     for off_axis in ([0.01, 0.0, -0.04], [0.0, 0.01, -0.04]):
         spheres = {
-            "base_link": [{"center": [0.0, 0.0, 0.065], "radius": 0.075}],
-            "shoulder_link": [{"center": off_axis, "radius": 0.07}],
+            "arm_base_link": [{"center": [0.0, 0.0, 0.065], "radius": 0.075}],
+            "arm_shoulder_link": [{"center": off_axis, "radius": 0.07}],
         }
         kinematics = {"collision_sphere_buffer": 0.005, "collision_spheres": spheres}
         robot.write_text(yaml.safe_dump({"robot_cfg": {"kinematics": kinematics}}))
         data["keep_out"]["robot_config"] = str(robot)
-        with pytest.raises(ValueError, match="shoulder_link"):
+        with pytest.raises(ValueError, match="arm_shoulder_link"):
             gen.keep_out_spheres(data)
 
 
@@ -792,7 +792,7 @@ def _prim(name, lo, hi):
 
 
 def test_merge_meets_the_budget_and_never_touches_the_keep_out(data, monkeypatch):
-    sphere = [((0.0, 0.0, 0.0), 0.05, "base_link")]
+    sphere = [((0.0, 0.0, 0.0), 0.05, "arm_base_link")]
     pad, margin = 0.02, 0.005
 
     # The measure: distance from a sphere to the PADDED box, minus the radius.
@@ -810,7 +810,7 @@ def test_merge_meets_the_budget_and_never_touches_the_keep_out(data, monkeypatch
         ((0.0, 0.0, math.nan), 0.05),
         ((0.0, 0.0, 0.0), math.nan),
     ):
-        lost = [(centre, radius, "base_link")]
+        lost = [(centre, radius, "arm_base_link")]
         for box in (face_on, around):
             for spheres in (lost, lost + sphere, sphere + lost):
                 assert math.isnan(gen.clearance(box, spheres, 0.02))
@@ -1184,20 +1184,20 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
     assert gen.subtract(cube, ((30, 10, 10), (50, 20, 20))) == [cube]
     assert gen.subtract(core, cube) == []
 
-    # The arm's fixed spheres, from the packaged robot config: base_link's as
-    # they are, shoulder_link's carried through joint_1's origin (a half turn
+    # The arm's fixed spheres, from the packaged robot config: arm_base_link's as
+    # they are, arm_shoulder_link's carried through arm_joint_1's origin (a half turn
     # about x, so a sphere at local z sits at `up - z`), all with the buffer.
     spheres = gen.keep_out_spheres(data)
     robot = PACKAGED_CONFIG_DIR / data["keep_out"]["robot_config"]
     kinematics = yaml.safe_load(robot.read_text())["robot_cfg"]["kinematics"]
-    base = kinematics["collision_spheres"]["base_link"]
-    shoulder = kinematics["collision_spheres"]["shoulder_link"]
+    base = kinematics["collision_spheres"]["arm_base_link"]
+    shoulder = kinematics["collision_spheres"]["arm_shoulder_link"]
     up = data["keep_out"]["shoulder_link_origin"]["xyz"][Z]
-    links = ["base_link"] * len(base) + ["shoulder_link"] * len(shoulder)
+    links = ["arm_base_link"] * len(base) + ["arm_shoulder_link"] * len(shoulder)
     assert [link for _, _, link in spheres] == links
     centres = np.array([c for c, _, _ in spheres])
     radii = np.array([r for _, r, _ in spheres])
-    assert np.abs(centres[:, :Z]).max() < 1e-5  # all on the joint_1 axis
+    assert np.abs(centres[:, :Z]).max() < 1e-5  # all on the arm_joint_1 axis
     heights = [s["center"][Z] for s in base] + [up - s["center"][Z] for s in shoulder]
     assert centres[:, Z] == pytest.approx(heights, abs=1e-6)
     buffer = kinematics["collision_sphere_buffer"]
@@ -1338,7 +1338,7 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
     for key, want in seat.items():
         assert moved(anchor(key, 0.1)) == want, key
 
-    # The arm's mount moves the whole envelope the other way in base_link.
+    # The arm's mount moves the whole envelope the other way in arm_mount.
     for axis in (X, Y, Z):
 
         def shift(person, mount, axis=axis):
@@ -1745,7 +1745,7 @@ def test_committed_person_regenerates_without_the_urdf():
 
 
 def _true_shapes(urdf, mount):
-    """Each collision solid of `urdf` with every joint at zero, in base_link
+    """Each collision solid of `urdf` with every joint at zero, in arm_mount
     (the URDF's root at -`mount`): [(link, (lo, hi), points)].
 
     Worked out apart from the generator: FK in numpy, the exact bounding box
@@ -1904,7 +1904,7 @@ def test_committed_layers_meet_budgets_and_clear_the_arm():
     assert meta["platform"]["coverage"]["over_pct"] <= 15.0
 
     # The arm's fixed spheres, worked out again from the packaged robot config:
-    # base_link's, and shoulder_link's placed by joint_1's origin, each radius
+    # arm_base_link's, and arm_shoulder_link's placed by arm_joint_1's origin, each radius
     # with the buffer.
     robot = PACKAGED_CONFIG_DIR / data["keep_out"]["robot_config"]
     robot_cfg = yaml.safe_load(robot.read_text(encoding="utf-8"))["robot_cfg"]
@@ -1912,14 +1912,14 @@ def test_committed_layers_meet_budgets_and_clear_the_arm():
     spheres = robot_cfg["kinematics"]["collision_spheres"]
     joint_1 = data["keep_out"]["shoulder_link_origin"]
     turn = _rpy_matrix(*joint_1["rpy"])
-    fixed = [(s["center"], s["radius"] + buffer) for s in spheres["base_link"]]
+    fixed = [(s["center"], s["radius"] + buffer) for s in spheres["arm_base_link"]]
     fixed += [
         (turn @ s["center"] + joint_1["xyz"], s["radius"] + buffer)
-        for s in spheres["shoulder_link"]
+        for s in spheres["arm_shoulder_link"]
     ]
     for name, layer in layers.items():
         # padded as the planner pads them
-        alone = Scene("base_link", [], [], layers=[layer])
+        alone = Scene("arm_mount", [], [], layers=[layer])
         boxes, _ = compose_cuboids(alone, padding=meta[name]["padding_assumed_m"])
         clear = min(min(point_box_distance(c, boxes).values()) - r for c, r in fixed)
         assert clear >= 0.004, name

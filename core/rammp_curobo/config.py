@@ -7,10 +7,13 @@ directory first, so a user can copy gen3.yaml next to their code, edit the
 world line, and everything keeps working.
 """
 
+import logging
 import os
 from pathlib import Path
 
 import yaml
+
+log = logging.getLogger("rammp_curobo")
 
 PACKAGED_CONFIG_DIR = Path(__file__).resolve().parent / "configs"
 
@@ -19,13 +22,13 @@ PACKAGED_CONFIG_DIR = Path(__file__).resolve().parent / "configs"
 # what each knob does.
 PLANNER_DEFAULTS = {
     "joint_names": [
-        "joint_1",
-        "joint_2",
-        "joint_3",
-        "joint_4",
-        "joint_5",
-        "joint_6",
-        "joint_7",
+        "arm_joint_1",
+        "arm_joint_2",
+        "arm_joint_3",
+        "arm_joint_4",
+        "arm_joint_5",
+        "arm_joint_6",
+        "arm_joint_7",
     ],
     "layers": [],
     "planner": {
@@ -41,6 +44,7 @@ PLANNER_DEFAULTS = {
         "no_pad_names": ["pedestal"],
         "joint_space_method": "auto",
         "limit_clamp_rad": 0.05,
+        "joint_limit_margin_rad": 0.1,
         # A constrained plan must hold the orientation within this much, and
         # that applies to the START too: the start is part of "throughout", so
         # a goal whose held components disagree with the start by more than
@@ -56,10 +60,6 @@ PLANNER_DEFAULTS = {
     "tool": {
         "spin_deg": 0.0,
         "tip_offset_m": 0.0,
-    },
-    "execution": {
-        "speed_scale": 0.25,
-        "max_speed_scale": 1.0,
     },
 }
 
@@ -124,6 +124,15 @@ def load_planner_config(name_or_path):
     path = resolve_config(name_or_path)
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.load(f, Loader=_StrictLoader) or {}
+    # Configs copied from <= v1.1.0 carry execution.speed_scale: 0.25, which
+    # nothing ever read (issue #22). Execution speed is the executor's job;
+    # drop the block so it cannot pass for a live setting.
+    if data.pop("execution", None) is not None:
+        log.warning(
+            "planner config %s: ignoring the 'execution' block -- the planner "
+            "never limited execution speed; the executor owns speed scaling",
+            path,
+        )
     cfg = _merge(PLANNER_DEFAULTS, data)
     for key in ("robot", "world"):
         if key not in cfg:

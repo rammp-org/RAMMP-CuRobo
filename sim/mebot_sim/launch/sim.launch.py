@@ -5,7 +5,9 @@
 
     /mebot_sim             the MuJoCo arm with the MEBot, the seated stand-in
                            and the floor, serving the arm driver's names, and
-                           the live view (http://127.0.0.1:8765)
+                           the live view (http://127.0.0.1:8765); it latches
+                           the arm's model on /arm/robot_description, which
+                           the planner nodes wait for
     /rammp_curobo          config:=gen3_mebot.yaml: what a consumer on the
                            chair gets
     /rammp_curobo_control  config:=gen3.yaml, which composes no layers: it

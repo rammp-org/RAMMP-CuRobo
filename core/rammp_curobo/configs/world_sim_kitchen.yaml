@@ -3,7 +3,7 @@
 # builds and the planner was field-tuned in. Use it for the hardware-free
 # smoke test and for sim-parity runs against RAMMP-Kinova's bringup.
 #
-# Frame: base_link (arm base at origin, +x forward, +z up). Metres + degrees.
+# Frame: arm_mount (arm base at origin, +x forward, +z up). Metres + degrees.
 # obstacles = static furniture boxes; objects = props (avoided as bounding
 # boxes); targets = named fingertip goals kept for parity testing — note
 # they were authored WITH tool corrections (spin_deg 90, tip_offset 0.021)
@@ -11,7 +11,8 @@
 #
 # NOT the real bench. For hardware use world_real_bench.yaml (measured).
 
-base_frame: base_link
+# Laid out for an identity mount (dojo's), where arm_mount is the arm's base.
+base_frame: arm_mount
 
 # Axis-aligned-ish boxes the arm must route around (collision + display).
 # Names key the MuJoCo styling in scenery.py; unknown names render plain.

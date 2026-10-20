@@ -296,14 +296,17 @@ def _git():
 
 def bench_retract():
     """The bench retract: the robot config's retract_config, which is also
-    cuRobo's IK seed, joint_1..joint_7."""
+    cuRobo's IK seed, arm_joint_1..arm_joint_7."""
     stack.core()
+    import yaml
     from rammp_curobo.config import load_planner_config, resolve_config
-    from rammp_curobo.robot_config import load_robot_config
 
     cfg, where = load_planner_config(stack.CHAIR_CONFIG)
-    robot = load_robot_config(resolve_config(cfg["robot"], relative_to=where))
-    cspace = robot["kinematics"]["cspace"]
+    # read as load_robot_config reads it, which refuses to load without the
+    # arm's model; the seed is taken from the file as-is
+    path = resolve_config(cfg["robot"], relative_to=where)
+    with open(path, encoding="utf-8") as f:
+        cspace = yaml.safe_load(f)["robot_cfg"]["kinematics"]["cspace"]
     by_name = dict(zip(cspace["joint_names"], cspace["retract_config"]))
     return [float(by_name[name]) for name in cfg["joint_names"]]
 

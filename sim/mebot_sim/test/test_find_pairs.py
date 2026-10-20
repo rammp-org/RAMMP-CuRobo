@@ -56,7 +56,7 @@ def test_the_search_box_is_inside_the_sim_arms_ranges_and_the_planners_limits(
     m = scene.build(assets, None)
     low, high = find_pairs.search_box(m, LIMITS)
     margin = find_pairs.JOINT_MARGIN_RAD
-    for i, name in enumerate(stack.JOINTS):
+    for i, name in enumerate(stack.MUJOCO_JOINTS):
         j = m.joint(name).id
         if m.jnt_limited[j]:
             # menagerie's ranges are inside cuRobo's limits

@@ -1,7 +1,10 @@
 # Planner config for the RAMMP Kinova Gen3 7-DoF + Robotiq 2F-85.
 #
 #   from rammp_curobo import CuRoboPlanner
-#   planner = CuRoboPlanner.from_config('gen3.yaml')
+#   planner = CuRoboPlanner.from_config('gen3.yaml', urdf_path=path)
+#
+# `path` is the arm's own URDF as a file: the ROS node writes the model on
+# /arm/robot_description to one; the tests use core/tests/data/arm_level.urdf.
 #
 # robot/world resolve relative to this file's directory first, then the
 # packaged defaults — copy this file next to your code and point `world` at
@@ -15,8 +18,8 @@ layers: []                           # obstacle layer files composed into EVERY
                                      # world, set_world pushes included: a push
                                      # replaces the scene, never these
 
-# Controller joint order — matches ros2_kortex and the MuJoCo sim alike.
-joint_names: [joint_1, joint_2, joint_3, joint_4, joint_5, joint_6, joint_7]
+# Controller joint order — the arm's own names, as on /arm/robot_description.
+joint_names: [arm_joint_1, arm_joint_2, arm_joint_3, arm_joint_4, arm_joint_5, arm_joint_6, arm_joint_7]
 
 # No home/start pose here on purpose: the planner is told where to start on
 # every call (issue #6). The IK seed lives in the robot YAML's
@@ -45,9 +48,18 @@ planner:
                                      # may pick another joint family — check
                                      # goal_mismatch_rad before executing.
   limit_clamp_rad: 0.05              # start/goal joints this far outside the model's
-                                     # position limits are clamped inward (the real
-                                     # Gen3 PARKS with joint_4 ~0.8 deg past cuRobo's
-                                     # URDF bound); larger violations are refused
+                                     # position limits are clamped inward; larger
+                                     # violations are refused. The Gen3's park pose
+                                     # (arm_joint_4 ~ -2.674) is 0.10 rad past the
+                                     # URDF's +-2.57 and is refused
+                                     # (kinova-gen3-ros2#49)
+  joint_limit_margin_rad: 0.1        # cuRobo plans this far inside every URDF
+                                     # position limit (its position_limit_clip),
+                                     # so no plan reaches a limit. A start or
+                                     # joint goal inside the margin is REFUSED
+                                     # naming the joint (START_/GOAL_IN_LIMIT_
+                                     # MARGIN), never moved: the Gen3 rest preset
+                                     # (arm_joint_4 -2.548) is one
   constraint_tolerance_deg: 2.0       # orientation holds are a cuRobo COST, not a
                                       # clamp. A plan whose worst deviation from
                                       # the held orientation exceeds this is
@@ -66,9 +78,6 @@ tool:
   spin_deg: 0.0
   tip_offset_m: 0.0
 
-execution:
-  # Execution-side time dilation (retime.py): the plan itself always runs at
-  # full velocity_scale 1.0. 0.25 = quarter speed — the hardware bring-up
-  # default per the safety plan; raise only after slow runs are clean.
-  speed_scale: 0.25
-  max_speed_scale: 1.0               # hard cap an executor must enforce
+# No execution speed knob here on purpose (issue #22): the planner plans at
+# full speed and moves nothing; the executor owns speed scaling. An
+# `execution:` block from an older copy of this file is ignored with a warning.

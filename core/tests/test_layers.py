@@ -77,8 +77,12 @@ def _layer(path, name, boxes=("box",), excludable=False):
 
 
 def _scene(path, *refs):
-    """Write a scene whose only content is the layers it lists."""
-    path.write_text("layers: [%s]\n" % ", ".join(str(ref) for ref in refs))
+    """Write a scene whose only content is the layers it lists (and the
+    frame and empty obstacles every world file states)."""
+    path.write_text(
+        "base_frame: arm_mount\nobstacles: []\nlayers: [%s]\n"
+        % ", ".join(str(ref) for ref in refs)
+    )
     return path
 
 
@@ -146,8 +150,8 @@ def _curobo_stand_in(monkeypatch):
 
     def spheres(q):
         # the spheres no joint moves, as the layer generator finds them, and
-        # one that joint_1 swings about the base's z axis: at the retract
-        # (joint_1 0) it is at the centre of the person's lap, which the real
+        # one that arm_joint_1 swings about the base's z axis: at the retract
+        # (arm_joint_1 0) it is at the centre of the person's lap, which the real
         # arm's wrist reaches into there
         c, s = math.cos(q[0]), math.sin(q[0])
         return np.vstack([fixed, [c * x - s * y, s * x + c * y, z, 0.05]])
@@ -163,7 +167,7 @@ def _curobo_stand_in(monkeypatch):
     class MotionGen:
         def __init__(self, world):
             stand_in.events.append(("built", list(world.data["cuboid"])))
-            joints = ["joint_%d" % i for i in range(1, 8)]
+            joints = ["arm_joint_%d" % i for i in range(1, 8)]
             self.kinematics = types.SimpleNamespace(joint_names=joints)
 
         def warmup(self, enable_graph):
@@ -807,7 +811,9 @@ def test_scene_layers_resolve_next_to_the_scene_and_never_from_cwd(
     ]
 
 
-def test_missing_layer_is_named_with_every_path_tried(tmp_path, monkeypatch):
+def test_missing_layer_is_named_with_every_path_tried(
+    urdf_level, tmp_path, monkeypatch
+):
     scene = _scene(tmp_path / "scene.yaml", "gone.yaml")
     with pytest.raises(FileNotFoundError) as exc:
         load_scene(scene)
@@ -833,7 +839,7 @@ def test_missing_layer_is_named_with_every_path_tried(tmp_path, monkeypatch):
         "robot: robot_gen3_2f85.yaml\nworld: world_mebot.yaml\nlayers: [gone.yaml]\n"
     )
     with pytest.raises(FileNotFoundError) as exc:
-        CuRoboPlanner.from_config(config)
+        CuRoboPlanner.from_config(config, urdf_path=urdf_level)
     assert str(exc.value) == (
         "layer 'gone.yaml' listed in planner config in %s not found; tried: %s, %s"
         % (tmp_path, tmp_path / "gone.yaml", PACKAGED_CONFIG_DIR / "gone.yaml")
@@ -950,6 +956,7 @@ def test_one_layer_name_from_two_files_is_refused_and_one_file_twice_composes_on
 def test_malformed_scene_entry_names_file_and_entry(tmp_path):
     path = tmp_path / "world.yaml"
     world = """\
+base_frame: arm_mount
 obstacles:
   - {name: pedestal, position: [0, 0, -0.05], dims: [0.14, 0.14, 0.04]}
   - {name: back_wall, position: [1.07, 0, 0.4], dims: [0.04, 2.4, 1.0]}
@@ -1003,11 +1010,12 @@ targets:
     # a section is a list of entries: with its only entry commented out it is
     # nothing at all, and keyed by name it would be read as a list of its keys
     assert refusal("  - {name: rest,", "  # - {name: rest,") == (
-        "%s: 'targets' must be a list, got None" % path
+        "world file %s: 'targets' is null, not a list; write `targets: []` "
+        "for none" % path
     )
     assert refusal("  - {name: rest,", "  rest: {name: rest,") == (
-        "%s: 'targets' must be a list, got "
-        "{'rest': {'name': 'rest', 'position': [0.571, 0, 0.43]}}" % path
+        "world file %s: 'targets' is dict, not a list; write `targets: []` "
+        "for none" % path
     )
 
     # `layers: near.yaml` would otherwise be looked up one letter at a time
@@ -1030,6 +1038,7 @@ def test_a_world_file_key_written_twice_is_refused(tmp_path):
     _layer(tmp_path / "platform.yaml", "platform")
     path = tmp_path / "world.yaml"
     world = (
+        "base_frame: arm_mount\n"
         "layers: [floor.yaml, platform.yaml]\n"
         "obstacles:\n"
         "  - {name: table, position: [0.5, 0, 0], dims: [0.1, 0.1, 0.1]}\n"
@@ -1040,7 +1049,7 @@ def test_a_world_file_key_written_twice_is_refused(tmp_path):
     assert yaml.safe_load(path.read_text())["layers"] == ["floor.yaml"]
     with pytest.raises(ValueError) as exc:
         load_scene(path)
-    assert str(exc.value) == "%s: duplicate key 'layers' on line 4" % path
+    assert str(exc.value) == "%s: duplicate key 'layers' on line 5" % path
     # and a second `obstacles:` would drop the boxes of the first, a second
     # `dims:` an entry's own
     wall = "  - {name: wall, position: [1, 0, 0], dims: [1, 1, 1], dims: [2, 2, 2]}\n"
@@ -1048,7 +1057,7 @@ def test_a_world_file_key_written_twice_is_refused(tmp_path):
         path.write_text(world + extra)
         with pytest.raises(ValueError) as exc:
             load_scene(path)
-        assert str(exc.value) == "%s: duplicate key %r on line 4" % (path, key)
+        assert str(exc.value) == "%s: duplicate key %r on line 5" % (path, key)
     # written once, each loads
     path.write_text(world)
     assert [layer.name for layer in load_scene(path).layers] == ["floor", "platform"]
@@ -1095,11 +1104,12 @@ print(len(load_scene(kitchen).obstacles), load_layer(layer).name)
     assert child.stdout == "11 block\n"
 
 
-def test_planner_configs_load_as_utf8_under_a_c_locale():
+def test_planner_configs_load_as_utf8_under_a_c_locale(urdf_level):
     # what the planner reads before cuRobo: the config, its robot config, its
     # world, and the layers they list. gen3.yaml and the robot config have
     # non-ASCII comments, which the child first proves it cannot read without
-    # an encoding
+    # an encoding. The first argument is the arm's URDF, which the robot
+    # config needs
     code = """\
 import sys
 from pathlib import Path
@@ -1118,23 +1128,23 @@ def premise(path):
     sys.exit("premise broken: this locale reads %s as it is" % path)
 
 
-premise(sys.argv[1])
-for path in sys.argv[1:]:
+premise(sys.argv[2])
+for path in sys.argv[2:]:
     cfg, folder = load_planner_config(path)
     robot = resolve_config(cfg["robot"], relative_to=folder)
     premise(robot)
-    ee_link = load_robot_config(robot)["kinematics"]["ee_link"]
+    ee_link = load_robot_config(robot, urdf_path=sys.argv[1])["kinematics"]["ee_link"]
     scene = load_scene(resolve_config(cfg["world"], relative_to=folder))
     layers = load_layers(cfg["layers"], relative_to=folder, listed_in=path)
     names = [layer.name for layer in layers + scene.layers]
     print(Path(path).name, robot.name, ee_link, len(scene.obstacles), names)
 """
     gen3, mebot = (PACKAGED_CONFIG_DIR / n for n in ("gen3.yaml", "gen3_mebot.yaml"))
-    child = _in_a_c_locale(code, gen3, mebot)
+    child = _in_a_c_locale(code, urdf_level, gen3, mebot)
     assert child.returncode == 0, child.stderr
     assert child.stdout == (
-        "gen3.yaml robot_gen3_2f85.yaml tool_frame 11 []\n"
-        "gen3_mebot.yaml robot_gen3_2f85.yaml tool_frame 0 "
+        "gen3.yaml robot_gen3_2f85.yaml arm_tool_frame 11 []\n"
+        "gen3_mebot.yaml robot_gen3_2f85.yaml arm_tool_frame 0 "
         "['platform', 'person', 'floor']\n"
     )
 
@@ -1166,6 +1176,7 @@ def test_layer_boxes_are_namespaced_padded_and_attributed(tmp_path):
     )
     world = tmp_path / "world.yaml"
     world.write_text(
+        "base_frame: arm_mount\n"
         "obstacles:\n"
         "  - {name: pedestal, position: [0, 0, -0.05], dims: [0.14, 0.14, 0.04]}\n"
         "  - {name: table, position: [0.15, 0, -0.1], rpy_deg: [0, 0, 10], "
@@ -1246,7 +1257,7 @@ def test_duplicate_names_are_refused_not_collapsed(tmp_path):
         return str(exc.value)
 
     # v1.0.0 kept one of two boxes of a name, without a word
-    twice = Scene("base_link", [Obstacle(table), Obstacle(wall), Obstacle(table)], [])
+    twice = Scene("arm_mount", [Obstacle(table), Obstacle(wall), Obstacle(table)], [])
     assert list(world_cuboids(twice)) == ["table", "wall"]
     assert refusal(twice) == TWICE % (
         "table",
@@ -1254,7 +1265,7 @@ def test_duplicate_names_are_refused_not_collapsed(tmp_path):
         "scene obstacles[2]",
     )
     # a scene obstacle that takes a layer box's key
-    posing = Scene("base_link", [Obstacle(table), Obstacle(_box("platform/x"))], [])
+    posing = Scene("arm_mount", [Obstacle(table), Obstacle(_box("platform/x"))], [])
     assert refusal(posing) == TWICE % (
         "platform/x",
         "scene obstacles[1]",
@@ -1266,7 +1277,7 @@ def test_duplicate_names_are_refused_not_collapsed(tmp_path):
         "scene objects[0]",
         "scene objects[2]",
     )
-    shadow = Scene("base_link", [Obstacle(_box("obj_mug"))], [], [SceneObject(mug)])
+    shadow = Scene("arm_mount", [Obstacle(_box("obj_mug"))], [], [SceneObject(mug)])
     assert refusal(shadow) == TWICE % (
         "obj_mug",
         "scene obstacles[0]",
@@ -1293,7 +1304,7 @@ def test_boxes_curobo_would_silently_ignore_are_refused():
 
     def obstacle(**changes):
         return Scene(
-            "base_link",
+            "arm_mount",
             [Obstacle(_box("crate")), Obstacle(_box("table", **changes))],
             [],
         )
@@ -1378,7 +1389,7 @@ def test_boxes_curobo_would_silently_ignore_are_refused():
         ),
         (
             Scene(
-                "base_link",
+                "arm_mount",
                 [Obstacle(_box("crate"))],
                 [],
                 layers=[layer(dims=[0.1, 0.2, -0.3])],
@@ -1419,7 +1430,7 @@ def test_cache_overflow_names_every_source(tmp_path):
 
     def scene(n):
         obstacles = [Obstacle(_box("o%d" % i)) for i in range(n)]
-        return Scene("base_link", obstacles, [], layers=[floor])
+        return Scene("arm_mount", obstacles, [], layers=[floor])
 
     # a world of exactly the cache's size keeps every box
     cuboids, _ = compose_cuboids(scene(37), layers=config)
@@ -1464,7 +1475,7 @@ def test_empty_scene_is_refused_even_with_config_layers(tmp_path):
             compose_cuboids(scene, ignore=ignore, layers=layers)
         return str(exc.value)
 
-    nothing = Scene("base_link", [], [])
+    nothing = Scene("arm_mount", [], [])
     # without config layers, v1.0.0's words: test_smoke matches 'empty'
     assert refusal(nothing, layers=()) == V100_EMPTY
     # the config's layers are not the scene's content: a push cut short must
@@ -1477,7 +1488,7 @@ def test_empty_scene_is_refused_even_with_config_layers(tmp_path):
     block = load_scene(_scene(tmp_path / "block_only.yaml", "block.yaml"))
     assert refusal(block, ignore={"block"}) == CHAIR_ONLY
     # a layer counts by its boxes, and one built in code may have none
-    hollow = Scene("base_link", [], [], layers=[Layer("hollow", True, [], None)])
+    hollow = Scene("arm_mount", [], [], layers=[Layer("hollow", True, [], None)])
     assert refusal(hollow, layers=()) == V100_EMPTY
     assert refusal(hollow) == CHAIR_ONLY
     # and no path is no file: config layers without one are not the scene's
@@ -1488,7 +1499,7 @@ def test_empty_scene_is_refused_even_with_config_layers(tmp_path):
     # start-up scene lists only the floor
     start = load_scene(_scene(tmp_path / "start.yaml", "floor.yaml"))
     solid = Layer("solid", True, [Obstacle(_box("box"))], None)
-    for scene in (start, block, Scene("base_link", [], [], layers=[solid])):
+    for scene in (start, block, Scene("arm_mount", [], [], layers=[solid])):
         for layers in ((), config):
             _, sources = compose_cuboids(scene, layers=layers)
             assert list(sources.values()) == [
@@ -1523,7 +1534,7 @@ def test_guards_run_without_curobo(tmp_path, monkeypatch):
     with pytest.raises(ImportError):
         make_world_config(scene_from_obstacles([crate]), layers=config)
     for scene, ignore, refusal in (
-        (Scene("base_link", [], []), (), "empty"),
+        (Scene("arm_mount", [], []), (), "empty"),
         (
             scene_from_obstacles([_box("b%d" % i) for i in range(59)]),
             (),
@@ -1560,6 +1571,7 @@ def test_ignore_drops_only_an_excludable_layer(tmp_path):
     world = tmp_path / "world.yaml"
     # props named after pieces of 'person': ignore='person' must reach neither
     world.write_text(
+        "base_frame: arm_mount\n"
         "obstacles:\n"
         "  - {name: table, position: [0.5, 0, -0.1], dims: [1, 1, 0.06]}\n"
         "objects:\n"
@@ -1603,7 +1615,7 @@ def test_ignore_drops_only_an_excludable_layer(tmp_path):
     # nor is anything, when a prop has the layer's name: which one is meant?
     for name in ("person", "platform", "block"):
         props = scene.objects + [SceneObject(_box(name))]
-        clash = Scene("base_link", scene.obstacles, [], props, layers=scene.layers)
+        clash = Scene("arm_mount", scene.obstacles, [], props, layers=scene.layers)
         with pytest.raises(ValueError) as exc:
             compose_cuboids(clash, ignore={name}, layers=config)
         assert str(exc.value) == (
@@ -1720,7 +1732,7 @@ def test_sphere_box_penetration_matches_brute_force():
     # point 0.15 m from its centre along its normal: inside the slab's
     # axis-aligned bounding box, and 0.14 m from the slab
     slab = _box("slab", position=[0, 0, 0], rpy_deg=[0, 0, 45], dims=[0.4, 0.02, 0.4])
-    cuboids, _ = compose_cuboids(Scene("base_link", [Obstacle(slab)], []), padding=0)
+    cuboids, _ = compose_cuboids(Scene("arm_mount", [Obstacle(slab)], []), padding=0)
     c = s = math.sqrt(0.5)
     normal = np.array([-s, c, 0.0])
     reach = 0.2 * c + 0.01 * s  # the half width of the bounding box in x and y
@@ -1826,7 +1838,7 @@ def test_make_world_config_hands_curobo_exactly_the_composed_boxes(monkeypatch):
     # every argument reaches the composition, in v1.0.0's positional order:
     # the pedestal unpadded, the can left out, the layer in, the cache as given
     props = [SceneObject(_box("mug")), SceneObject(_box("can"))]
-    pedestal = Scene("base_link", [Obstacle(_box("pedestal"))], [], props)
+    pedestal = Scene("arm_mount", [Obstacle(_box("pedestal"))], [], props)
     block = Layer("block", True, [Obstacle(_box("box"))], Path("/nowhere/block.yaml"))
     args = (pedestal, 0.03, {"can"}, {"pedestal"}, 3)
     make_world_config(*args, layers=[block])
@@ -1924,9 +1936,9 @@ def test_chair_startup_world_is_empty_to_a_v100_loader():
     assert [layer.name for layer in load_scene(path).layers] == ["floor"]
 
 
-def test_config_layers_reach_every_world_input(tmp_path, monkeypatch):
+def test_config_layers_reach_every_world_input(urdf_level, tmp_path, monkeypatch):
     inits, sent, loaded = _no_gpu(monkeypatch)
-    planner = CuRoboPlanner.from_config("gen3_mebot.yaml")
+    planner = CuRoboPlanner.from_config("gen3_mebot.yaml", urdf_path=urdf_level)
     # the config's layers are loaded once, at start-up, before any GPU work
     assert inits == [True]
     assert [(lay.name, lay.excludable, lay.path) for lay in planner._layers] == [
@@ -1988,7 +2000,7 @@ def test_config_layers_reach_every_world_input(tmp_path, monkeypatch):
     # cache beside the chair, and nothing is cut to fit. A refused push reaches
     # neither cuRobo nor what the planner says it holds
     before = held()
-    for world in ([], Scene("base_link", [], [])):
+    for world in ([], Scene("arm_mount", [], [])):
         with pytest.raises(ValueError) as exc:
             planner.update_world(world)
         assert str(exc.value) == CHAIR_ONLY
@@ -2013,7 +2025,9 @@ def test_config_layers_reach_every_world_input(tmp_path, monkeypatch):
     (mounted / "gen3_mebot.yaml").write_text(text, encoding="utf-8")
     _layer(cwd / "layer_mebot_person.yaml", "person", boxes=("stray",), excludable=True)
     monkeypatch.chdir(cwd)
-    deployed = CuRoboPlanner.from_config(mounted / "gen3_mebot.yaml")
+    deployed = CuRoboPlanner.from_config(
+        mounted / "gen3_mebot.yaml", urdf_path=urdf_level
+    )
     assert [lay.path for lay in deployed._layers] == [
         lay.path for lay in planner._layers
     ]
@@ -2030,7 +2044,7 @@ def test_config_layers_reach_every_world_input(tmp_path, monkeypatch):
         text + "planner: {collision_cache_obb: 24}\n", encoding="utf-8"
     )
     with pytest.raises(ValueError) as exc:
-        CuRoboPlanner.from_config(mounted / "small.yaml")
+        CuRoboPlanner.from_config(mounted / "small.yaml", urdf_path=urdf_level)
     assert str(exc.value) == (
         "25 collision boxes > collision_cache_obb=24 (platform 16, person 8, "
         "floor 1); raise the cache setting in the planner config or shrink a layer"
@@ -2038,7 +2052,7 @@ def test_config_layers_reach_every_world_input(tmp_path, monkeypatch):
     assert inits == [True, True]
 
 
-def test_a_planner_is_built_from_a_v100_config_dict(monkeypatch):
+def test_a_planner_is_built_from_a_v100_config_dict(urdf_level, monkeypatch):
     # CuRoboPlanner takes the config as a dict, and v1.0.0's took any dict
     # that held the keys it read: its gen3.yaml, gen3.yaml without the
     # `layers:` line this branch added, read with plain PyYAML. That dict
@@ -2048,7 +2062,9 @@ def test_a_planner_is_built_from_a_v100_config_dict(monkeypatch):
         (PACKAGED_CONFIG_DIR / "gen3.yaml").read_text(encoding="utf-8")
     )
     del config["layers"]
-    planner = CuRoboPlanner(config, config_dir=PACKAGED_CONFIG_DIR)
+    planner = CuRoboPlanner(
+        config, config_dir=PACKAGED_CONFIG_DIR, urdf_path=urdf_level
+    )
     assert planner._layers == []
     assert stand_in.events == [
         ("built", [box["name"] for box in planner.world_boxes]),
@@ -2060,13 +2076,13 @@ def test_a_planner_is_built_from_a_v100_config_dict(monkeypatch):
 
 
 def test_the_chair_warms_up_in_its_scene_and_then_loads_its_layers(
-    tmp_path, monkeypatch, caplog
+    urdf_level, tmp_path, monkeypatch, caplog
 ):
     caplog.set_level(logging.INFO, logger="rammp_curobo")
     stand_in = _curobo_stand_in(monkeypatch)
     # as on the chair, cuRobo finds the retract infeasible
     stand_in.feasible = False
-    planner = CuRoboPlanner.from_config("gen3_mebot.yaml")
+    planner = CuRoboPlanner.from_config("gen3_mebot.yaml", urdf_path=urdf_level)
     whole = [box["name"] for box in planner.world_boxes]
     assert Counter(box["layer"] for box in planner.world_boxes) == {
         "platform": 16,
@@ -2089,7 +2105,7 @@ def test_the_chair_warms_up_in_its_scene_and_then_loads_its_layers(
         "warm-up",
     ) in messages
     # the spheres no joint moves are the ones the generator keeps every layer
-    # clear of, and not the one joint_1 swings into the lap
+    # clear of, and not the one arm_joint_1 swings into the lap
     assert planner._fixed_spheres.tolist() == stand_in.fixed.tolist()
     # the retract is cuRobo's IK seed, and the start-up log says why it is no
     # valid start here: the 5 cm sphere at the lap's centre is in it by its
@@ -2109,7 +2125,7 @@ def test_the_chair_warms_up_in_its_scene_and_then_loads_its_layers(
         text + "planner: {warmup: false}\n", encoding="utf-8"
     )
     stand_in.events.clear()
-    cold = CuRoboPlanner.from_config(tmp_path / "cold.yaml")
+    cold = CuRoboPlanner.from_config(tmp_path / "cold.yaml", urdf_path=urdf_level)
     assert stand_in.events == [("built", whole)]
     assert cold._warm_boxes == 25
 
@@ -2121,7 +2137,7 @@ def test_the_chair_warms_up_in_its_scene_and_then_loads_its_layers(
     )
     stand_in.events.clear()
     with pytest.raises(ValueError) as exc:
-        CuRoboPlanner.from_config(tmp_path / "wide.yaml")
+        CuRoboPlanner.from_config(tmp_path / "wide.yaml", urdf_path=urdf_level)
     assert str(exc.value) == (
         "layer box person/torso_head_3 intrudes 4.9 mm into the arm's fixed "
         "base/shoulder spheres (world_padding 0.030 m): every start state would "
@@ -2132,15 +2148,16 @@ def test_the_chair_warms_up_in_its_scene_and_then_loads_its_layers(
 
 
 def test_a_layer_box_in_the_arms_fixed_spheres_is_refused_and_the_world_kept(
-    tmp_path, monkeypatch
+    urdf_level, tmp_path, monkeypatch
 ):
     stand_in = _curobo_stand_in(monkeypatch)
-    planner = CuRoboPlanner.from_config("gen3_mebot.yaml")
+    planner = CuRoboPlanner.from_config("gen3_mebot.yaml", urdf_path=urdf_level)
     (tmp_path / "block.yaml").write_text(
         "layer: block\nobstacles:\n"
         "  - {name: over_base, position: [0, 0, 0.2], dims: [0.05, 0.05, 0.05]}\n"
     )
     (tmp_path / "scene.yaml").write_text(
+        "base_frame: arm_mount\n"
         "obstacles:\n"
         "  - {name: crate, position: [1.5, 1.5, 0.5], dims: [0.2, 0.2, 0.2]}\n"
         "layers: [block.yaml]\n"
@@ -2168,7 +2185,9 @@ def test_a_layer_box_in_the_arms_fixed_spheres_is_refused_and_the_world_kept(
         (tmp_path / "padded.yaml").write_text(
             text + "planner: {world_padding: %g}\n" % padding, encoding="utf-8"
         )
-        padded = CuRoboPlanner.from_config(tmp_path / "padded.yaml")
+        padded = CuRoboPlanner.from_config(
+            tmp_path / "padded.yaml", urdf_path=urdf_level
+        )
         with pytest.raises(ValueError) as exc:
             padded.update_world(tmp_path / "scene.yaml")
         assert str(exc.value).endswith(
@@ -2196,10 +2215,10 @@ def test_a_layer_box_in_the_arms_fixed_spheres_is_refused_and_the_world_kept(
 
 
 def test_attribution_explains_an_answer_and_never_changes_or_hides_it(
-    tmp_path, monkeypatch
+    urdf_level, tmp_path, monkeypatch
 ):
     stand_in = _curobo_stand_in(monkeypatch)
-    planner = CuRoboPlanner.from_config("gen3_mebot.yaml")
+    planner = CuRoboPlanner.from_config("gen3_mebot.yaml", urdf_path=urdf_level)
     # a prop and a layer box, far from the chair, so that every depth below
     # is plain arithmetic: padded, each box reaches 0.12 m from its centre
     (tmp_path / "block.yaml").write_text(
@@ -2207,6 +2226,8 @@ def test_attribution_explains_an_answer_and_never_changes_or_hides_it(
         "  - {name: wall, position: [1, 0.27, 0.5], dims: [0.2, 0.2, 0.2]}\n"
     )
     (tmp_path / "scene.yaml").write_text(
+        "base_frame: arm_mount\n"
+        "obstacles: []\n"
         "objects:\n"
         "  - {name: crate, position: [1, 0, 0.5], dims: [0.2, 0.2, 0.2]}\n"
         "layers: [block.yaml]\n"
@@ -2298,7 +2319,7 @@ def test_attribution_explains_an_answer_and_never_changes_or_hides_it(
 
 
 def test_a_pose_goal_is_attributed_at_the_tool_point_curobo_is_given(
-    tmp_path, monkeypatch
+    urdf_level, tmp_path, monkeypatch
 ):
     _curobo_stand_in(monkeypatch)
     # cuRobo's tool frame stops 10 cm short of the fingertip a pose goal
@@ -2307,7 +2328,7 @@ def test_a_pose_goal_is_attributed_at_the_tool_point_curobo_is_given(
     (tmp_path / "tipped.yaml").write_text(
         text + "tool: {tip_offset_m: 0.1}\n", encoding="utf-8"
     )
-    planner = CuRoboPlanner.from_config(tmp_path / "tipped.yaml")
+    planner = CuRoboPlanner.from_config(tmp_path / "tipped.yaml", urdf_path=urdf_level)
     planner.update_world([_box("crate", position=[1, 0, 0.5], dims=[0.2, 0.2, 0.2])])
     ik = "MotionGenStatus.IK_FAIL"
     planner._motion_gen.plan_single = lambda *_: _failed(ik)
@@ -2323,9 +2344,11 @@ def test_a_pose_goal_is_attributed_at_the_tool_point_curobo_is_given(
     )
 
 
-def test_auto_logs_the_joint_space_failure_it_falls_back_from(monkeypatch, caplog):
+def test_auto_logs_the_joint_space_failure_it_falls_back_from(
+    urdf_level, monkeypatch, caplog
+):
     stand_in = _curobo_stand_in(monkeypatch)
-    planner = CuRoboPlanner.from_config("gen3_mebot.yaml")
+    planner = CuRoboPlanner.from_config("gen3_mebot.yaml", urdf_path=urdf_level)
     planner.update_world([_box("crate", position=[1, 0, 0.5], dims=[0.2, 0.2, 0.2])])
     world = (
         " [world: 25 boxes: scene 1 | config layers: platform 16, person 8 "
@@ -2376,7 +2399,9 @@ def test_auto_logs_the_joint_space_failure_it_falls_back_from(monkeypatch, caplo
     )
 
 
-def test_a_subclass_overriding_the_v100_finish_plans_and_is_explained(monkeypatch):
+def test_a_subclass_overriding_the_v100_finish_plans_and_is_explained(
+    urdf_level, monkeypatch
+):
     stand_in = _curobo_stand_in(monkeypatch)
     calls = []
 
@@ -2388,7 +2413,7 @@ def test_a_subclass_overriding_the_v100_finish_plans_and_is_explained(monkeypatc
             calls.append((q_goal, res))
             return res
 
-    planner = Stationary.from_config("gen3_mebot.yaml")
+    planner = Stationary.from_config("gen3_mebot.yaml", urdf_path=urdf_level)
     planner.update_world([_box("crate", position=[1, 0, 0.5], dims=[0.2, 0.2, 0.2])])
     start, goal = [0.0] * 7, [0.1] * 7
     # the joint goal's tool point is the crate's centre
@@ -2452,7 +2477,7 @@ def test_a_subclass_overriding_the_v100_finish_plans_and_is_explained(monkeypatc
         assert (res.success, res.status, res.error) == (
             False,
             "LIBRARY_VALIDATION_FAILED",
-            "plan rejected by post-validation: discontinuity: joint_1 jumps 0.100 "
+            "plan rejected by post-validation: discontinuity: arm_joint_1 jumps 0.100 "
             "rad between points 0->1 (allowed 0.060 at dt=0.020s) — refusing; this "
             "is the padded-tail failure mode",
         ), name
@@ -2545,6 +2570,7 @@ def _pose_cost_stand_in(monkeypatch):
 
 
 def test_held_and_via_plans_on_the_chair_plan_in_its_layers_and_are_explained(
+    urdf_level,
     monkeypatch,
 ):
     # #16's orientation hold and #17's via point take plan_to_pose's own
@@ -2554,7 +2580,7 @@ def test_held_and_via_plans_on_the_chair_plan_in_its_layers_and_are_explained(
 
     stand_in = _curobo_stand_in(monkeypatch)
     _pose_cost_stand_in(monkeypatch)
-    planner = CuRoboPlanner.from_config("gen3_mebot.yaml")
+    planner = CuRoboPlanner.from_config("gen3_mebot.yaml", urdf_path=urdf_level)
     # the world cuRobo holds is the whole chair, scene and both layers
     assert stand_in.events[-1] == (
         "loaded",
@@ -2591,7 +2617,7 @@ def test_held_and_via_plans_on_the_chair_plan_in_its_layers_and_are_explained(
             position, [0, 0, 0, 1], [0.0] * 7, apply_tool_correction=False, **kw
         )
 
-    # the start, joint_1 at 0, puts the stand-in's 5 cm sphere at the centre
+    # the start, arm_joint_1 at 0, puts the stand-in's 5 cm sphere at the centre
     # of the person's lap: cuRobo refuses it, and either plan's error names
     # the person box the start reaches into
     refused = "MotionGenStatus.INVALID_START_STATE_WORLD_COLLISION"

@@ -14,15 +14,19 @@ def trajectory_to_msg(traj):
 
     Point k is stamped at (k + 1) * dt, the library's convention: point 0
     is one step in the future so the executing controller ramps from the
-    current (matching) state instead of jumping.
+    current (matching) state instead of jumping. The header carries the
+    planning frame (arm_mount); the consumer refuses a pose plan without it.
     """
     msg = JointTrajectory()
+    msg.header.frame_id = traj.frame_id
     msg.joint_names = list(traj.joint_names)
     for k in range(traj.n_points):
         p = JointTrajectoryPoint()
         p.positions = [float(v) for v in traj.positions[k]]
         if traj.velocities is not None:
             p.velocities = [float(v) for v in traj.velocities[k]]
+        if traj.accelerations is not None:
+            p.accelerations = [float(v) for v in traj.accelerations[k]]
         p.time_from_start = duration_msg((k + 1) * traj.dt)
         msg.points.append(p)
     return msg

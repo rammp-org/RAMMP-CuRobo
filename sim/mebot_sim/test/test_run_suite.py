@@ -132,9 +132,9 @@ def test_only_a_planner_that_judged_a_request_and_found_no_plan_refuses_it(gates
     # find_pairs found the start and the goal inside the limits: a planner
     # that refuses either was not asked what was found
     for message in (
-        "START_OUTSIDE_LIMITS: start: joint_2 is 0.120 rad outside the model "
+        "START_OUTSIDE_LIMITS: start: arm_joint_2 is 0.120 rad outside the model "
         "position limits [-2.250, 2.250] (max clamp 0.050)",
-        "GOAL_OUTSIDE_LIMITS: goal: joint_4 is 0.120 rad outside the model "
+        "GOAL_OUTSIDE_LIMITS: goal: arm_joint_4 is 0.120 rad outside the model "
         "position limits [-2.580, 2.580] (max clamp 0.050)",
     ):
         case = run_suite.with_layers("S2a on", "here", refused(message), LIMIT, gates)

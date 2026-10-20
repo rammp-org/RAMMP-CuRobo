@@ -12,7 +12,8 @@ field-verified in RAMMP-Kinova):
   * Cylinder/Sphere entries in a WorldConfig are SILENTLY DROPPED by the
     collision checkers — every body goes in as a cuboid bounding box.
   * update_world() with ZERO cuboids silently keeps the previous world
-    (early return before the disable line) — an empty world is refused here.
+    (early return before the disable line) — an empty world is refused here,
+    except at construction (`allow_empty`), where there is no old world.
   * More cuboids than the collision cache raises from inside cuRobo —
     refused here with a message that names the fix.
   * Boxes are keyed by name, so two boxes of one name COLLAPSE into one —
@@ -78,6 +79,7 @@ def compose_cuboids(
     cache_obb=60,
     *,
     layers=(),
+    allow_empty=False,
 ):
     """The collision world of `scene` and the config `layers`, guarded.
 
@@ -101,6 +103,10 @@ def compose_cuboids(
     not 3 finite numbers, or dims that are not 3 finite numbers above 0;
     two boxes of one key; a scene with no content of its own; more boxes
     than `cache_obb`.
+
+    `allow_empty` is for building a planner only, where there is no old
+    world for cuRobo to keep: the scene then need not bring content of its
+    own, and may compose to no boxes at all. Never pass it on update.
     """
     padding = float(padding)
     # each box is checked before it is padded, so the padding is checked
@@ -199,7 +205,7 @@ def compose_cuboids(
             and (layer not in layers or layer.path in listed)
         )
     )
-    if not own:
+    if not own and not allow_empty:
         configured = [layer.name for layer in chosen if layer in layers]
         if configured:
             raise ValueError(
@@ -219,13 +225,14 @@ def compose_cuboids(
     return cuboids, sources
 
 
-def to_world_config(cuboids):
+def to_world_config(cuboids, allow_empty=False):
     """cuRobo's WorldConfig of composed `cuboids`, checked to hold those
     boxes and nothing else (see the module docstring). The only function
     in this module that imports cuRobo, and it refuses an empty world
     before it does: one built anywhere but compose_cuboids would otherwise
-    reach update_world, which keeps the world loaded before."""
-    if not cuboids:
+    reach update_world, which keeps the world loaded before. `allow_empty`
+    is compose_cuboids', for building a planner only."""
+    if not cuboids and not allow_empty:
         raise ValueError(_EMPTY)
     from curobo.geom.types import WorldConfig
 
@@ -248,13 +255,20 @@ def make_world_config(
     cache_obb=60,
     *,
     layers=(),
+    allow_empty=False,
 ):
     """A guarded cuRobo WorldConfig for this scene and the config `layers`:
     compose_cuboids, then to_world_config."""
     cuboids, _ = compose_cuboids(
-        scene, padding, ignore, no_pad_names, cache_obb, layers=layers
+        scene,
+        padding,
+        ignore,
+        no_pad_names,
+        cache_obb,
+        layers=layers,
+        allow_empty=allow_empty,
     )
-    return to_world_config(cuboids)
+    return to_world_config(cuboids, allow_empty=allow_empty)
 
 
 def sphere_box_penetration(spheres, cuboids):

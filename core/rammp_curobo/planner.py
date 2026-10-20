@@ -2,7 +2,7 @@
 
     from rammp_curobo import CuRoboPlanner
 
-    planner = CuRoboPlanner.from_config('gen3.yaml')
+    planner = CuRoboPlanner.from_config('gen3.yaml', urdf_path='robot_description.urdf')
     res = planner.plan_to_pose([0.45, 0.0, 0.35], [1, 0, 0, 0], q_now, quat_order='wxyz')
     res = planner.plan_to_joints(q_goal, q_now)
     planner.update_world([{'name': 'box', 'position': [0.5, 0, 0], 'dims': [0.1, 0.1, 0.1]}])
@@ -35,9 +35,11 @@ from rammp_curobo import geometry
 from rammp_curobo.config import PLANNER_DEFAULTS, load_planner_config, resolve_config
 from rammp_curobo import constraints
 from rammp_curobo.constraints import PoseConstraint, ViaPoint
+from rammp_curobo.resample import resample_quintic
 from rammp_curobo.robot_config import load_robot_config
 from rammp_curobo.scene import Scene, load_layers, load_scene, scene_from_obstacles
 from rammp_curobo.types import PlanResult, Trajectory
+from rammp_curobo.urdf_model import ROOT_LINK
 from rammp_curobo.validate import validate_trajectory
 from rammp_curobo.world import (
     compose_cuboids,
@@ -63,7 +65,7 @@ class CuRoboPlanner:
     the Orin the first time) — build once, keep it alive.
     """
 
-    def __init__(self, config, config_dir=None):
+    def __init__(self, config, config_dir=None, *, urdf_path=None):
         self._cfg = config
         self._config_dir = config_dir
         p = config["planner"]
@@ -86,19 +88,41 @@ class CuRoboPlanner:
         self.no_pad_names = frozenset(p["no_pad_names"] or [])
         self.joint_space_method = str(p["joint_space_method"])
         self.limit_clamp_rad = float(p["limit_clamp_rad"])
+        self.joint_limit_margin_rad = float(p["joint_limit_margin_rad"])
+        if not self.joint_limit_margin_rad >= 0.0:
+            raise ValueError(
+                "joint_limit_margin_rad must be >= 0, got %r"
+                % p["joint_limit_margin_rad"]
+            )
         self.tool_spin_deg = float(config["tool"]["spin_deg"])
         self.tool_tip_offset = float(config["tool"]["tip_offset_m"])
-        self.execution = dict(config["execution"])
 
         robot_path = resolve_config(config["robot"], relative_to=config_dir)
         world_path = resolve_config(config["world"], relative_to=config_dir)
-        self._robot_cfg = load_robot_config(robot_path)
+        # The arm's model: the URDF from /arm/robot_description, as a file.
+        self._robot_cfg = load_robot_config(robot_path, urdf_path=urdf_path)
+        # The frame every Cartesian input and trajectory is in. cuRobo calls the
+        # root of the chain it plans in "base_link"; for us that is arm_mount,
+        # the gravity-aligned root, NOT the arm's own arm_base_link. A robot
+        # YAML naming another root would plan (and stamp) in that frame, which
+        # kinova-gen3-ros2 refuses only at execution: refuse it here instead.
+        self.base_frame = str(self._robot_cfg["kinematics"]["base_link"])
+        if self.base_frame != ROOT_LINK:
+            raise ValueError(
+                "robot config %s: kinematics.base_link is %r, expected %r (the "
+                "URDF's root)" % (robot_path, self.base_frame, ROOT_LINK)
+            )
+        # The link plan_to_pose goals and fk() poses are for (arm_tool_frame).
+        self.ee_link = str(self._robot_cfg["kinematics"]["ee_link"])
         # The IK seed / null-space reference, in controller order. A planner
         # fact (it fixes the elbow family), NOT a statement about where the
         # arm belongs — this planner has no such opinion (issue #6).
         cspace = self._robot_cfg["kinematics"]["cspace"]
         by_name = dict(zip(cspace["joint_names"], cspace["retract_config"]))
         self.retract_pose = [float(by_name[n]) for n in self.joint_names]
+        # cuRobo plans (IK, trajopt, the constraint re-check) inside limits
+        # narrowed by the margin, so no plan reaches a URDF limit.
+        cspace["position_limit_clip"] = self.joint_limit_margin_rad
         # Composed into every world, set_world pushes included, as loaded
         # here: a file edited later changes nothing until a restart. A config
         # dict built for v1.0.0, which had no such key, lists none.
@@ -115,18 +139,19 @@ class CuRoboPlanner:
                 "excludable" if layer.excludable else "not excludable",
                 layer.path,
             )
-        self._scene = load_scene(world_path)
+        self._scene = load_scene(world_path, frame=self.base_frame)
         # Pure Python, so a bad layer, an overflow or a duplicate box fails
         # here, before any GPU work.
-        self._compose(self._scene)
+        self._compose(self._scene, allow_empty=True)
         self._init_curobo(warmup=bool(p["warmup"]))
 
     @classmethod
-    def from_config(cls, name_or_path):
+    def from_config(cls, name_or_path, *, urdf_path=None):
         """Build from a planner YAML (packaged name like 'gen3.yaml' or a
-        filesystem path). See configs/gen3.yaml for the schema."""
+        filesystem path). See configs/gen3.yaml for the schema. urdf_path is
+        the arm's model as a file (urdf_model.write_urdf)."""
         cfg, cfg_dir = load_planner_config(name_or_path)
-        return cls(cfg, config_dir=cfg_dir)
+        return cls(cfg, config_dir=cfg_dir, urdf_path=urdf_path)
 
     # ------------------------------------------------------------ cuRobo setup
     def _init_curobo(self, warmup=True):
@@ -149,7 +174,7 @@ class CuRoboPlanner:
 
         self._torch = torch
         self._tensor_args = TensorDeviceType()
-        cuboids, sources = self._compose(self._scene)
+        cuboids, sources = self._compose(self._scene, allow_empty=True)
         # cuRobo warms up by planning from the retract, and a start in
         # collision returns INVALID_START before any solver runs: where the
         # config's layers collide with the retract (on the chair it is 154 mm
@@ -160,11 +185,15 @@ class CuRoboPlanner:
         # update_world writes into it in place, and the kernels read the box
         # count from the device.
         warm_first = bool(self._layers) and warmup
-        warm = self._compose(self._scene, layers=())[0] if warm_first else cuboids
+        warm = (
+            self._compose(self._scene, layers=(), allow_empty=True)[0]
+            if warm_first
+            else cuboids
+        )
         log.info("Loading cuRobo MotionGen (%s)...", self._cfg["robot"])
         cfg = MotionGenConfig.load_from_robot_config(
             self._robot_cfg,
-            to_world_config(warm),
+            to_world_config(warm, allow_empty=True),
             tensor_args=self._tensor_args,
             interpolation_dt=self.interpolation_dt,
             collision_checker_type=CollisionCheckerType.MESH,
@@ -211,9 +240,10 @@ class CuRoboPlanner:
                 detail,
             )
 
-    def _compose(self, scene, ignore=frozenset(), layers=None):
+    def _compose(self, scene, ignore=frozenset(), layers=None, allow_empty=False):
         """compose_cuboids with this planner's padding, exemptions and cache,
-        and its config layers unless `layers` says otherwise."""
+        and its config layers unless `layers` says otherwise. `allow_empty`
+        is for construction only (world_empty.yaml): never on a push."""
         return compose_cuboids(
             scene,
             padding=self.world_padding,
@@ -221,13 +251,14 @@ class CuRoboPlanner:
             no_pad_names=self.no_pad_names,
             cache_obb=self.collision_cache_obb,
             layers=self._layers if layers is None else layers,
+            allow_empty=allow_empty,
         )
 
     def _joint_independent_spheres(self):
         """The arm's collision spheres that no joint moves, (n, 4): x, y, z
         and the radius cuRobo checks. They are the ones FK puts in the same
         place at the retract and at two seeded configurations within the
-        limits: base_link's, and shoulder_link's on the joint_1 axis."""
+        limits: arm_base_link's, and arm_shoulder_link's on the arm_joint_1 axis."""
         lim = self.joint_limits()["position"]
         rng = np.random.default_rng(0)
         states = [self.retract_pose] + [rng.uniform(lim[0], lim[1]) for _ in range(2)]
@@ -280,8 +311,8 @@ class CuRoboPlanner:
     ):
         """Plan a collision-free trajectory to an end-effector pose.
 
-        position: [x, y, z] metres in the robot base frame.
-        quaternion: orientation of cuRobo's ee_link (tool_frame — for the
+        position: [x, y, z] metres in arm_mount (base_frame).
+        quaternion: orientation of cuRobo's ee_link (arm_tool_frame — for the
             Gen3 config that is 0.120 m beyond the wrist flange, roughly the
             fingertip midpoint). quat_order says how it is packed: 'xyzw'
             (ROS, the default) or 'wxyz' (cuRobo).
@@ -330,7 +361,7 @@ class CuRoboPlanner:
 
         start, err = self._clamp_to_limits(start, "start")
         if err is not None:
-            return PlanResult.failure("START_OUTSIDE_LIMITS", err)
+            return PlanResult.failure(*err)
 
         # Refuse a self-contradictory request BEFORE planning. cuRobo does
         # not check a base-frame hold's start itself, so without this a
@@ -366,6 +397,41 @@ class CuRoboPlanner:
         out = self._with_failure_note(
             self._finish(result, t0), result, start, goal_point=xyz
         )
+        # IK can land a continuous joint on a 2*pi branch away from the
+        # start, and the plan then goes the long way round -- a full
+        # revolution for a goal at the start's own angle (#14). cuRobo
+        # already seeds IK with the start, but +/-pi cost the same and
+        # plan_single takes no seed of its own. So: if the plan ENDS off the
+        # start's branch, replan in joint space to the end moved onto it.
+        # A plan that ends on the branch can only have detoured, not wound.
+        # 'js' only: 'auto' could fall back into this path. A success without
+        # final_joints (a subclass's _finish may return one) has no branch.
+        if out.success and out.final_joints is not None:
+            final = [float(v) for v in out.final_joints]
+            if self._nearest_branch(final, start) != final:
+                held = (constraint is not None and constraint.is_active()) or (
+                    via is not None and via.is_active()
+                )
+                if held:
+                    # a joint-space replan would drop the hold or via
+                    log.warning(
+                        "plan ends on a 2*pi branch away from the start "
+                        "(it goes the long way round); not replanned "
+                        "under a hold or via"
+                    )
+                else:
+                    res = self.plan_to_joints(final, start, method="js")
+                    if res.success:
+                        res.goal_mismatch_rad = None
+                        res.timing = time.monotonic() - t0
+                        return res
+                    out.error = (
+                        "plan ends on a 2*pi branch away from the start (it "
+                        "goes the long way round) and the replan onto the "
+                        "start's branch failed (%s); returning it as planned"
+                        % res.status
+                    )
+                    log.warning("%s", out.error)
         # A hold is a COST, so a returned plan is a proposal, not a promise.
         # Measure it and refuse rather than hand over a trajectory that quietly
         # tipped the thing we were asked to keep upright.
@@ -481,10 +547,10 @@ class CuRoboPlanner:
         q_goal = self._nearest_branch(q_goal, [float(v) for v in start])
         q_goal, err = self._clamp_to_limits(q_goal, "goal")
         if err is not None:
-            return PlanResult.failure("GOAL_OUTSIDE_LIMITS", err)
+            return PlanResult.failure(*err)
         start, err = self._clamp_to_limits(start, "start")
         if err is not None:
-            return PlanResult.failure("START_OUTSIDE_LIMITS", err)
+            return PlanResult.failure(*err)
         method = method or self.joint_space_method
 
         if method == "auto":
@@ -546,10 +612,18 @@ class CuRoboPlanner:
         """
         if isinstance(world, Scene):
             scene = world
+            if scene.base_frame != self.base_frame:
+                raise ValueError(
+                    "scene base_frame is %r, expected %r (the planning frame)"
+                    % (scene.base_frame, self.base_frame)
+                )
         elif isinstance(world, (list, tuple)):
-            scene = scene_from_obstacles(world)
+            scene = scene_from_obstacles(world, base_frame=self.base_frame)
         else:
-            scene = load_scene(resolve_config(world, relative_to=self._config_dir))
+            scene = load_scene(
+                resolve_config(world, relative_to=self._config_dir),
+                frame=self.base_frame,
+            )
         cuboids, sources = self._compose(scene, ignore=ignore)
         self._check_fixed_spheres(cuboids, sources)
         self._motion_gen.update_world(to_world_config(cuboids))
@@ -756,14 +830,19 @@ class CuRoboPlanner:
         return 2.0 * math.acos(min(1.0, abs(ew))), "orientation"
 
     def joint_limits(self):
-        """{'position': (2, dof) [lower; upper], 'velocity': (dof,)} in
-        CONTROLLER joint order (numpy, radians)."""
+        """{'position': (2, dof) [lower; upper], 'velocity': (dof,),
+        'acceleration': (dof,)} in CONTROLLER joint order (numpy, radians).
+        Positions are the URDF's: cuRobo's own are narrowed by
+        joint_limit_margin_rad, which is widened back here."""
         lim = self._motion_gen.kinematics.get_joint_limits()
         order = [self._curobo_joint_names.index(n) for n in self.joint_names]
         pos = lim.position.detach().cpu().numpy()[:, order].astype(float)
+        pos += np.array([[-1.0], [1.0]]) * self.joint_limit_margin_rad
         vel = lim.velocity.detach().cpu().numpy().astype(float)
         vmax = (np.abs(vel).max(axis=0) if vel.ndim == 2 else np.abs(vel))[order]
-        return {"position": pos, "velocity": vmax}
+        acc = np.abs(lim.acceleration.detach().cpu().numpy().astype(float))
+        amax = (acc.max(axis=0) if acc.ndim == 2 else acc)[order]
+        return {"position": pos, "velocity": vmax, "acceleration": amax}
 
     def check_state_valid(self, q):
         """(feasible, detail) for one controller-order joint vector against
@@ -867,15 +946,18 @@ class CuRoboPlanner:
         """Clamp a controller-order joint vector into the model's position
         limits, or explain why that's not okay.
 
-        Real arms park slightly OUTSIDE conservative model limits — the
-        Gen3's factory park pose puts joint_4 ~0.8 deg past cuRobo's URDF
-        bound, and cuRobo hard-refuses such a start. Violations up to
-        `limit_clamp_rad` are clamped inward (the executor's start-state
-        tolerance absorbs the difference); anything larger is a genuine
-        configuration problem and is refused with the joint named.
+        cuRobo hard-refuses a start outside its limits, so small
+        model-vs-arm disagreements, up to `limit_clamp_rad`, are clamped
+        inward; anything larger is refused with the joint named. The Gen3's
+        park pose (arm_joint_4 ~ -2.674) is 0.10 rad past the URDF's +-2.57
+        and is refused (tracked in kinova-gen3-ros2#49).
 
-        Returns (clamped_q or None, error or None). q may be None (nothing
-        to clamp).
+        cuRobo plans inside joint_limit_margin_rad of every limit, so a
+        joint within the margin is refused too, never moved: shifting a
+        start would put the plan's first point off the arm's measured q.
+
+        Returns (clamped_q or None, (status, error) or None). q may be None
+        (nothing to clamp).
         """
         if q is None:
             return None, None
@@ -887,6 +969,7 @@ class CuRoboPlanner:
         worst = float(deltas[j])
         if worst > self.limit_clamp_rad:
             return None, (
+                "%s_OUTSIDE_LIMITS" % what.upper(),
                 "%s: %s is %.3f rad outside the model position limits "
                 "[%.3f, %.3f] (max clamp %.3f) — jog the arm inside its "
                 "planning limits or fix the request"
@@ -897,7 +980,24 @@ class CuRoboPlanner:
                     lim[0][j],
                     lim[1][j],
                     self.limit_clamp_rad,
-                )
+                ),
+            )
+        room = np.minimum(clamped - lim[0], lim[1] - clamped)
+        k = int(np.argmin(room))
+        if room[k] < self.joint_limit_margin_rad:
+            return None, (
+                "%s_IN_LIMIT_MARGIN" % what.upper(),
+                "%s: %s is %.3f rad from its position limit [%.3f, %.3f], "
+                "inside joint_limit_margin_rad %.3f — jog it away from the "
+                "limit first"
+                % (
+                    what,
+                    self.joint_names[k],
+                    max(float(room[k]), 0.0),
+                    lim[0][k],
+                    lim[1][k],
+                    self.joint_limit_margin_rad,
+                ),
             )
         if worst > 1e-9:
             log.info(
@@ -1049,7 +1149,22 @@ class CuRoboPlanner:
 
         # ONLY the trimmed interpolated plan: result buffers are padded and
         # the untrimmed tail can be stale garbage from a previous plan.
-        plan = result.get_interpolated_plan()
+        linear = result.get_interpolated_plan()
+        plan, consistent = self._resample(linear, result)
+        recheck = self._recheck_constraints(plan)
+        if recheck and consistent:
+            # The spline can leave the hull of cuRobo's knots: a goal its IK
+            # put ON a (margin-narrowed) limit is passed by up to ~0.7 mrad,
+            # which the re-check rejects. cuRobo's chords never leave the
+            # hull, so ship its own plan (no accelerations) through the same
+            # gate instead; it still keeps the margin from the URDF limit.
+            log.warning(
+                "quintic resample failed the constraint re-check (%s); "
+                "using cuRobo's linear plan, without accelerations",
+                recheck[0],
+            )
+            plan, consistent = linear, False
+            recheck = self._recheck_constraints(plan)
         ordered = plan.get_ordered_joint_state(self.joint_names)
         pos = ordered.position.detach().cpu().numpy().astype(float).copy()
         vel = (
@@ -1057,9 +1172,11 @@ class CuRoboPlanner:
             if ordered.velocity is not None
             else None
         )
+        # Unresampled, cuRobo's accelerations disagree with its positions
+        # (#15): ship none, so a consumer stays on cubic rather than trust them.
         acc = (
             ordered.acceleration.detach().cpu().numpy().astype(float).copy()
-            if ordered.acceleration is not None
+            if consistent and ordered.acceleration is not None
             else None
         )
         traj = Trajectory(
@@ -1068,11 +1185,17 @@ class CuRoboPlanner:
             velocities=vel,
             accelerations=acc,
             dt=float(result.interpolation_dt),
+            frame_id=self.base_frame,
         )
 
         lim = self.joint_limits()
-        problems = validate_trajectory(traj, lim["position"], lim["velocity"])
-        problems += self._recheck_constraints(plan)
+        problems = validate_trajectory(
+            traj,
+            lim["position"],
+            lim["velocity"],
+            acceleration_limits=lim.get("acceleration"),
+        )
+        problems += recheck
         if problems:
             return PlanResult.failure(
                 "LIBRARY_VALIDATION_FAILED",
@@ -1094,6 +1217,35 @@ class CuRoboPlanner:
                 np.abs(pos[-1] - np.asarray(q_goal, dtype=float)).max()
             )
         return res
+
+    def _resample(self, plan, result):
+        """Replace cuRobo's LINEAR_CUDA resample with a quintic-spline one
+        through the same knots (#15) — BEFORE validation, so the re-check
+        sees exactly the states that ship. Returns (plan, consistent):
+        cuRobo's own plan and False when there are no knots or they do not
+        reproduce it."""
+
+        def arr(x):
+            return x.detach().cpu().numpy().astype(float).reshape(-1, x.shape[-1])
+
+        knots = getattr(result, "optimized_plan", None)
+        out = None
+        if knots is not None:
+            out = resample_quintic(
+                arr(knots.position),
+                arr(plan.position),
+                float(result.interpolation_dt),
+            )
+        if out is None:
+            log.warning(
+                "dense plan is not a linear resample of its knots; kept as-is, "
+                "without accelerations"
+            )
+            return plan, False
+        plan = plan.clone()
+        for dst, src in zip((plan.position, plan.velocity, plan.acceleration), out):
+            dst.copy_(self._torch.as_tensor(src, dtype=dst.dtype, device=dst.device))
+        return plan, True
 
     def _recheck_constraints(self, plan_curobo_order):
         """Independent belt-and-braces: re-check every interpolated state
@@ -1185,8 +1337,8 @@ class CuRoboPlanner:
             return (
                 "no collision-free joint solution AT the goal — move it "
                 "away from obstacles or relax the orientation. The goal "
-                "is the tool_frame (fingertip midpoint); the flange sits "
-                "12 cm behind it along the tool axis."
+                "is arm_tool_frame (fingertip midpoint) in arm_mount; the "
+                "flange sits 12 cm behind it along the tool axis."
             )
         if "INVALID_START" in s:
             return (

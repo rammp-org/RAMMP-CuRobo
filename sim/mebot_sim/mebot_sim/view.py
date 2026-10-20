@@ -203,7 +203,7 @@ class View:
             self.ready = (now, all(p.ready() for p in self.planners.values()))
         m = self.sim.model
         limits = []
-        for name in stack.JOINTS:
+        for name in stack.MUJOCO_JOINTS:
             joint = m.joint(name).id
             limited = m.jnt_limited[joint]
             limits.append(

@@ -1,0 +1,14 @@
+# Empty collision world — the arm and nothing else.
+#
+# For a robot with nothing in reach to model (flatbot): choose it per robot
+# with the planner config's `world` line. The planner accepts an empty world
+# only when it is built; update_world still refuses one, because cuRobo
+# v0.7.8 silently keeps the previous world on an empty update.
+#
+# Frame: arm_mount (arm base at origin, +x forward, +z up). Metres + degrees.
+
+base_frame: arm_mount
+
+obstacles: []
+objects: []
+targets: []

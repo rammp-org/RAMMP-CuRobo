@@ -2,8 +2,11 @@
 MEBot, a seated stand-in and the floor (scene.py).
 
     /joint_states              sensor_msgs/JointState, best effort, 50 Hz:
-                               joint_1..joint_7 and the 2F-85's knuckle, the
-                               names the driver publishes
+                               arm_joint_1..arm_joint_7 and the 2F-85's
+                               knuckle, the names the driver publishes
+    /arm/robot_description     std_msgs/String, latched: the arm's model, as
+                               the arm's arm_state_publisher latches it, for
+                               the planner nodes
     /execute_joint_trajectory  rammp_arm_interfaces/ExecuteJointTrajectory:
                                flown on the trajectory's own time base. As
                                the driver does, a goal of preemption
@@ -59,9 +62,9 @@ DISTMAX = 1.0
 # A loop further behind real time than this (a rebuild, a slow frame) drops
 # the backlog instead of rushing the physics to catch up.
 BEHIND_S = 0.1
-# The driver publishes the 2F-85's one degree of freedom under this name; it
-# is menagerie's left driver joint.
-KNUCKLE = "robotiq_85_left_knuckle_joint"
+# The driver publishes the 2F-85's one degree of freedom under the model's
+# name for it; it is menagerie's left driver joint.
+KNUCKLE = "arm_robotiq_85_left_knuckle_joint"
 GRIPPER_JOINT = "g_left_driver_joint"
 PREEMPTED = -6  # ExecuteJointTrajectory's result codes
 SUCCESSFUL = 0
@@ -70,8 +73,8 @@ STOPPING = "the sim stopping"
 
 
 class Flight:
-    """A trajectory to fly: seconds from its start, and rows of joint_1..joint_7
-    positions. `queue`: it waits for a flight under way to be done, as the
+    """A trajectory to fly: seconds from its start, and rows of
+    arm_joint_1..arm_joint_7 positions. `queue`: it waits for a flight under way to be done, as the
     driver queues a goal of preemption QUEUE, instead of ending that flight.
     The sim sets `ended` when it is done with it: `outcome` is "done", or
     "preempted" with a `reason`, and `final_error` the measured joints minus
@@ -110,10 +113,10 @@ def trajectory_problem(traj):
     `traj`, or None.
 
     The real driver refuses a trajectory with no points or a point without
-    seven positions, and takes those as joint_1..joint_7 whatever the names
-    say. The sim refuses those, and also what the driver might fly other
-    than as its sender meant, so that no test passes on it: names other
-    than joint_1..joint_7 in that order, a position that is not finite,
+    seven positions, and takes those as arm_joint_1..arm_joint_7 whatever the
+    names say. The sim refuses those, and also what the driver might fly
+    other than as its sender meant, so that no test passes on it: names
+    other than arm_joint_1..arm_joint_7 in that order, a position that is not finite,
     times that do not rise from 0."""
     if not traj.points:
         return "the trajectory has no points"
@@ -212,10 +215,10 @@ class Sim:
         m = scene.build(self.assets, self.posture, self.offscreen)
         m.opt.timestep = TIMESTEP
         self.model, self.data = m, mujoco.MjData(m)
-        joints = [m.joint(name).id for name in stack.JOINTS]
+        joints = [m.joint(name).id for name in stack.MUJOCO_JOINTS]
         self.qpos = m.jnt_qposadr[joints]
         self.dof = m.jnt_dofadr[joints]
-        self.actuators = [m.actuator(name).id for name in stack.JOINTS]
+        self.actuators = [m.actuator(name).id for name in stack.MUJOCO_JOINTS]
         self.knuckle = m.jnt_qposadr[m.joint(GRIPPER_JOINT).id]
         self.arm, self.groups = scene.contact_groups(m)
         self.armset = set(self.arm.tolist())
@@ -240,7 +243,7 @@ class Sim:
 
     @property
     def q(self):
-        """The arm's joints as measured: joint_1..joint_7."""
+        """The arm's joints as measured: arm_joint_1..arm_joint_7."""
         return self.data.qpos[self.qpos].copy()
 
     # -------------------------------------------------------------- commands
@@ -646,14 +649,32 @@ def _refuse_a_second_driver(node):
     could be a real arm's driver, on a domain someone chose by hand."""
     time.sleep(1.0)  # let discovery find what is already there
     served = {name for name, _types in node.get_service_names_and_types()}
-    if node.count_publishers("/joint_states") or (
-        "/execute_joint_trajectory/_action/send_goal" in served
+    if (
+        node.count_publishers("/joint_states")
+        or node.count_publishers(stack.ARM_MODEL_TOPIC)
+        or "/execute_joint_trajectory/_action/send_goal" in served
     ):
         raise SystemExit(
-            "something on ROS_DOMAIN_ID=%s already serves /joint_states or "
+            "something on ROS_DOMAIN_ID=%s already serves /joint_states, %s or "
             "/execute_joint_trajectory, perhaps a real arm's driver: the sim arm "
-            "will not serve the same names beside it" % os.environ.get("ROS_DOMAIN_ID")
+            "will not serve the same names beside it"
+            % (os.environ.get("ROS_DOMAIN_ID"), stack.ARM_MODEL_TOPIC)
         )
+
+
+def _publish_arm_model(node):
+    """Latch the arm's model on stack.ARM_MODEL_TOPIC, with the QoS the arm's
+    arm_state_publisher latches it with; the node keeps the publisher."""
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+    from std_msgs.msg import String
+
+    qos = QoSProfile(
+        depth=1,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    )
+    publisher = node.create_publisher(String, stack.ARM_MODEL_TOPIC, qos)
+    publisher.publish(String(data=stack.arm_model()))
 
 
 def main(args=None):
@@ -683,6 +704,8 @@ def main(args=None):
     menagerie = node.declare_parameter("menagerie", scene.MENAGERIE).value
     humanoid = node.declare_parameter("humanoid", scene.HUMANOID).value
     _refuse_a_second_driver(node)
+    # before the scene is built, which can outlast the planners' wait for it
+    _publish_arm_model(node)
 
     assets = scene.Assets(menagerie, humanoid)
     if posture != "none" and posture not in assets.postures["postures"]:

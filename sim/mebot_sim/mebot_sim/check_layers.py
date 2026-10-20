@@ -88,7 +88,7 @@ def surface_samples(m, d, geoms):
 def bounds(obstacles, grow=0.0):
     """Each box's (low, high) corners, grown by `grow` metres a side; a
     negative `grow` shrinks it. The checks read the boxes as axis-aligned in
-    base_link, as the generator writes them, so a rotated one is refused."""
+    arm_mount, as the generator writes them, so a rotated one is refused."""
     out = []
     for o in obstacles:
         if any(o.rpy_deg):

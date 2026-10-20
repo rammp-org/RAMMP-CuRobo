@@ -40,7 +40,7 @@ def test_the_scene_follows_the_recipe(model):
     pair = (m.body("base_link").id << 16) + m.body("shoulder_link").id
     assert pair in m.exclude_signature
     # every arm actuator is menagerie's position actuator on its joint
-    for name in stack.JOINTS:
+    for name in stack.MUJOCO_JOINTS:
         a = m.actuator(name)
         assert m.joint(a.trnid[0]).name == name and a.gainprm[0] > 0
 

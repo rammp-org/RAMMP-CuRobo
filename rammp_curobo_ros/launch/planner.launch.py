@@ -10,12 +10,18 @@ trajectory is the caller's job (kinova_arm_ros2 on this bench).
     ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml
 
 There is no execute flag: nothing this node does can move the arm.
+
+The node waits for the arm's model on /arm/robot_description (published by
+arm_state_publisher) before it builds the planner; robot_description_timeout_s
+(default 30) is passed through when given, e.g.
+robot_description_timeout_s:=60.0.
 """
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -48,6 +54,10 @@ def generate_launch_description():
                 "config": LaunchConfiguration("config"),
                 "world": LaunchConfiguration("world"),
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
+                "robot_description_timeout_s": ParameterValue(
+                    LaunchConfiguration("robot_description_timeout_s", default="30.0"),
+                    value_type=float,
+                ),
             }
         ],
     )

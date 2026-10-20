@@ -32,6 +32,7 @@ import math
 import os
 import re
 import sys
+import tempfile
 
 import mujoco
 import numpy as np
@@ -113,7 +114,7 @@ def search_box(model, limits, margin=JOINT_MARGIN_RAD):
     sim arm's joint ranges in `model` and the planner's `limits`, and within
     [-pi, pi], as the driver reports a joint that turns without end."""
     low, high = limits[0] + margin, limits[1] - margin
-    for i, name in enumerate(stack.JOINTS):
+    for i, name in enumerate(stack.MUJOCO_JOINTS):
         j = model.joint(name).id
         if model.jnt_limited[j]:
             low[i] = max(low[i], model.jnt_range[j][0] + margin)
@@ -158,7 +159,7 @@ def deepest_contacts(model, path):
     `path`, goes into each contact group: {group: metres}, a group it never
     goes into left out. MuJoCo's contacts at each pose, without physics."""
     d = mujoco.MjData(model)
-    qpos = [model.jnt_qposadr[model.joint(name).id] for name in stack.JOINTS]
+    qpos = [model.jnt_qposadr[model.joint(name).id] for name in stack.MUJOCO_JOINTS]
     arm, groups = scene.contact_groups(model)
     arm = set(arm.tolist())
     group_of = {int(g): k for k, gs in groups.items() for g in gs}
@@ -186,8 +187,12 @@ class Planner:
     def __init__(self):
         stack.core()
         from rammp_curobo import CuRoboPlanner
+        from rammp_curobo.urdf_model import prepare_urdf, write_urdf
 
-        self.planner = CuRoboPlanner.from_config(stack.CONTROL_CONFIG)
+        # the model the planner nodes are given on /arm/robot_description
+        self._model_dir = tempfile.TemporaryDirectory()
+        urdf = write_urdf(prepare_urdf(stack.arm_model()), self._model_dir.name)
+        self.planner = CuRoboPlanner.from_config(stack.CONTROL_CONFIG, urdf_path=urdf)
         self.limits = self.planner.joint_limits()["position"]
         self.activation = self.planner.collision_activation_distance
 

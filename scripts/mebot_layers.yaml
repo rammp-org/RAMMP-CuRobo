@@ -5,7 +5,10 @@
 # here and run `make layers`; the layer files themselves are never hand-edited.
 #
 # Metres unless a key says otherwise. The "mebot frame" is the root link of
-# the pinned URDF (x forward, y left, z up); base_link is the Gen3's.
+# the pinned URDF (x forward, y left, z up). The layers are written in
+# arm_mount, the root of the arm's own URDF, which the planner plans in.
+# arm_mount -> arm_base_link (arm_base_joint) is a rotation only, the identity
+# for a level mount, so `arm_base_in_mebot` below places arm_mount too.
 
 # The MEBot drive base: the RAMMP Gen1.2 URDF (available in Demo-Software),
 # https://github.com/rammp-org/Demo-Software/blob/80908b9f73f02e094106c0b82640a23c3cd6f41c/core/rammp_prototype_description/urdf/rammp_prototype_base.urdf
@@ -28,7 +31,7 @@ source:
 
 # Where the arm sits on the chair (owner decision, 2026-09-30): the RAMMS model
 # pose, UNVERIFIED on the real chair. A measurement is one edit here. A
-# non-zero rpy_deg is refused: the boxes are axis-aligned in base_link.
+# non-zero rpy_deg is refused: the boxes are axis-aligned in arm_mount.
 mount:
   arm_base_in_mebot: {position: [0.505, -0.265, 0.376], rpy_deg: [0, 0, 0]}
   # Provenance only. The RAMMS BP_Mebot_Ramms blueprint chain; the mount uses
@@ -61,14 +64,17 @@ padding_assumed_m: 0.02
 # carved back by this much.
 keep_out_margin_m: 0.005
 
-# The arm's joint-independent collision spheres: base_link's, and
-# shoulder_link's, which sit on the joint_1 axis. A padded box touching them
-# makes every state a collision.
+# The arm's joint-independent collision spheres: arm_base_link's, and
+# arm_shoulder_link's, which sit on the arm_joint_1 axis. A padded box touching
+# them makes every state a collision. This keep-out places them for a level
+# mount (arm_base_joint the identity); the planner's FK-based guard checks
+# every layer box against the column of the live mount, tilted or not.
 keep_out:
   # Packaged; the spheres and collision_sphere_buffer are read from it.
   robot_config: robot_gen3_2f85.yaml
-  # joint_1's origin, which places shoulder_link in base_link (cuRobo v0.7.8,
-  # kinova_gen3_7dof.urdf:55).
+  # arm_joint_1's origin, which places arm_shoulder_link in arm_base_link
+  # (cuRobo v0.7.8, kinova_gen3_7dof.urdf:55; the same in the arm's URDF).
+  # The key keeps its pre-#38 name.
   shoulder_link_origin: {xyz: [0, 0, 0.15643], rpy: [3.1416, 0, 0]}
   # The gate: a layer whose padded boxes come closer than this is not written.
   min_clearance_m: 0.004

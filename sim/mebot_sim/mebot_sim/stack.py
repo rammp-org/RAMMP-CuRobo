@@ -26,7 +26,13 @@ from pathlib import Path
 import yaml
 
 SIM_DOMAIN = "88"
-JOINTS = ["joint_%d" % i for i in range(1, 8)]
+# The arm's joints as the driver and the arm's model name them, and as
+# menagerie's Gen3, the sim's MuJoCo arm, names the same joints.
+JOINTS = ["arm_joint_%d" % i for i in range(1, 8)]
+MUJOCO_JOINTS = ["joint_%d" % i for i in range(1, 8)]
+# Where the arm's model is latched, as the arm's own arm_state_publisher
+# latches it: the planner nodes wait for it before they plan.
+ARM_MODEL_TOPIC = "/arm/robot_description"
 
 # The two planner nodes the launch runs. The chair planner composes the
 # platform and person layers into every world it plans in; the control
@@ -162,6 +168,15 @@ def check_planner_imports(env):
             )
 
 
+def arm_model():
+    """The arm's model, as the arm publishes it on ARM_MODEL_TOPIC: the
+    checkout's rendering of it on a level mount (core/tests/data), which is
+    how the sim's arm sits on the MEBot, so that its arm_mount is the frame
+    the layers are generated in."""
+    path = checkout() / "core" / "tests" / "data" / "arm_level.urdf"
+    return path.read_text(encoding="utf-8")
+
+
 def config(name):
     """The path of one of this package's config files, in the checkout: the
     package runs from it in any case."""
@@ -261,14 +276,14 @@ def trajectory_arrays(traj):
     start, and each point's positions.
 
     The arm driver never reads joint_names: it takes each point's positions
-    as joint_1..joint_7. Read by name, a trajectory naming its joints in
-    another order would fly here as the arm would not fly it, so one that
-    names anything but joint_1..joint_7 in that order is refused."""
+    as arm_joint_1..arm_joint_7. Read by name, a trajectory naming its joints
+    in another order would fly here as the arm would not fly it, so one that
+    names anything but arm_joint_1..arm_joint_7 in that order is refused."""
     if list(traj.joint_names) != JOINTS:
         raise ValueError(
-            "the trajectory names %s, not joint_1..joint_7 in order; the arm "
-            "driver takes each point's positions in that order whatever the "
-            "names say" % (", ".join(traj.joint_names) or "no joints")
+            "the trajectory names %s, not arm_joint_1..arm_joint_7 in order; the "
+            "arm driver takes each point's positions in that order whatever "
+            "the names say" % (", ".join(traj.joint_names) or "no joints")
         )
     times = [
         p.time_from_start.sec + p.time_from_start.nanosec * 1e-9 for p in traj.points
