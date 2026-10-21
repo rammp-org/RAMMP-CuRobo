@@ -86,7 +86,9 @@ Demo-Software clone or GitHub; cuRobo v0.7.8 on the GPU for the planners.
 | S5       | a plan from the bench retract on the chair planner, nothing flown                                                                                                                                                               | G5     |
 
 A pair's straight joint path takes MuJoCo's arm, posed along it, into the
-shape its layer covers (`crossing_mm` in `scenarios.yaml`), and cuRobo finds
+shape its layer covers, and so does the control planner's plan of it, the
+path the positive control flies (`crossing_mm` in `scenarios.yaml` is the
+plan's depth), and cuRobo finds
 that path blocked with the layer and clear without it: the layer is what
 stands between the request and the shape. Every flight is flown at half
 speed (`--speed`), time dilated by the client as consumers do.

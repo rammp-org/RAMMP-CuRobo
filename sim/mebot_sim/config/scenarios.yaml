@@ -40,9 +40,9 @@ standin:
     man_95th: {row: 8, sex: men, percentile: 95, inches: 38.46}
 
 thresholds:
-  # find_pairs: a pair's straight joint path takes MuJoCo's arm this deep or
-  # deeper into the shape its layer covers (its contacts at each pose,
-  # without physics) ...
+  # find_pairs: a pair's straight joint path, and the control planner's plan
+  # of it, take MuJoCo's arm this deep or deeper into the shape its layer
+  # covers (its contacts at each pose, without physics) ...
   crossing_mm: 10.0
   # ... and no deeper than this into anything else.
   elsewhere_mm: 1.0
@@ -95,34 +95,36 @@ reaches:
 
 # S1: start and goal valid with the floor and the platform; the
 # straight joint path between them blocked by the platform alone, and
-# crossing_mm into the true MEBot in MuJoCo, with the chair empty.
+# crossing_mm into the true MEBot in MuJoCo, with the chair empty, as
+# deep as the control planner's plan of it goes there.
 platform_pairs:
   seed: 11
   posture: none
   pairs:
     - start: [1.5612579328613956, 1.7564379468972113, 0.03677834155449933, 1.8258923082559355, -0.3137124509960949, -1.0264936171802732, 0.7633049534610081]
       goal: [2.1714639069728747, 1.90672361889815, 1.4091908595906943, 2.304988610920399, 1.1134865630250186, -0.502532433261633, 0.840961585515025]
-      crossing_mm: 85.7
+      crossing_mm: 86.3
     - start: [-0.22545828049117134, 1.052733700854775, -2.442446092315919, -2.3739740793011586, -1.7807874044960026, 0.9593222481863188, 0.2776425149300432]
       goal: [-1.1295517937085604, 1.367397917972589, -4.175569099722631, -2.1406629286577536, -0.35972731367954003, 0.157572703101581, -1.0444893102652508]
-      crossing_mm: 66.0
+      crossing_mm: 67.8
     - start: [-2.4505829324686683, 0.9302661713094049, -1.4482268731343673, -2.4096088092828616, -0.4437430839252223, -0.8446541356061179, -0.8413678847474686]
       goal: [-4.148101435048776, 1.579441827500332, -3.4121112278094454, -1.6704603815375325, 1.1067812001137387, -0.45061473009251873, -1.7297352493761138]
-      crossing_mm: 88.6
+      crossing_mm: 90.2
 
 # S2: start and goal valid with every layer on; the straight joint
 # path between them blocked by the person layer alone, and
-# crossing_mm into the stand-in in MuJoCo, seated in `posture`.
+# crossing_mm into the stand-in in MuJoCo, seated in `posture`, as
+# deep as the control planner's plan of it goes there.
 person_pairs:
   seed: 22
   posture: upright_lap
   pairs:
-    - start: [-1.6256909130382047, -1.709880238155638, -1.0209520066197677, 2.269417272222172, 0.15815988195302566, -0.44167719663224303, 1.3943031216399957]
-      goal: [-1.5217269027567895, -1.6737962065448637, -0.10146252325380933, 2.1029342121795955, -1.612974265777785, 1.5726046786587604, 3.192324499402109]
-      crossing_mm: 10.2
     - start: [1.373759984135563, 1.3018316630902973, -1.5187498199985958, -2.167544018748026, 0.0304753517280294, 0.1283310124448822, 2.101413306204668]
       goal: [1.4039865661595297, 1.6577733020240224, 0.2885881654033131, -1.8744801835821745, 1.2567770211633391, -1.78134288148394, 0.5316025365396992]
-      crossing_mm: 29.1
+      crossing_mm: 28.7
     - start: [-1.4544528829572902, -1.9317753003846183, 2.637560789629201, -2.1606728693485064, -1.4245449657599718, -1.8981852306636324, -0.34412034615124387]
       goal: [-1.336358392433039, -1.6180714912628003, 3.142303265444327, -2.0599549795942314, 0.509389941509168, 0.17136973087774976, -2.3886599665568755]
-      crossing_mm: 53.6
+      crossing_mm: 52.2
+    - start: [1.4612802660859225, 1.9145409751899836, 2.8864045051466416, 2.126948883210376, -3.071384624220712, 0.09010996085144507, -1.0226391905252568]
+      goal: [1.6242097554086294, 1.2970889478034162, 1.7391537861516086, 2.2358212612526605, -4.718557833666662, -1.9062844030143344, -1.619083429969284]
+      crossing_mm: 19.1

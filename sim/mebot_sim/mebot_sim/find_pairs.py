@@ -19,7 +19,8 @@ one succeeds.
     a plan without the platform has no reason to leave it. In MuJoCo, with
     the chair empty, that path takes the arm `crossing_mm` or deeper into the
     MEBot, and no deeper than `elsewhere_mm` into anything else (thresholds
-    in config/scenarios.yaml).
+    in config/scenarios.yaml); so does the plan the control planner makes
+    for it there, which is what the suite flies.
   * S2, 3 person pairs: the same for the person layer, the floor and the
     platform on, and the stand-in seated upright with its hands in its lap.
   * S3, a start valid with every layer on, its tool beside the chair on the
@@ -227,6 +228,15 @@ class Planner:
             out.append(metrics.feasible.view(-1).cpu().numpy().astype(bool))
         return np.concatenate(out)
 
+    def plan(self, start, goal):
+        """The joint path this planner plans from `start` to `goal`, in the
+        world it holds, as the control planner node would: (N, 7), or None
+        when it finds no plan."""
+        res = self.planner.plan_to_joints(list(goal), list(start))
+        if not res.success:
+            return None
+        return np.asarray(res.joint_traj.positions, dtype=float)
+
     def kinematics(self, states):
         """(the tool's position (N, 3), the collision spheres (N, n, 4)) at each
         of `states`, (N, 7); a sphere cuRobo leaves out has a radius <= 0."""
@@ -255,13 +265,27 @@ def chair_scene():
     )
 
 
+def _crossing(model, path, group, thresholds):
+    """How deep `path` takes the sim arm into contact group `group` (m), and
+    whether that is crossing_mm or deeper, with no deeper than elsewhere_mm
+    into anything else."""
+    deepest = deepest_contacts(model, path)
+    crossing = deepest.pop(group, 0.0)
+    return crossing, (
+        crossing >= thresholds["crossing_mm"] / 1e3
+        and max(deepest.values(), default=0.0) <= thresholds["elsewhere_mm"] / 1e3
+    )
+
+
 def pair_search(planner, model, search, present, absent, group, thresholds, box):
     """Seeded and capped: PAIRS pairs whose straight joint path the layer that
     world `present` adds to world `absent` blocks alone, and that takes the
-    sim arm, posed along it in `model`, into contact group `group`.
+    sim arm, posed along it in `model`, into contact group `group`, as does
+    the plan `planner` makes for it in `absent`.
 
-    Returns ([{start, goal, crossing_mm}], what was tried, in words). Fails,
-    naming what it tried, if fewer pairs are found."""
+    Returns ([{start, goal, crossing_mm}], what was tried, in words), with
+    crossing_mm the plan's. Fails, naming what it tried, if fewer pairs are
+    found."""
     from rammp_curobo.world import sphere_box_penetration
 
     rng = np.random.default_rng(search["seed"])
@@ -280,7 +304,7 @@ def pair_search(planner, model, search, present, absent, group, thresholds, box)
     blocked = ~planner.feasible(paths).reshape(len(paths), STEPS).all(axis=1)
     boxes = planner.push(absent)
     clear = planner.feasible(paths[blocked]).reshape(-1, STEPS).all(axis=1)
-    pairs, near, depths = [], 0, []
+    pairs, near, bent, depths = [], 0, 0, []
     for i in np.nonzero(blocked)[0][clear]:
         # cuRobo's collision cost starts at the activation distance: a path
         # that keeps it from every box left gives a plan no reason to bend
@@ -291,23 +315,35 @@ def pair_search(planner, model, search, present, absent, group, thresholds, box)
             continue
         if len(depths) == search["measured"]:
             break
-        deepest = deepest_contacts(model, densify(start[i], goal[i]))
-        crossing = deepest.pop(group, 0.0)
+        crossing, crosses = _crossing(
+            model, densify(start[i], goal[i]), group, thresholds
+        )
         depths.append(crossing)
-        if (
-            crossing >= thresholds["crossing_mm"] / 1e3
-            and max(deepest.values(), default=0.0) <= thresholds["elsewhere_mm"] / 1e3
-        ):
-            pairs.append(
-                {"start": start[i], "goal": goal[i], "crossing_mm": crossing * 1e3}
-            )
-            if len(pairs) == PAIRS:
-                break
+        if not crosses:
+            continue
+        # the control flies the planner's plan, not the straight path: a
+        # smoothed plan can pass beside a shape its straight path crosses
+        # (one grazed the stand-in, 0 mm deep where its straight path went
+        # 10 mm, and missed it in half the suite's runs), so the plan must
+        # cross it as deep
+        path = planner.plan(start[i], goal[i])
+        if path is not None:
+            path = np.concatenate([densify(a, b) for a, b in zip(path, path[1:])])
+            crossing, crosses = _crossing(model, path, group, thresholds)
+        if path is None or not crosses:
+            bent += 1
+            continue
+        pairs.append(
+            {"start": start[i], "goal": goal[i], "crossing_mm": crossing * 1e3}
+        )
+        if len(pairs) == PAIRS:
+            break
     tried = (
         "seed %d: %d of %d states valid; of %d pairs, %d blocked, %d of them clear "
         "without the layer; of the %d of those looked at, %d come within the "
         "activation distance of what is left, and of the %d MuJoCo measured, %d go "
-        "%g mm or deeper into the %s and no deeper than %g mm into anything else"
+        "%g mm or deeper into the %s and no deeper than %g mm into anything else, "
+        "and %d of those were planned that way too"
         % (
             search["seed"],
             len(pool),
@@ -318,10 +354,11 @@ def pair_search(planner, model, search, present, absent, group, thresholds, box)
             near + len(depths),
             near,
             len(depths),
-            len(pairs),
+            len(pairs) + bent,
             thresholds["crossing_mm"],
             group,
             thresholds["elsewhere_mm"],
+            len(pairs),
         )
     )
     if len(pairs) < PAIRS:
@@ -427,12 +464,14 @@ def generated(found):
         "platform": [
             "# S1: start and goal valid with the floor and the platform; the",
             "# straight joint path between them blocked by the platform alone, and",
-            "# crossing_mm into the true MEBot in MuJoCo, with the chair empty.",
+            "# crossing_mm into the true MEBot in MuJoCo, with the chair empty, as",
+            "# deep as the control planner's plan of it goes there.",
         ],
         "person": [
             "# S2: start and goal valid with every layer on; the straight joint",
             "# path between them blocked by the person layer alone, and",
-            "# crossing_mm into the stand-in in MuJoCo, seated in `posture`.",
+            "# crossing_mm into the stand-in in MuJoCo, seated in `posture`, as",
+            "# deep as the control planner's plan of it goes there.",
         ],
     }
     for key in ("platform", "person"):
