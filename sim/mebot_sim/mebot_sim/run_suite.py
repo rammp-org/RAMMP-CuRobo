@@ -96,12 +96,19 @@ def _status(message):
 
 def refusal(message):
     """Whether a failed plan's `message` is the planner's refusal: cuRobo
-    found no plan, or the planner's re-check flagged states of the plan it
-    found. A re-check that could not run flagged nothing."""
+    found no plan, or the planner's post-validation found every problem it
+    lists in the plan cuRobo found: states its re-check flagged, or a limit
+    the plan exceeds. A re-check that could not run flagged nothing."""
     status = _status(message)
-    return status in REFUSALS or (
-        status == "LIBRARY_VALIDATION_FAILED"
-        and "constraint re-check flagged" in message
+    if status in REFUSALS:
+        return True
+    head = "plan rejected by post-validation: "
+    if status != "LIBRARY_VALIDATION_FAILED" or head not in message:
+        return False
+    problems = message.split(head, 1)[1].split("; ")
+    return all(
+        p.startswith("constraint re-check flagged") or " > limit " in p
+        for p in problems
     )
 
 

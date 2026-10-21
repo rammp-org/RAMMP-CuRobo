@@ -279,11 +279,12 @@ class Node:
     """What Driver and _refuse_a_second_driver ask of an rclpy node, answered
     without a ROS graph. What the driver makes is kept: `made` by topic or
     service name, `timers` as (period, callback). The graph holds
-    `publishers` of /joint_states, `models` of the arm's model, and the
-    services `served`."""
+    `publishers` of /joint_states, `models` of the arm's model, `servers` of
+    /execute_joint_trajectory, and the services `served`."""
 
-    def __init__(self, publishers=0, served=(), models=0):
+    def __init__(self, publishers=0, served=(), models=0, servers=0):
         self.publishers, self.served, self.models = publishers, served, models
+        self.servers = servers
         self.made, self.timers, self.logged = {}, [], []
 
     def create_publisher(self, kind, topic, qos):
@@ -312,7 +313,11 @@ class Node:
         return Clock()
 
     def count_publishers(self, topic):
-        counts = {"/joint_states": self.publishers, stack.ARM_MODEL_TOPIC: self.models}
+        counts = {
+            "/joint_states": self.publishers,
+            stack.ARM_MODEL_TOPIC: self.models,
+            "/execute_joint_trajectory/_action/status": self.servers,
+        }
         return counts.get(topic, 0)
 
     def get_service_names_and_types(self):
@@ -566,9 +571,14 @@ def test_the_sim_arm_will_not_start_beside_another_driver(monkeypatch):
     with pytest.raises(SystemExit, match="already serves"):
         sim_arm._refuse_a_second_driver(late)
     assert 2.0 <= clock[0] < sim_arm.DISCOVERY_S
+    # a client of the action, run_suite's, lists its send_goal but serves
+    # nothing: the sim starts beside it
+    sim_arm._refuse_a_second_driver(
+        Node(served=["/execute_joint_trajectory/_action/send_goal"])
+    )
     for node in (
         Node(publishers=1),
-        Node(served=["/execute_joint_trajectory/_action/send_goal"]),
+        Node(servers=1),
         # a real arm's arm_state_publisher: its model is not the sim's
         Node(models=1),
     ):

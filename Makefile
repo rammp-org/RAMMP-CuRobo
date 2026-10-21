@@ -106,8 +106,10 @@ sim-build:                 ## Build the sim stack into .sim_ws/ (Jetson)
 # EGL, ...); MEBOT_SIM_STRICT=1 makes that a failure here, so that the gate
 # never passes on the tests that could still run.
 # Non-interactive shells skip ~/.zshrc: without this, nodes split across DDS
-# (CLAUDE.md, Environment). It is exported to every recipe these two run.
-sim-test sim: export ROS_LOCALHOST_ONLY := 1
+# (CLAUDE.md, Environment). It is exported to every recipe these two run,
+# unless a CYCLONEDDS_URI picks the interfaces: Cyclone then refuses `lo`
+# selected twice and no node starts (abra's bench config pins `lo`).
+sim-test sim: export ROS_LOCALHOST_ONLY := $(if $(CYCLONEDDS_URI),$(ROS_LOCALHOST_ONLY),1)
 sim-test: SHELL := /bin/bash
 sim-test:                  ## The sim package's tests (Jetson; no ROS graph)
 	. /opt/ros/humble/setup.bash && . $(SIM_OVERLAY) && \

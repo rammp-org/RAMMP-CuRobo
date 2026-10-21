@@ -110,6 +110,9 @@ def test_only_a_planner_that_judged_a_request_and_found_no_plan_refuses_it(gates
         "MotionGenStatus.FINETUNE_TRAJOPT_FAIL: a collision-free path WAS found but "
         "retiming failed",
         RECHECK + "constraint re-check flagged 3/120 states infeasible",
+        RECHECK + "arm_joint_1 acceleration 26.478 > limit 25.000 rad/s^2",
+        RECHECK + "arm_joint_2 velocity 1.400 > limit 1.390 rad/s; "
+        "constraint re-check flagged 1/40 states infeasible",
     ):
         report = checked(refused(message))
         case = run_suite.with_layers("S2a on", "here", report, LIMIT, gates)
@@ -123,6 +126,9 @@ def test_only_a_planner_that_judged_a_request_and_found_no_plan_refuses_it(gates
         "",
         "EXCEPTION: cuRobo plan_single_js raised: CUDA error",
         RECHECK + "constraint re-check unavailable: CUDA error",
+        RECHECK + "arm_joint_1 acceleration 26.478 > limit 25.000 rad/s^2; "
+        "constraint re-check unavailable: CUDA error",
+        RECHECK + "non-finite accelerations",
         "MotionGenStatus.DT_EXCEPTION: planning failed (MotionGenStatus.DT_EXCEPTION)",
         "no result: planning failed (no result)",
     ):

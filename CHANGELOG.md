@@ -261,8 +261,10 @@ Layer boxes are in `arm_mount`, like every world.
 - A failed plan whose world summary cannot be made is still reported, with
   `[world summary unavailable: ...]` in its error.
 - The sim arm watches the ROS graph for 5 s, not one look after 1 s, before
-  it decides no driver already serves its names; `make sim` and
-  `make sim-test` export `ROS_LOCALHOST_ONLY=1`; and a slowed plan's
+  it decides no driver already serves its names (an action server, by
+  its status publisher: a client lists the action's name too); `make sim` and
+  `make sim-test` export `ROS_LOCALHOST_ONLY=1` (but leave it to a
+  `CYCLONEDDS_URI` when one is set); and a slowed plan's
   `time_from_start` never carries `nanosec` 1e9.
 - The world guards (empty world, cache overflow and the above) run before
   cuRobo is imported, so they hold without it.

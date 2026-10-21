@@ -646,11 +646,12 @@ class Driver:
 
 
 def _serves_the_driver_names(node):
-    served = {name for name, _types in node.get_service_names_and_types()}
+    # An action's server, not its name: the graph lists send_goal for a
+    # client alone (run_suite's), but only a server publishes the status.
     return bool(
         node.count_publishers("/joint_states")
         or node.count_publishers(stack.ARM_MODEL_TOPIC)
-        or "/execute_joint_trajectory/_action/send_goal" in served
+        or node.count_publishers("/execute_joint_trajectory/_action/status")
     )
 
 
