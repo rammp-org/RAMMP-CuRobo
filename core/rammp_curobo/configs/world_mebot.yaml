@@ -1,0 +1,18 @@
+# Start-up scene of gen3_mebot.yaml: the ground under the MEBot, and nothing
+# else.
+#
+# The chair and its occupant are not here: they are the planner config's
+# layers, composed into every world. This scene carries only the floor, a
+# GENERATED layer of its own (layer_mebot_floor.yaml), and the first
+# set_world push replaces it: a pushed scene brings its own floor.
+#
+# No inline obstacles or objects, on purpose. They are the only keys a 1.0.0
+# planner turns into collision boxes (it ignores `layers:`), so a 1.0.0
+# planner given these files refuses this world as empty instead of planning
+# without the chair.
+
+base_frame: arm_mount
+
+layers: [layer_mebot_floor.yaml]
+
+obstacles: []

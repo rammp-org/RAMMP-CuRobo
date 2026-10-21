@@ -42,7 +42,8 @@ def load_robot_config(path, urdf_path=None):
     `urdf_path` is the arm's model as a file (urdf_model.write_urdf); it
     replaces the YAML's urdf_path, and its directory the asset root.
     """
-    with open(resolve_config(path), "r") as f:
+    # UTF-8 whatever the locale: the baked config has non-ASCII comments
+    with open(resolve_config(path), "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)["robot_cfg"]
     kin = cfg["kinematics"]
 

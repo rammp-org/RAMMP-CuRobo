@@ -1,0 +1,10 @@
+# A scene for the control planner (/rammp_curobo_control, gen3.yaml, which
+# composes no layers of its own): the MEBot's floor and platform layers, and
+# no person. The same request planned here and on the chair planner differs
+# by the person layer alone.
+
+base_frame: arm_mount
+
+obstacles: []
+
+layers: [layer_mebot_floor.yaml, layer_mebot_platform.yaml]

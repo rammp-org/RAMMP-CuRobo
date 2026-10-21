@@ -121,10 +121,33 @@ uv run ~/.claude/skills/hardware-loop/scripts/hil.py exec -- bash -lc \
   'cd RAMMP-CuRobo && make verify'
 ```
 
+`make verify` runs it with `RAMMP_CUROBO_GPU=1`, under which a GPU test that
+would skip fails instead: the gate cannot pass on the offline half alone.
+
 `ros2 run rammp_curobo_ros tour_demo` is the live end-to-end plan check.
 
 An x86-64 CUDA image — which *could* be functionally tested in CI, unlike the
 Jetson one — is tracked in issue #8.
+
+### The MEBot obstacle layers and their sim
+
+- `make layers` regenerates `core/rammp_curobo/configs/layer_mebot_*.yaml`
+  from `scripts/mebot_layers.yaml` and the MEBot URDF it pins, then fails on
+  any diff. It needs that URDF from the cache
+  (`${XDG_CACHE_HOME:-~/.cache}/rammp_curobo/cad/`), a Demo-Software clone
+  (`$RAMMP_DEMO_SOFTWARE` or `~/Demo-Software`) or the network. On unchanged
+  inputs it must be a no-op; after changing them, commit what it writes. CI
+  asserts the same: `test_layergen.py` regenerates the files from the URDF it
+  fetches from GitHub raw, and with `CI=true` a failed fetch fails the run
+  instead of skipping.
+- `make sim` (Jetson: GPU, ROS 2, MuJoCo) builds the sim stack into the
+  git-ignored `.sim_ws/`, launches it on its own ROS domain (88 unless you
+  choose another from 1 to 232; never 0) and runs its suite: exit 0 only when
+  every gate passes. `make sim-test` runs the sim package's own tests. Both
+  need `SIM_OVERLAY` (default `~/rammp_deps_ws/install/setup.bash`) for
+  `rammp_arm_interfaces`. See `sim/mebot_sim/README.md`; after `make layers`
+  changes a layer, rerun `ros2 run mebot_sim find_pairs` there and commit the
+  `config/scenarios.yaml` it writes.
 
 ## Versioning
 
@@ -145,8 +168,8 @@ never a branch.** `kinova_arm_ros2` is the consumer that matters.
   behavioural guarantees this file states — chiefly that `start_joints` is
   required and that nothing here can move the arm.
 
-Not covered: `scripts/`, tests, docs, the tuning inside `configs/`, and the
-internals of any module not exported above.
+Not covered: `scripts/`, `sim/`, tests, docs, the tuning inside `configs/`,
+and the internals of any module not exported above.
 
 ### The rule that is easy to get wrong
 
@@ -226,4 +249,8 @@ Nothing in this repo can move the arm, and that is the safety model — one
 execution authority, not two with different rules. `kinova_arm_ros2` owns
 execution and its own gates. Do not add an edge back: no executor, no
 `/joint_states` subscription, no controller client, no arm-package dependency in
-`package.xml`.
+`package.xml`. The one exception is a test kit, the MEBot sim
+(`sim/mebot_sim`): its client reads `/joint_states` and flies
+`/execute_joint_trajectory` on the sim's own arm only, never on the bench's ROS
+domain, 0, and never beside a real driver (see its README's Safety). Keep all
+of that inside `sim/`.

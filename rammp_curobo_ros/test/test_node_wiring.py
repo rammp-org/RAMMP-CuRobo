@@ -37,6 +37,9 @@ class _FakePlanner:
         self.joint_names = list(cfg["joint_names"])
         self.world_name = cfg["world"]
 
+    def world_summary(self):
+        return "0 boxes"
+
 
 @pytest.fixture
 def make_node(monkeypatch, domain_id):

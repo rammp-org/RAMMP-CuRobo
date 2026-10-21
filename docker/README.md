@@ -94,6 +94,14 @@ docker run --rm -it --runtime nvidia --network host --ipc host \
   (`world_empty.yaml`: the arm alone, for a robot with nothing in reach to
   model). `ros2 launch rammp_curobo_ros planner.launch.py ...` still works
   but always exits 0. Under sheppy, see below.
+- The arm on the MEBot wheelchair (a release after 1.1.0):
+  `... rammp-curobo:jp6 /opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node --ros-args -p config:=gen3_mebot.yaml`.
+  The chair's drive base and the person in it are then in every world,
+  worlds pushed over `/rammp_curobo/set_world` included, and the node's log
+  says so:
+  `Collision world: 25 boxes: scene 0 | config layers: platform 16, person 8 | scene layers: floor 1`.
+  See INTEGRATION.md, "Planning on the MEBot". An image without obstacle
+  layers has no such config and refuses it.
 - **Verify the bridge on first start** (the container runs as root; mixed
   root/non-root Fast DDS shared memory is a classic silent-delivery
   failure): from a host shell, `ros2 action list | grep rammp_curobo`
@@ -185,6 +193,10 @@ including merging chained plans into one continuous trajectory).
 ## Verify the image (no arm needed)
 
 ```bash
-docker run --rm --runtime nvidia rammp-curobo:jp6 \
+docker run --rm --runtime nvidia -e RAMMP_CUROBO_GPU=1 rammp-curobo:jp6 \
     python3 -m pytest /opt/rammp_curobo_src/core/tests -q
 ```
+
+`RAMMP_CUROBO_GPU=1` fails the run where the GPU tests would skip (no GPU
+passed through, a torch or cuRobo that does not import), instead of
+passing it on the offline tests alone.
