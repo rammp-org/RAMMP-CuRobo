@@ -19,6 +19,7 @@ A scene lists the layers that belong to it under `layers:`; the planner
 config lists the ones every world gets.
 """
 
+import math
 import re
 import sys
 from pathlib import Path
@@ -118,15 +119,22 @@ class Target:
 class Layer:
     """One layer file: its name, its boxes (Obstacles) and the file they
     came from, as a resolved absolute path. `excludable` says whether a
-    caller may leave the whole layer out of a world."""
+    caller may leave the whole layer out of a world.
 
-    __slots__ = ("name", "excludable", "obstacles", "path")
+    `padding_assumed` is the world_padding the boxes were sized for, as
+    the file's meta states it, or None when it states none (a layer built
+    in code, or one written by hand). compose_cuboids refuses a layer
+    composed with LESS padding than that: the boxes would not cover what
+    they stand for. More is allowed -- it only grows them."""
 
-    def __init__(self, name, excludable, obstacles, path):
+    __slots__ = ("name", "excludable", "obstacles", "path", "padding_assumed")
+
+    def __init__(self, name, excludable, obstacles, path, padding_assumed=None):
         self.name = name
         self.excludable = excludable
         self.obstacles = obstacles
         self.path = path
+        self.padding_assumed = padding_assumed
 
 
 class Scene:
@@ -354,7 +362,33 @@ def load_layer(path):
     obstacles = _entries(
         Obstacle, entries, where, "obstacles", check=_check_layer_entry
     )
-    return Layer(name, excludable, obstacles, path)
+    return Layer(name, excludable, obstacles, path, _padding_assumed(data, where))
+
+
+def _padding_assumed(data, where):
+    """The world_padding `data`'s meta says its boxes were sized for, or None.
+
+    The generated layers are UNPADDED and undersized by exactly the padding
+    the planner adds per side, so the two have to agree; nothing else in
+    `meta` is read. A claim that is not a finite number >= 0 is refused here,
+    where the file is named, rather than left to pass for "no claim".
+    """
+    meta = data.get("meta")
+    if not isinstance(meta, dict) or "padding_assumed_m" not in meta:
+        return None
+    value = meta["padding_assumed_m"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(
+            "%s: meta.padding_assumed_m must be a number in metres, got %r"
+            % (where, value)
+        )
+    value = float(value)
+    if not (math.isfinite(value) and value >= 0):
+        raise ValueError(
+            "%s: meta.padding_assumed_m must be finite and >= 0, got %r"
+            % (where, value)
+        )
+    return value
 
 
 def load_layers(refs, relative_to, listed_in):

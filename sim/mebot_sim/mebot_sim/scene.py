@@ -74,10 +74,15 @@ class Assets:
         self.boxes, self.layers = _chair_world()
 
 
-def _chair_world(config="gen3_mebot.yaml"):
+def _chair_world(config=None):
     """The chair planner's start-up world as it composes it: its boxes,
-    padded, with each one's layer, and its layers by name."""
+    padded, with each one's layer, and its layers by name.
+
+    The default is this checkout's copy of the chair config (stack.chair_dir):
+    it is not packaged, so it cannot be named.
+    """
     stack.core()
+    config = stack.chair_config() if config is None else config
     from rammp_curobo.config import load_planner_config, resolve_config
     from rammp_curobo.scene import load_layers, load_scene
     from rammp_curobo.world import compose_cuboids

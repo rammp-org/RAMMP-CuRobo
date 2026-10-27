@@ -94,8 +94,14 @@ docker run --rm -it --runtime nvidia --network host --ipc host \
   (`world_empty.yaml`: the arm alone, for a robot with nothing in reach to
   model). `ros2 launch rammp_curobo_ros planner.launch.py ...` still works
   but always exits 0. Under sheppy, see below.
-- The arm on the MEBot wheelchair (a release after 1.1.0):
-  `... rammp-curobo:jp6 /opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node --ros-args -p config:=gen3_mebot.yaml`.
+- The arm on the MEBot wheelchair (a release after 1.1.0). The chair's files
+  are NOT in this image: its planner config, its world and its three layer
+  files describe one chair's geometry and ship with that robot, in
+  rammp-deployments `config/robots/<robot>/curobo/` (issue #19). Mount the
+  robot's directory and name the config by path:
+  `... -v ./config/robots/current:/config/robot:ro rammp-curobo:jp6 /opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node --ros-args -p config:=/config/robot/curobo/gen3_mebot.yaml`.
+  Set `world` to `""` if your manifest declares one: a non-empty `world`
+  replaces whatever the planner config names.
   The chair's drive base and the person in it are then in every world,
   worlds pushed over `/rammp_curobo/set_world` included, and the node's log
   says so:

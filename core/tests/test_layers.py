@@ -4,6 +4,7 @@ import importlib.util
 import logging
 import math
 import os
+import shutil
 import subprocess
 import sys
 import types
@@ -39,6 +40,10 @@ from rammp_curobo.world import (
     world_cuboids,
 )
 
+# The chair is one robot's geometry, not package data: this checkout keeps a
+# fixture copy of what rammp-deployments ships under config/robots/<robot>/curobo.
+MEBOT = Path(__file__).resolve().parent / "data" / "mebot"
+
 # a layer file that uses every allowed key. Each malformed case below is this
 # file with one edit, so its refusal is about that edit alone
 LAYER = """\
@@ -73,6 +78,22 @@ def _layer(path, name, boxes=("box",), excludable=False):
             for i, box in enumerate(boxes)
         )
     )
+    return path
+
+
+def _chair(dest, extra=""):
+    """The chair's files together in `dest`, the way a robot's own
+    config/robots/<robot>/curobo holds them, with `extra` appended to the
+    planner config.
+
+    They are not package data (issue #19), so the world and the layers the
+    config names resolve next to it and nowhere else: a lone copy of the
+    config would find neither.
+    """
+    shutil.copytree(MEBOT, dest)
+    path = dest / "gen3_mebot.yaml"
+    if extra:
+        path.write_text(path.read_text(encoding="utf-8") + extra, encoding="utf-8")
     return path
 
 
@@ -145,7 +166,7 @@ def _curobo_stand_in(monkeypatch):
     spec.loader.exec_module(generator)
     keep_out = generator.keep_out_spheres(generator.load_data())
     fixed = np.array([[*centre, radius] for centre, radius, _ in keep_out])
-    person = load_layer(PACKAGED_CONFIG_DIR / "layer_mebot_person.yaml")
+    person = load_layer(MEBOT / "layer_mebot_person.yaml")
     x, y, z = next(box.position for box in person.obstacles if box.name == "lap")
 
     def spheres(q):
@@ -1139,7 +1160,7 @@ for path in sys.argv[2:]:
     names = [layer.name for layer in layers + scene.layers]
     print(Path(path).name, robot.name, ee_link, len(scene.obstacles), names)
 """
-    gen3, mebot = (PACKAGED_CONFIG_DIR / n for n in ("gen3.yaml", "gen3_mebot.yaml"))
+    gen3, mebot = (PACKAGED_CONFIG_DIR / "gen3.yaml", MEBOT / "gen3_mebot.yaml")
     child = _in_a_c_locale(code, urdf_level, gen3, mebot)
     assert child.returncode == 0, child.stderr
     assert child.stdout == (
@@ -1891,16 +1912,16 @@ def test_make_world_config_hands_curobo_exactly_the_composed_boxes(monkeypatch):
 
 
 def test_chair_config_composes_within_the_cache():
-    cfg, folder = load_planner_config("gen3_mebot.yaml")
+    cfg, folder = load_planner_config(MEBOT / "gen3_mebot.yaml")
     # every knob at its default, as its header says: the file sets these three
     # keys and nothing else. Read from the file, since merged, a knob it sets
     # looks no different from one it inherits
-    text = (PACKAGED_CONFIG_DIR / "gen3_mebot.yaml").read_text(encoding="utf-8")
+    text = (MEBOT / "gen3_mebot.yaml").read_text(encoding="utf-8")
     assert set(yaml.safe_load(text)) == {"robot", "world", "layers"}
     layers = load_layers(cfg["layers"], relative_to=folder, listed_in="gen3_mebot.yaml")
     assert [(layer.name, layer.excludable, layer.path) for layer in layers] == [
-        ("platform", False, PACKAGED_CONFIG_DIR / "layer_mebot_platform.yaml"),
-        ("person", True, PACKAGED_CONFIG_DIR / "layer_mebot_person.yaml"),
+        ("platform", False, MEBOT / "layer_mebot_platform.yaml"),
+        ("person", True, MEBOT / "layer_mebot_person.yaml"),
     ]
     p = cfg["planner"]
     kw = dict(
@@ -1942,7 +1963,7 @@ def test_chair_config_composes_within_the_cache():
 
 
 def test_chair_startup_world_is_empty_to_a_v100_loader():
-    path = PACKAGED_CONFIG_DIR / "world_mebot.yaml"
+    path = MEBOT / "world_mebot.yaml"
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     # v1.0.0's load_scene turned obstacles and objects into boxes and ignored
     # `layers:`; Obstacle, SceneObject and world_cuboids are still v1.0.0's
@@ -1961,12 +1982,12 @@ def test_chair_startup_world_is_empty_to_a_v100_loader():
 
 def test_config_layers_reach_every_world_input(urdf_level, tmp_path, monkeypatch):
     inits, sent, loaded = _no_gpu(monkeypatch)
-    planner = CuRoboPlanner.from_config("gen3_mebot.yaml", urdf_path=urdf_level)
+    planner = CuRoboPlanner.from_config(MEBOT / "gen3_mebot.yaml", urdf_path=urdf_level)
     # the config's layers are loaded once, at start-up, before any GPU work
     assert inits == [True]
     assert [(lay.name, lay.excludable, lay.path) for lay in planner._layers] == [
-        ("platform", False, PACKAGED_CONFIG_DIR / "layer_mebot_platform.yaml"),
-        ("person", True, PACKAGED_CONFIG_DIR / "layer_mebot_person.yaml"),
+        ("platform", False, MEBOT / "layer_mebot_platform.yaml"),
+        ("person", True, MEBOT / "layer_mebot_person.yaml"),
     ]
 
     def installed():
@@ -1991,7 +2012,7 @@ def test_config_layers_reach_every_world_input(urdf_level, tmp_path, monkeypatch
     planner.update_world([_box("crate"), _box("mug")])
     assert installed() == {"scene": 2, "platform": 16, "person": 8}
     # the floor is the start-up scene's, and comes back with it
-    planner.update_world("world_mebot.yaml")
+    planner.update_world(MEBOT / "world_mebot.yaml")
     assert installed() == {"platform": 16, "person": 8, "floor": 1}
     assert planner.world_summary() == (
         "25 boxes: scene 0 | config layers: platform 16, person 8 "
@@ -2002,9 +2023,9 @@ def test_config_layers_reach_every_world_input(urdf_level, tmp_path, monkeypatch
     # its boxes go; a bare string is one name
     whole = planner.world_boxes
     for ignore in ({"person"}, "person"):
-        planner.update_world("world_mebot.yaml", ignore=ignore)
+        planner.update_world(MEBOT / "world_mebot.yaml", ignore=ignore)
         assert planner.world_boxes == [b for b in whole if b["layer"] != "person"]
-    planner.update_world("world_mebot.yaml")
+    planner.update_world(MEBOT / "world_mebot.yaml")
     assert planner.world_boxes == whole
 
     def held():
@@ -2034,25 +2055,22 @@ def test_config_layers_reach_every_world_input(urdf_level, tmp_path, monkeypatch
         "person 8); raise the cache setting in the planner config or shrink a layer"
     )
     with pytest.raises(ValueError, match="layer 'platform' is not excludable"):
-        planner.update_world("world_mebot.yaml", ignore={"platform"})
+        planner.update_world(MEBOT / "world_mebot.yaml", ignore={"platform"})
     assert held() == before
 
-    # a deployment mounts its own copy of the config (/config/gen3_mebot.yaml),
-    # naming the layers the package ships: those are the layers, whichever
-    # directory the planner starts in, and a file of the same name there is
-    # not read
+    # a deployment bind-mounts the robot's own directory (/config/robot), so
+    # the config and the layers it names arrive together: those are the layers,
+    # whichever directory the planner starts in, and a file of the same name
+    # there is not read
     mounted, cwd = tmp_path / "config", tmp_path / "cwd"
-    mounted.mkdir()
     cwd.mkdir()
-    text = (PACKAGED_CONFIG_DIR / "gen3_mebot.yaml").read_text(encoding="utf-8")
-    (mounted / "gen3_mebot.yaml").write_text(text, encoding="utf-8")
+    config = _chair(mounted)
     _layer(cwd / "layer_mebot_person.yaml", "person", boxes=("stray",), excludable=True)
     monkeypatch.chdir(cwd)
-    deployed = CuRoboPlanner.from_config(
-        mounted / "gen3_mebot.yaml", urdf_path=urdf_level
-    )
+    deployed = CuRoboPlanner.from_config(config, urdf_path=urdf_level)
     assert [lay.path for lay in deployed._layers] == [
-        lay.path for lay in planner._layers
+        mounted / "layer_mebot_platform.yaml",
+        mounted / "layer_mebot_person.yaml",
     ]
     deployed.update_world([_box("crate")])
     assert Counter(box["layer"] for box in deployed.world_boxes) == {
@@ -2064,7 +2082,8 @@ def test_config_layers_reach_every_world_input(urdf_level, tmp_path, monkeypatch
     # and a config whose start-up world overflows the cache is refused before
     # any GPU work
     (mounted / "small.yaml").write_text(
-        text + "planner: {collision_cache_obb: 24}\n", encoding="utf-8"
+        config.read_text(encoding="utf-8") + "planner: {collision_cache_obb: 24}\n",
+        encoding="utf-8",
     )
     with pytest.raises(ValueError) as exc:
         CuRoboPlanner.from_config(mounted / "small.yaml", urdf_path=urdf_level)
@@ -2105,7 +2124,7 @@ def test_the_chair_warms_up_in_its_scene_and_then_loads_its_layers(
     stand_in = _curobo_stand_in(monkeypatch)
     # as on the chair, cuRobo finds the retract infeasible
     stand_in.feasible = False
-    planner = CuRoboPlanner.from_config("gen3_mebot.yaml", urdf_path=urdf_level)
+    planner = CuRoboPlanner.from_config(MEBOT / "gen3_mebot.yaml", urdf_path=urdf_level)
     whole = [box["name"] for box in planner.world_boxes]
     assert Counter(box["layer"] for box in planner.world_boxes) == {
         "platform": 16,
@@ -2143,24 +2162,20 @@ def test_the_chair_warms_up_in_its_scene_and_then_loads_its_layers(
 
     # without a warm-up nothing plans before the layers are in, so MotionGen is
     # built in the whole world
-    text = (PACKAGED_CONFIG_DIR / "gen3_mebot.yaml").read_text(encoding="utf-8")
-    (tmp_path / "cold.yaml").write_text(
-        text + "planner: {warmup: false}\n", encoding="utf-8"
-    )
     stand_in.events.clear()
-    cold = CuRoboPlanner.from_config(tmp_path / "cold.yaml", urdf_path=urdf_level)
+    cold = CuRoboPlanner.from_config(
+        _chair(tmp_path / "cold", "planner: {warmup: false}\n"), urdf_path=urdf_level
+    )
     assert stand_in.events == [("built", whole)]
     assert cold._warm_boxes == 25
 
     # a padding the layers were not generated for grows the person into the
     # arm's base, where every start state would collide: the planner refuses
     # to start, before warm-up
-    (tmp_path / "wide.yaml").write_text(
-        text + "planner: {world_padding: 0.03}\n", encoding="utf-8"
-    )
+    wide = _chair(tmp_path / "wide", "planner: {world_padding: 0.03}\n")
     stand_in.events.clear()
     with pytest.raises(ValueError) as exc:
-        CuRoboPlanner.from_config(tmp_path / "wide.yaml", urdf_path=urdf_level)
+        CuRoboPlanner.from_config(wide, urdf_path=urdf_level)
     assert str(exc.value) == (
         "layer box person/torso_head_3 intrudes 4.9 mm into the arm's fixed "
         "base/shoulder spheres (world_padding 0.030 m): every start state would "
@@ -2174,7 +2189,7 @@ def test_a_layer_box_in_the_arms_fixed_spheres_is_refused_and_the_world_kept(
     urdf_level, tmp_path, monkeypatch
 ):
     stand_in = _curobo_stand_in(monkeypatch)
-    planner = CuRoboPlanner.from_config("gen3_mebot.yaml", urdf_path=urdf_level)
+    planner = CuRoboPlanner.from_config(MEBOT / "gen3_mebot.yaml", urdf_path=urdf_level)
     (tmp_path / "block.yaml").write_text(
         "layer: block\nobstacles:\n"
         "  - {name: over_base, position: [0, 0, 0.2], dims: [0.05, 0.05, 0.05]}\n"
@@ -2198,25 +2213,32 @@ def test_a_layer_box_in_the_arms_fixed_spheres_is_refused_and_the_world_kept(
         "be infeasible; move or shrink that box, or regenerate its layer"
     )
     assert (len(stand_in.events), planner.scene, planner.world_boxes) == before
-    # and at any other padding, since the box reaches the spheres at that one
-    # too: below it, restoring the padding would only grow the box, and above
-    # it, would not shrink the box enough. At 0.022 the chair's own boxes grow
-    # 2 mm, within the 4 mm the generator keeps them from the spheres, so the
-    # planner still starts
-    text = (PACKAGED_CONFIG_DIR / "gen3_mebot.yaml").read_text(encoding="utf-8")
-    for padding in (0.01, 0.022):
-        (tmp_path / "padded.yaml").write_text(
-            text + "planner: {world_padding: %g}\n" % padding, encoding="utf-8"
+
+    # and above that padding, since the box reaches the spheres there too:
+    # restoring a larger padding would not shrink the box enough. At 0.022 the
+    # chair's own boxes grow 2 mm, within the 4 mm the generator keeps them
+    # from the spheres, so the planner still starts
+    def chair_at(padding):
+        config = _chair(
+            tmp_path / ("pad%g" % padding),
+            "planner: {world_padding: %g}\n" % padding,
         )
-        padded = CuRoboPlanner.from_config(
-            tmp_path / "padded.yaml", urdf_path=urdf_level
-        )
-        with pytest.raises(ValueError) as exc:
-            padded.update_world(tmp_path / "scene.yaml")
-        assert str(exc.value).endswith(
-            "(world_padding %.3f m): every start state would be infeasible; move "
-            "or shrink that box, or regenerate its layer" % padding
-        )
+        return CuRoboPlanner.from_config(config, urdf_path=urdf_level)
+
+    padded = chair_at(0.022)
+    with pytest.raises(ValueError) as exc:
+        padded.update_world(tmp_path / "scene.yaml")
+    assert str(exc.value).endswith(
+        "(world_padding 0.022 m): every start state would be infeasible; move "
+        "or shrink that box, or regenerate its layer"
+    )
+
+    # below it the chair never reaches this guard: its layers are generated
+    # undersized by exactly the padding that is added back, so a smaller one
+    # leaves them not covering the chair they stand for, and the planner
+    # refuses to start at all
+    with pytest.raises(ValueError, match="undersized on each face"):
+        chair_at(0.01)
 
     # the same box as the scene's own is cuRobo's to judge, as in v1.0.0
     planner.update_world(
@@ -2241,7 +2263,7 @@ def test_attribution_explains_an_answer_and_never_changes_or_hides_it(
     urdf_level, tmp_path, monkeypatch
 ):
     stand_in = _curobo_stand_in(monkeypatch)
-    planner = CuRoboPlanner.from_config("gen3_mebot.yaml", urdf_path=urdf_level)
+    planner = CuRoboPlanner.from_config(MEBOT / "gen3_mebot.yaml", urdf_path=urdf_level)
     # a prop and a layer box, far from the chair, so that every depth below
     # is plain arithmetic: padded, each box reaches 0.12 m from its centre
     (tmp_path / "block.yaml").write_text(
@@ -2360,11 +2382,10 @@ def test_a_pose_goal_is_attributed_at_the_tool_point_curobo_is_given(
     _curobo_stand_in(monkeypatch)
     # cuRobo's tool frame stops 10 cm short of the fingertip a pose goal
     # names, along the tool's z axis
-    text = (PACKAGED_CONFIG_DIR / "gen3_mebot.yaml").read_text(encoding="utf-8")
-    (tmp_path / "tipped.yaml").write_text(
-        text + "tool: {tip_offset_m: 0.1}\n", encoding="utf-8"
+    planner = CuRoboPlanner.from_config(
+        _chair(tmp_path / "tipped", "tool: {tip_offset_m: 0.1}\n"),
+        urdf_path=urdf_level,
     )
-    planner = CuRoboPlanner.from_config(tmp_path / "tipped.yaml", urdf_path=urdf_level)
     planner.update_world([_box("crate", position=[1, 0, 0.5], dims=[0.2, 0.2, 0.2])])
     ik = "MotionGenStatus.IK_FAIL"
     planner._motion_gen.plan_single = lambda *_: _failed(ik)
@@ -2384,7 +2405,7 @@ def test_auto_logs_the_joint_space_failure_it_falls_back_from(
     urdf_level, monkeypatch, caplog
 ):
     stand_in = _curobo_stand_in(monkeypatch)
-    planner = CuRoboPlanner.from_config("gen3_mebot.yaml", urdf_path=urdf_level)
+    planner = CuRoboPlanner.from_config(MEBOT / "gen3_mebot.yaml", urdf_path=urdf_level)
     planner.update_world([_box("crate", position=[1, 0, 0.5], dims=[0.2, 0.2, 0.2])])
     world = (
         " [world: 25 boxes: scene 1 | config layers: platform 16, person 8 "
@@ -2449,7 +2470,7 @@ def test_a_subclass_overriding_the_v100_finish_plans_and_is_explained(
             calls.append((q_goal, res))
             return res
 
-    planner = Stationary.from_config("gen3_mebot.yaml", urdf_path=urdf_level)
+    planner = Stationary.from_config(MEBOT / "gen3_mebot.yaml", urdf_path=urdf_level)
     planner.update_world([_box("crate", position=[1, 0, 0.5], dims=[0.2, 0.2, 0.2])])
     start, goal = [0.0] * 7, [0.1] * 7
     # the joint goal's tool point is the crate's centre
@@ -2616,7 +2637,7 @@ def test_held_and_via_plans_on_the_chair_plan_in_its_layers_and_are_explained(
 
     stand_in = _curobo_stand_in(monkeypatch)
     _pose_cost_stand_in(monkeypatch)
-    planner = CuRoboPlanner.from_config("gen3_mebot.yaml", urdf_path=urdf_level)
+    planner = CuRoboPlanner.from_config(MEBOT / "gen3_mebot.yaml", urdf_path=urdf_level)
     # the world cuRobo holds is the whole chair, scene and both layers
     assert stand_in.events[-1] == (
         "loaded",
@@ -2699,3 +2720,48 @@ def test_held_and_via_plans_on_the_chair_plan_in_its_layers_and_are_explained(
         res = plan([0.5, 0.0, 0.5], **kw)
         assert sent[-1] == kind
         assert (res.success, res.status, res.error) == (True, "OK", None), kind
+
+
+def test_a_layer_generated_for_another_padding_is_refused(tmp_path):
+    """A generated layer is sized UNPADDED for the world_padding it states
+    (meta.padding_assumed_m), which the planner then adds per side. Composed
+    into a world with less padding it is undersized -- the chair quietly
+    smaller than the chair -- so the claim is checked rather than trusted.
+    Until now nothing read `meta`, and only a test held the two in step, which
+    cannot reach a layer file that ships in another repo.
+    """
+    path = _layer(tmp_path / "chair.yaml", "chair")
+    path.write_text(
+        path.read_text().replace(
+            "layer: chair\n", "layer: chair\nmeta: {padding_assumed_m: 0.02}\n"
+        )
+    )
+    layers = _config(tmp_path, path.name)
+    scene = scene_from_obstacles([_box("bench")])
+
+    # the padding it was generated for composes
+    compose_cuboids(scene, padding=0.02, layers=layers)
+
+    with pytest.raises(ValueError) as exc:
+        compose_cuboids(scene, padding=0.01, layers=layers)
+    message = str(exc.value)
+    assert "chair" in message, message
+    assert str(path) in message, message
+    assert "0.02" in message and "0.01" in message, message
+
+
+def test_an_unreadable_padding_claim_is_refused_at_load(tmp_path):
+    """`padding_assumed_m` is only worth checking if it is a number: a layer
+    that states one unreadably is refused where the file is read, naming it,
+    not silently exempted from the check above."""
+    path = _layer(tmp_path / "chair.yaml", "chair")
+    good = path.read_text()
+    for bad in ("lots", "[0.02]", ".nan", "-0.02"):
+        path.write_text(
+            good.replace(
+                "layer: chair\n", "layer: chair\nmeta: {padding_assumed_m: %s}\n" % bad
+            )
+        )
+        with pytest.raises(ValueError, match="padding_assumed_m") as exc:
+            load_layer(path)
+        assert str(path) in str(exc.value), bad

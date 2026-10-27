@@ -104,8 +104,19 @@ collision world's scene. There is nothing here that can move an arm.
 ## Planning on the MEBot (≥ 1.1.0)
 
 With the arm on the MEBot wheelchair, run the planner with the chair
-config: `config:=gen3_mebot.yaml` for the node, or
-`CuRoboPlanner.from_config("gen3_mebot.yaml")`. The chair's drive base,
+config. It does NOT ship in this image: the chair's planner config, its world
+and its three layer files describe one chair's geometry and where the arm sits
+on it, so they are per-robot data and live with the robot, in rammp-deployments
+`config/robots/<robot>/curobo/`, bind-mounted read-only at `/config/robot`
+(issue #19). So `config:=/config/robot/curobo/gen3_mebot.yaml` for the node, or
+`CuRoboPlanner.from_config("<that path>")` for the library. Re-measuring the
+chair is a commit there, not a release here, and nothing resolves these files
+by bare name — a packaged fallback would let an unmounted `/config/robot` plan
+the chair against stale geometry.
+
+If your manifest sets the `world` parameter, a chair robot must override it to
+`""`: a non-empty `world` replaces whatever the planner config names, so a
+bench world left in place would plan the chair against the wrong room. The chair's drive base,
 modelled with every joint at zero (layer `platform`, 16 boxes), and the
 person in it (layer `person`, 8 boxes) are then in every collision world the
 planner builds. Nothing models the rest of the chair: its seat, backrest,
@@ -162,12 +173,10 @@ they cost. For a caller:
   override rejects comes back exactly as your override made it, with no
   note.
 
-- **A 1.0.0 image refuses the chair config.** `gen3_mebot.yaml` and its
-  layer files ship from 1.1.0 on, and a 1.0.0 image answers
-  `config 'gen3_mebot.yaml' not found`. Mounting the files into one does not
-  help: 1.0.0 ignores `layers:`, finds no obstacles in `world_mebot.yaml`
-  and refuses it as an empty world at start-up. It never plans without the
-  chair; pin ≥ 1.1.0.
+- **A 1.0.0 image refuses the chair config.** Mounting the chair's files
+  into one does not help: 1.0.0 ignores `layers:`, finds no obstacles in
+  `world_mebot.yaml` and refuses it as an empty world at start-up. It never
+  plans without the chair; pin a release that carries the layers.
 
 ## Adopting into a RAMMP module
 

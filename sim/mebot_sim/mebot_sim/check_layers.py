@@ -225,7 +225,7 @@ def chair_padding():
     stack.core()
     from rammp_curobo.config import load_planner_config
 
-    return load_planner_config(stack.CHAIR_CONFIG)[0]["planner"]["world_padding"]
+    return load_planner_config(stack.chair_config())[0]["planner"]["world_padding"]
 
 
 def column(assets):

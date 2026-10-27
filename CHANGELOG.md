@@ -67,6 +67,27 @@ Layer boxes are in `arm_mount`, like every world.
 
 ### Changed (breaking)
 
+- **The chair ships with the robot, not in the image.** `gen3_mebot.yaml`,
+  `world_mebot.yaml` and the three `layer_mebot_*.yaml` are no longer package
+  data: they describe ONE chair's geometry and where the arm sits on it, so
+  they are per-robot data and live in rammp-deployments
+  `december_2026/config/robots/<robot>/curobo/`, bind-mounted read-only at
+  `/config/robot` (issue #19). Name the config by path —
+  `config:=/config/robot/curobo/gen3_mebot.yaml` — and, if your manifest
+  declares a `world` parameter, override it to `""`: a non-empty `world`
+  replaces whatever the planner config names, so a bench world left in place
+  plans the chair against the wrong room. Profile `mebot.yaml` does both.
+  Re-measuring the chair, and the Gen1.2 → Gen1.5 repin, are now a commit
+  there rather than a release here.
+  `core` needed no change: `resolve_config` already took absolute paths, and a
+  layer resolves next to the config that lists it. There is deliberately NO
+  packaged fallback — Docker makes `/config/robot` an empty directory when a
+  container starts before `set_robot.py` has run, and a fallback would let a
+  bare layer name resolve against the image and plan the chair against stale
+  geometry with no warning. A bare `gen3_mebot.yaml` now fails to resolve
+  instead, naming every path tried. `core/tests/data/mebot/` is this
+  checkout's fixture copy, for the tests and the sim, so verifying the chair
+  needs no deployment checkout.
 - **A required topic.** The node builds its robot model from the URDF
   `arm_state_publisher` latches on `/arm/robot_description` (RELIABLE +
   TRANSIENT_LOCAL), waiting `robot_description_timeout_s` (default 30 s); no
@@ -135,22 +156,36 @@ Layer boxes are in `arm_mount`, like every world.
 - `ignore={"person"}` on `update_world` leaves an `excludable: true` layer out
   of that one world (Python only); ignoring a layer that is not excludable is
   refused.
-- The MEBot layers, in `configs/layer_mebot_*.yaml`. `platform` (16 boxes) and
+- The MEBot layers, which ship with the robot and not here (see *Changed
+  (breaking)*). `platform` (16 boxes) and
   `floor` (1 box, its top at the URDF's lowest point) come from the drive
   base's URDF in rammp-org/Demo-Software, pinned by commit and sha256;
   `person` (8 boxes, excludable) from the ANSUR II sizes and the seat in
   `scripts/mebot_layers.yaml`: any occupant from the 5th-percentile woman to
   the 95th-percentile man, plus 0.05 m.
-- The chair config `gen3_mebot.yaml` and its start-up world `world_mebot.yaml`.
+- The chair config `gen3_mebot.yaml` and its start-up world `world_mebot.yaml`,
+  likewise shipped with the robot.
 - `scripts/generate_layers.py` with its inputs `scripts/mebot_layers.yaml`, and
   `make layers`. CI regenerates the committed layers from those inputs and the
   pinned URDF on amd64 and arm64 and fails on any difference.
+  `--outdir` / `make layers OUTDIR=<dir>` writes a robot's copy from the same
+  rendered text, so the two copies cannot drift.
 - `CuRoboPlanner.world_boxes` and `CuRoboPlanner.world_summary()`.
 - Which layer, which box: a failed plan's error and `check_state_valid` name
   the world boxes the start or goal reach into, with depths, and a failed
   plan's error ends with the world's summary.
 - A layer box that reaches into the arm's joint-independent spheres is refused:
   every start state would be in collision.
+- A layer states the `world_padding` it was generated for
+  (`meta.padding_assumed_m`, which the generator writes), and a world composed
+  with LESS than that is refused, naming the layer, its file and the shortfall:
+  the boxes are generated UNPADDED and undersized by exactly the padding the
+  planner adds back, so a smaller one leaves them not covering what they stand
+  for, with nothing downstream to say so. More padding is allowed — it only
+  grows them, and growth into the arm's own fixed spheres is already refused by
+  the box it grew. A layer that states no padding (one built in code, or
+  hand-written) is composed at any padding, as before. This is the only part of
+  `meta` anything reads.
 - The ROS 2 sim stack `sim/mebot_sim`: a MuJoCo Gen3 serving the arm driver's
   names beside the exact MEBot and a seated body, two planner nodes, and a
   paired suite; `make sim` and `make sim-test` (Jetson).

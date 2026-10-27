@@ -133,8 +133,12 @@ floor:
   half_extent_m: 1.5
   thickness_m: 0.1
 
-# Written relative to the repository root.
+# Written relative to the repository root. These are this checkout's copy:
+# fixtures for the tests and the sim, NOT package data -- the layers describe
+# one chair and ship with that robot, in rammp-deployments under
+# config/robots/<robot>/curobo (issue #19). `--outdir` writes the robot's copy
+# from the same rendered text.
 outputs:
-  platform: core/rammp_curobo/configs/layer_mebot_platform.yaml
-  person: core/rammp_curobo/configs/layer_mebot_person.yaml
-  floor: core/rammp_curobo/configs/layer_mebot_floor.yaml
+  platform: core/tests/data/mebot/layer_mebot_platform.yaml
+  person: core/tests/data/mebot/layer_mebot_person.yaml
+  floor: core/tests/data/mebot/layer_mebot_floor.yaml

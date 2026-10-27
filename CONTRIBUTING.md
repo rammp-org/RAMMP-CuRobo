@@ -131,7 +131,14 @@ Jetson one — is tracked in issue #8.
 
 ### The MEBot obstacle layers and their sim
 
-- `make layers` regenerates `core/rammp_curobo/configs/layer_mebot_*.yaml`
+- The chair's five files are per-robot data and ship with the robot, in
+  rammp-deployments `config/robots/<robot>/curobo/`, not in the image (issue
+  #19). `core/tests/data/mebot/` is this checkout's fixture copy, for the
+  tests and the sim; `make layers OUTDIR=<that robot's curobo dir>` writes the
+  robot's copy in the same run, from the same rendered text. Never leave a
+  packaged copy behind — see CLAUDE.md for why that is a safety rule and not
+  a tidiness one.
+- `make layers` regenerates `core/tests/data/mebot/layer_mebot_*.yaml`
   from `scripts/mebot_layers.yaml` and the MEBot URDF it pins, then fails on
   any diff. It needs that URDF from the cache
   (`${XDG_CACHE_HOME:-~/.cache}/rammp_curobo/cad/`), a Demo-Software clone

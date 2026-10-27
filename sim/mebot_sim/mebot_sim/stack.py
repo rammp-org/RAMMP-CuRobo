@@ -183,6 +183,27 @@ def config(name):
     return checkout() / "sim" / "mebot_sim" / "config" / name
 
 
+def chair_dir():
+    """This checkout's copy of the chair's files.
+
+    They are not package data. The layers, the chair planner config and its
+    start-up world are ONE robot's geometry, and they ship with that robot, in
+    rammp-deployments under config/robots/<robot>/curobo, bind-mounted at
+    /config/robot (RAMMP-CuRobo issue #19). What the sim runs is this
+    checkout's fixture copy, written by `make layers` from the same inputs and
+    the same rendered text, so verifying the chair needs no deployment
+    checkout. The copy is what `outputs` in scripts/mebot_layers.yaml names,
+    which is why layer_files() and the suite's digests follow it unchanged.
+    """
+    return checkout() / "core" / "tests" / "data" / "mebot"
+
+
+def chair_config():
+    """The chair planner config the sim runs, as a path. CHAIR_CONFIG names
+    it; the world and the layers it lists resolve next to it, there."""
+    return chair_dir() / CHAIR_CONFIG
+
+
 def scenarios():
     """config/scenarios.yaml: the stand-in's postures and the suite's
     thresholds, and what find_pairs found: the sim's start state and the
@@ -199,7 +220,7 @@ def chair_layers():
     from rammp_curobo.config import load_planner_config, resolve_config
     from rammp_curobo.scene import load_layers, load_scene
 
-    cfg, where = load_planner_config(CHAIR_CONFIG)
+    cfg, where = load_planner_config(chair_config())
     world = load_scene(resolve_config(cfg["world"], relative_to=where))
     layers = load_layers(cfg["layers"], relative_to=where, listed_in=CHAIR_CONFIG)
     return layers, world

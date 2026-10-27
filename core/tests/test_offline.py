@@ -135,13 +135,35 @@ def test_packaged_configs_exist():
         "world_sim_kitchen.yaml",
         "world_real_bench.yaml",
         "world_empty.yaml",
+    ):
+        assert (PACKAGED_CONFIG_DIR / name).is_file(), name
+
+
+def test_the_chair_is_not_packaged_and_resolves_to_no_stale_copy():
+    """The chair's five files are ONE robot's geometry, not module config, so
+    they ship with that robot (rammp-deployments, config/robots/<robot>/curobo)
+    and this checkout keeps only a fixture copy under core/tests/data/mebot
+    (issue #19).
+
+    Nothing may leave a packaged copy behind. The planner container bind-mounts
+    config/robots/current, and Docker makes that an empty directory when it
+    starts before set_robot.py has run: a packaged fallback would let a bare
+    layer name resolve against the image and plan the chair against stale
+    geometry, with no warning. Absent, the same start fails instead.
+    """
+    chair = (
         "gen3_mebot.yaml",
         "world_mebot.yaml",
         "layer_mebot_platform.yaml",
         "layer_mebot_person.yaml",
         "layer_mebot_floor.yaml",
-    ):
-        assert (PACKAGED_CONFIG_DIR / name).is_file(), name
+    )
+    fixtures = Path(__file__).resolve().parent / "data" / "mebot"
+    for name in chair:
+        assert not (PACKAGED_CONFIG_DIR / name).exists(), name
+        with pytest.raises(FileNotFoundError):
+            resolve_config(name, search_cwd=False)
+        assert (fixtures / name).is_file(), name
 
 
 def test_planner_config_loads_and_merges():

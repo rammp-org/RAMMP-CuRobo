@@ -37,6 +37,9 @@ from rammp_curobo.world import sphere_box_penetration  # noqa: E402
 
 # a box out of the arm's reach: a world with nothing in the way
 FAR = {"name": "far", "position": [1.5, 1.5, 0.5], "dims": [0.2, 0.2, 0.2]}
+# The chair is one robot's geometry, not package data: this checkout keeps a
+# fixture copy of what rammp-deployments ships (issue #19).
+MEBOT = Path(__file__).resolve().parent / "data" / "mebot"
 FLOOR = "layer_mebot_floor.yaml"
 PLATFORM = "layer_mebot_platform.yaml"
 PERSON = "layer_mebot_person.yaml"
@@ -56,7 +59,7 @@ def planner(urdf_level):
 def chair_planner(urdf_level):
     """The Gen3 on the MEBot: the generated platform and person layers in
     every world. Built only when a test asks for it."""
-    return CuRoboPlanner.from_config("gen3_mebot.yaml", urdf_path=urdf_level)
+    return CuRoboPlanner.from_config(MEBOT / "gen3_mebot.yaml", urdf_path=urdf_level)
 
 
 @pytest.fixture
@@ -721,7 +724,7 @@ def test_world_read_back_matches_composition(planner, chair_planner, tmp_path):
         chair_planner.update_world("world_sim_kitchen.yaml")
         _check_read_back(chair_planner)
     finally:
-        chair_planner.update_world("world_mebot.yaml")
+        chair_planner.update_world(MEBOT / "world_mebot.yaml")
     _check_read_back(chair_planner)
 
 
@@ -806,7 +809,7 @@ def test_chair_layers_survive_every_push(chair_planner, platform_state, tmp_path
             ok, detail = chair_planner.check_state_valid(platform_state)
             assert not ok and "platform/" in detail, (form, detail)
     finally:
-        chair_planner.update_world("world_mebot.yaml")
+        chair_planner.update_world(MEBOT / "world_mebot.yaml")
 
 
 def test_person_is_excluded_without_touching_the_platform(
@@ -817,7 +820,7 @@ def test_person_is_excluded_without_touching_the_platform(
     ok, detail = chair_planner.check_state_valid(retract)
     assert not ok and "person/" in detail, detail
     try:
-        chair_planner.update_world("world_mebot.yaml", ignore={"person"})
+        chair_planner.update_world(MEBOT / "world_mebot.yaml", ignore={"person"})
         kept = chair_planner.world_boxes
         assert not [box for box in kept if box["layer"] == "person"]
         platform = [box for box in whole if box["layer"] == "platform"]
@@ -828,11 +831,11 @@ def test_person_is_excluded_without_touching_the_platform(
 
         # the platform cannot be left out, and asking leaves the world as it was
         with pytest.raises(ValueError, match="layer 'platform' is not excludable"):
-            chair_planner.update_world("world_mebot.yaml", ignore={"platform"})
+            chair_planner.update_world(MEBOT / "world_mebot.yaml", ignore={"platform"})
         assert chair_planner.world_boxes == kept
         _check_read_back(chair_planner)
     finally:
-        chair_planner.update_world("world_mebot.yaml")
+        chair_planner.update_world(MEBOT / "world_mebot.yaml")
 
 
 @pytest.fixture(scope="session")
@@ -883,7 +886,7 @@ def test_a_layer_box_over_the_arm_base_is_refused(chair_planner, tmp_path):
         assert chair_planner.world_boxes == before
         _check_read_back(chair_planner)
     finally:
-        chair_planner.update_world("world_mebot.yaml")
+        chair_planner.update_world(MEBOT / "world_mebot.yaml")
 
 
 def test_plans_keep_curobo_spheres_outside_every_padded_box(
@@ -918,7 +921,7 @@ def test_plans_keep_curobo_spheres_outside_every_padded_box(
     # the same requests reach into it, as they would here if cuRobo ignored it
     depths = []
     try:
-        chair_planner.update_world("world_mebot.yaml", ignore={"person"})
+        chair_planner.update_world(MEBOT / "world_mebot.yaml", ignore={"person"})
         for goal in planned:
             res = chair_planner.plan_to_joints(goal, start)
             if res.success:
@@ -926,7 +929,7 @@ def test_plans_keep_curobo_spheres_outside_every_padded_box(
                 hits = sphere_box_penetration(spheres[spheres[..., 3] > 0], person)
                 depths.append(max(hits.values(), default=0.0))
     finally:
-        chair_planner.update_world("world_mebot.yaml")
+        chair_planner.update_world(MEBOT / "world_mebot.yaml")
     if max(depths, default=0.0) <= 0.0005:
         pytest.fail(
             "none of the %d requests that planned reaches into the person when "

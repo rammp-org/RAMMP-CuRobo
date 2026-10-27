@@ -76,13 +76,25 @@ bake:                      ## Regenerate the robot config (expect no diff)
 # Regenerating the MEBot layers must be a no-op too: scripts/mebot_layers.yaml
 # and the URDF it pins (from a Demo-Software clone, the cache or GitHub raw)
 # are their only inputs. A diff here means someone hand-edited a
-# configs/layer_mebot_*.yaml, or changed the inputs without committing the
-# layers they make.
-layers:                    ## Regenerate the MEBot layers (expect no diff)
+# core/tests/data/mebot/layer_mebot_*.yaml, or changed the inputs without
+# committing the layers they make.
+#
+# These are this checkout's copy: fixtures for the tests and the sim, NOT
+# package data. The layers are one robot's geometry and ship with that robot,
+# in rammp-deployments under config/robots/<robot>/curobo (issue #19). Write
+# the robot's copy from the same run with OUTDIR, then commit it there:
+#
+#   make layers OUTDIR=~/rammp-deployments/december_2026/config/robots/mebot/curobo
+#
+# The text is rendered once, so the two copies cannot drift.
+layers:                    ## Regenerate the MEBot layers (expect no diff; OUTDIR= also writes a robot's copy)
 	python3 scripts/generate_layers.py
-	git diff --exit-code core/rammp_curobo/configs/layer_mebot_platform.yaml \
-	  core/rammp_curobo/configs/layer_mebot_person.yaml \
-	  core/rammp_curobo/configs/layer_mebot_floor.yaml
+	git diff --exit-code core/tests/data/mebot/layer_mebot_platform.yaml \
+	  core/tests/data/mebot/layer_mebot_person.yaml \
+	  core/tests/data/mebot/layer_mebot_floor.yaml
+ifneq ($(OUTDIR),)
+	python3 scripts/generate_layers.py --outdir "$(OUTDIR)"
+endif
 
 # The sim stack (sim/mebot_sim) and the two packages it runs, built into the
 # git-ignored .sim_ws/ as links to these sources. sim/ carries a COLCON_IGNORE

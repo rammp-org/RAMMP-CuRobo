@@ -1104,6 +1104,14 @@ def main(argv=None):
         help="never ask GitHub: the cache or a local clone must have the URDF",
     )
     parser.add_argument(
+        "--outdir",
+        help="write the layer set into this directory, by file name, instead of"
+        " the paths `outputs` declares -- the robot's own copy in a"
+        " rammp-deployments checkout (config/robots/<robot>/curobo). The text"
+        " is rendered once, so the two copies cannot drift; --check reads the"
+        " copy there",
+    )
+    parser.add_argument(
         "--clone",
         help="a Demo-Software clone (default: $RAMMP_DEMO_SOFTWARE, then"
         " ~/Demo-Software)",
@@ -1125,7 +1133,18 @@ def main(argv=None):
         return 1
     print(_report(data, result, origin))
 
-    files = {REPO / path: text for path, text in result["files"].items()}
+    # The layers are a robot's own files, not package data (issue #19): one
+    # run writes this checkout's copy, another writes the robot's, from the
+    # same rendered text. `outputs` names where the in-repo copy lives; with
+    # --outdir only the file name is kept, so a deployment's layout is the
+    # deployment's business.
+    if args.outdir:
+        files = {
+            Path(args.outdir) / os.path.basename(path): text
+            for path, text in result["files"].items()
+        }
+    else:
+        files = {REPO / path: text for path, text in result["files"].items()}
     if args.check:
         diffs = [_diff(path, text) for path, text in files.items()]
         sys.stdout.writelines(diffs)

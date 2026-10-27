@@ -1926,3 +1926,72 @@ def test_committed_layers_meet_budgets_and_clear_the_arm():
         # and the file says how close they come
         claimed = meta[name]["keep_out_clearance_m"]
         assert claimed == pytest.approx(clear, abs=5e-5), name
+
+
+def test_outdir_writes_the_layer_set_beside_the_robot_that_uses_it(
+    isolated, monkeypatch, capsys
+):
+    """The layers stop being package data and become a robot's own files
+    (issue #19, Swapnil's review of #28), so the generator has to be able to
+    write them somewhere that is not this checkout. `--outdir` writes the set
+    there by file name, byte for byte what the in-repo copy gets, and writes
+    nothing at the declared outputs: one generator, two destinations, no
+    second rendering of the text to drift.
+    """
+    tmp_path = isolated
+    urdf = _urdf(
+        _link("chassis", _box("0.1 0.1 0.1", "1 0 0"), _box("0.1 0.1 0.1", "1.3 0 0"))
+    )
+    clone, commit = _clone(tmp_path / "clone", "chair.urdf", urdf)
+    repo = tmp_path / "repo"
+    packaged = repo / "core" / "rammp_curobo" / "configs"
+    packaged.mkdir(parents=True)
+    shutil.copy(PACKAGED_CONFIG_DIR / "robot_gen3_2f85.yaml", packaged)
+    monkeypatch.setattr(gen, "REPO", repo)
+    monkeypatch.setattr(gen, "PACKAGED_CONFIG_DIR", packaged)
+    names = {
+        layer: "layer_mebot_%s.yaml" % layer
+        for layer in ("platform", "person", "floor")
+    }
+
+    def run(*flags):
+        data = _inputs()
+        data["source"] = {
+            "repo": "example/chair",
+            "commit": commit,
+            "path": "chair.urdf",
+            "sha256": hashlib.sha256(urdf).hexdigest(),
+        }
+        data["platform"]["max_boxes"] = 2
+        data["outputs"] = {
+            layer: "core/tests/data/layers/%s" % name for layer, name in names.items()
+        }
+        (tmp_path / "data.yaml").write_text(yaml.safe_dump(data))
+        argv = ["--data", str(tmp_path / "data.yaml"), "--clone", str(clone)]
+        argv += ["--cache", str(tmp_path / "cache"), *flags]
+        status = gen.main(argv)
+        capsys.readouterr()
+        return status
+
+    # the in-repo copy, as `make layers` writes it
+    assert run() == 0
+    fixtures = repo / "core" / "tests" / "data" / "layers"
+    in_repo = {name: (fixtures / name).read_bytes() for name in names.values()}
+
+    # and the robot's own copy, somewhere else entirely
+    robot = tmp_path / "deployments" / "config" / "robots" / "mebot" / "curobo"
+    assert run("--outdir", str(robot)) == 0
+    assert sorted(p.name for p in robot.iterdir()) == sorted(names.values())
+    assert {p.name: p.read_bytes() for p in robot.iterdir()} == in_repo
+
+    # --outdir writes THERE and nowhere else: a stale in-repo copy is not
+    # quietly refreshed by a run aimed at a robot
+    (fixtures / names["floor"]).write_bytes(b"layer: tampered\n")
+    assert run("--outdir", str(robot)) == 0
+    assert (fixtures / names["floor"]).read_bytes() == b"layer: tampered\n"
+
+    # and --check reads the copy it is pointed at, so the robot's files can be
+    # gated the same way the in-repo ones are
+    assert run("--check", "--outdir", str(robot)) == 0
+    (robot / names["floor"]).write_bytes(b"layer: tampered\n")
+    assert run("--check", "--outdir", str(robot)) == 1

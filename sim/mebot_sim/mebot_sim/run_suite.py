@@ -308,7 +308,7 @@ def bench_retract():
     import yaml
     from rammp_curobo.config import load_planner_config, resolve_config
 
-    cfg, where = load_planner_config(stack.CHAIR_CONFIG)
+    cfg, where = load_planner_config(stack.chair_config())
     # read as load_robot_config reads it, which refuses to load without the
     # arm's model; the seed is taken from the file as-is
     path = resolve_config(cfg["robot"], relative_to=where)

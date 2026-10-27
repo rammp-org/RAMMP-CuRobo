@@ -144,8 +144,8 @@ That's the whole service: `/rammp_curobo/plan_to_pose` and
 plan from (`start_joints`, **required** — the planner has no view of any
 arm) and return the trajectory. See **INTEGRATION.md** for client code,
 and **docker/** to run the same thing as a container. With the arm on the
-MEBot wheelchair, run `config:=gen3_mebot.yaml` instead (see **Obstacle
-layers** below).
+MEBot wheelchair, point `config:` at the chair's own files, which ship with
+that robot rather than in this image (see **Obstacle layers** below).
 
 The node first waits for the model on `/arm/robot_description` (latched;
 `robot_description_timeout_s`, default 30 s), so `arm_state_publisher`
@@ -242,8 +242,21 @@ it is refused, naming every source, and nothing is truncated.
 ### The chair config
 
 ```bash
-ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_mebot.yaml
+ros2 launch rammp_curobo_ros planner.launch.py \
+  config:=/config/robot/curobo/gen3_mebot.yaml
 ```
+
+**The chair does not ship here.** `gen3_mebot.yaml`, its world and the three
+layer files describe one chair's geometry and where the arm sits on it, so
+they are per-robot data and live with the robot: rammp-deployments
+`december_2026/config/robots/<robot>/curobo/`, which the planner container
+bind-mounts read-only at `/config/robot` (issue #19). Re-measuring the chair
+is a commit there, not a release here. Nothing resolves these by bare name,
+by design — a packaged fallback would let an unmounted `/config/robot` plan
+the chair against stale geometry.
+
+If you override the `world` parameter in a manifest, a chair robot must set it
+to `""`: a non-empty `world` replaces whatever the planner config names.
 
 `gen3_mebot.yaml` is the Gen3 on the MEBot, its base at the RAMMS model
 pose (0.505, -0.265, 0.376) m in the MEBot's frame, square to the chair —
@@ -254,6 +267,10 @@ unverified on the real chair. It starts in a world of 25 boxes:
 | `platform` | `layer_mebot_platform.yaml` | 16    | a config layer, not excludable      |
 | `person`   | `layer_mebot_person.yaml`   | 8     | a config layer, excludable          |
 | `floor`    | `layer_mebot_floor.yaml`    | 1     | a scene layer of `world_mebot.yaml` |
+
+Each layer records the `world_padding` it was generated for, and the planner
+refuses to start in a world composed with less: the boxes are written
+unpadded and undersized by exactly the padding that is added back.
 
 The platform is the drive base alone, with every joint at zero, and its
 coverage numbers below are for that pose. Nothing models the rest of
@@ -297,8 +314,9 @@ A layer marked `excludable: true` may be left out of one world. The person
 is; the platform is not:
 
 ```python
-planner.update_world("world_mebot.yaml", ignore={"person"})  # platform untouched
-planner.update_world("world_mebot.yaml")                     # the person is back
+chair = "/config/robot/curobo/world_mebot.yaml"
+planner.update_world(chair, ignore={"person"})  # platform untouched
+planner.update_world(chair)                     # the person is back
 ```
 
 `ignore={"platform"}` is refused (`layer 'platform' is not excludable`),
@@ -423,7 +441,7 @@ that cuRobo honours them.
 | nodes can't see each other's topics                                | `ROS_LOCALHOST_ONLY=1` must be exported in EVERY shell (non-interactive shells skip `~/.zshrc` — export explicitly; RAMMP-Kinova's `tools/launch_stack.zsh` does)                                 |
 | both bringups fight / controllers flap                             | MuJoCo sim and kortex bringup both claim `/controller_manager` — run exactly one                                                                                                                  |
 | `update_world` seems ignored / obstacles missing                   | cuRobo v0.7.8: cylinders/spheres in a WorldConfig are silently dropped (cuboids only), and an empty world silently keeps the previous one — the library guards both, custom worlds go in as boxes |
-| `INVALID_START` on `gen3_mebot.yaml`                               | the start is inside a layer; the error names the boxes and how deep. The bench retract is inside the person layer — plan from the arm's measured state                                            |
+| `INVALID_START` on the chair config                                | the start is inside a layer; the error names the boxes and how deep. The bench retract is inside the person layer — plan from the arm's measured state                                            |
 | set_world refused: "empty apart from the configured layers"        | the pushed scene has no obstacles, objects or layers of its own (a world file cut short?); the planner config's layers alone are never taken as a world                                           |
 | `AttributeError: wp.torch` in mesh collision                       | newer warp needs explicit `import warp.torch` — the library does this; if embedding cuRobo yourself, copy that                                                                                    |
 | `ros2 topic echo` prints "A message was lost!!!"                   | benign QoS depth artifact of echo on a 500 Hz topic                                                                                                                                               |

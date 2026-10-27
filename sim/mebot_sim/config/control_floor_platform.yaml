@@ -3,8 +3,17 @@
 # no person. The same request planned here and on the chair planner differs
 # by the person layer alone.
 
+# The layers are named by paths relative to THIS file, not by name: the MEBot
+# layers are one robot's geometry and no longer ship in the package (issue
+# #19), so a bare name would not resolve -- a layer is looked for next to the
+# file that lists it and never in the working directory. This is the
+# checkout's copy, the one `make layers` writes (stack.chair_dir), which
+# mebot_sim always reads from the checkout it was built from.
+
 base_frame: arm_mount
 
 obstacles: []
 
-layers: [layer_mebot_floor.yaml, layer_mebot_platform.yaml]
+layers:
+  - ../../../core/tests/data/mebot/layer_mebot_floor.yaml
+  - ../../../core/tests/data/mebot/layer_mebot_platform.yaml

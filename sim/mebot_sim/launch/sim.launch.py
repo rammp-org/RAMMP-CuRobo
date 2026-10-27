@@ -8,8 +8,11 @@
                            the live view (http://127.0.0.1:8765); it latches
                            the arm's model on /arm/robot_description, which
                            the planner nodes wait for
-    /rammp_curobo          config:=gen3_mebot.yaml: what a consumer on the
-                           chair gets
+    /rammp_curobo          config:=<checkout>/core/tests/data/mebot/gen3_mebot.yaml:
+                           what a consumer on the chair gets. By path, not by
+                           name: the chair's files are one robot's geometry and
+                           ship with that robot, not in the package (issue
+                           #19), so the sim runs the checkout's copy
     /rammp_curobo_control  config:=gen3.yaml, which composes no layers: it
                            plans in whatever scene a test pushes it, so the
                            same request can be planned without a layer
@@ -34,7 +37,19 @@ from launch_ros.actions import Node
 
 from mebot_sim import scene, stack
 
-PLANNERS = (("rammp_curobo", "gen3_mebot.yaml"), ("rammp_curobo_control", "gen3.yaml"))
+
+def planners():
+    """The two planner nodes and the `config` each is started with.
+
+    The chair's config is not packaged (issue #19): it is one robot's geometry,
+    so it ships with the robot and the sim runs this checkout's copy, by path.
+    The control planner's gen3.yaml is module config and still ships in the
+    image, so it stays a name.
+    """
+    return (
+        ("rammp_curobo", str(stack.chair_config())),
+        ("rammp_curobo_control", stack.CONTROL_CONFIG),
+    )
 
 
 def generate_launch_description():
@@ -92,7 +107,7 @@ def generate_launch_description():
             on_exit=[Shutdown(reason="/mebot_sim ended, and the sim stack with it")],
         )
     )
-    for name, config in PLANNERS:
+    for name, config in planners():
         actions.append(
             Node(
                 package="rammp_curobo_ros",

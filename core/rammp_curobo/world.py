@@ -133,6 +133,30 @@ def compose_cuboids(
                     % (layer.name, other.path, layer.path)
                 )
         chosen.append(layer)
+    for layer in chosen:
+        # A generated layer is sized UNPADDED for a stated world_padding, which
+        # the planner adds back per side. Less padding than that leaves the
+        # chair smaller than the chair with nothing downstream to say so, so it
+        # is refused; the layer states what it was generated for, and the two
+        # are checked rather than coordinated by hand. MORE is allowed: it only
+        # grows the boxes, and where that growth matters -- into the arm's own
+        # fixed spheres -- the keep-out guard below already refuses it, by the
+        # box it grew. This is the only part of `meta` anything reads.
+        if layer.padding_assumed is None or padding >= layer.padding_assumed:
+            continue
+        raise ValueError(
+            "layer %r (%s) was generated for world_padding %r and is composed "
+            "with %r: every box is %.1f mm undersized on each face, so the "
+            "layer no longer covers what it stands for; regenerate it for this "
+            "padding, or plan with the padding it was generated for"
+            % (
+                layer.name,
+                layer.path,
+                layer.padding_assumed,
+                padding,
+                1e3 * (layer.padding_assumed - padding),
+            )
+        )
     props = {o.name for o in scene.objects}
     for layer in chosen:
         if layer.name not in ignore:
