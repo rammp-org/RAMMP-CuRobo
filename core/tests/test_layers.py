@@ -856,8 +856,13 @@ def test_missing_layer_is_named_with_every_path_tried(
     # planner refuses to start, before any GPU work
     inits, _, _ = _no_gpu(monkeypatch)
     config = tmp_path / "planner.yaml"
+    # a PACKAGED world, so that the layer is what is missing: the chair's
+    # world is not packaged any more (issue #19), and naming it here would
+    # fail on the world before any layer was looked for
     config.write_text(
-        "robot: robot_gen3_2f85.yaml\nworld: world_mebot.yaml\nlayers: [gone.yaml]\n"
+        "robot: robot_gen3_2f85.yaml\n"
+        "world: world_sim_kitchen.yaml\n"
+        "layers: [gone.yaml]\n"
     )
     with pytest.raises(FileNotFoundError) as exc:
         CuRoboPlanner.from_config(config, urdf_path=urdf_level)
