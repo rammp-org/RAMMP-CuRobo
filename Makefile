@@ -86,7 +86,10 @@ bake:                      ## Regenerate the robot config (expect no diff)
 #
 #   make layers OUTDIR=~/rammp-deployments/december_2026/config/robots/mebot/curobo
 #
-# The text is rendered once, so the two copies cannot drift.
+# Two runs of a deterministic generator, not one rendering: the bytes match
+# because the inputs are pinned and the output is snapped to a grid, which is
+# also why the in-repo copy can be diff-asserted. The robot's copy has no
+# gate here -- the deployment repo composes its own copy in CI.
 layers:                    ## Regenerate the MEBot layers (expect no diff; OUTDIR= also writes a robot's copy)
 	python3 scripts/generate_layers.py
 	git diff --exit-code core/tests/data/mebot/layer_mebot_platform.yaml \

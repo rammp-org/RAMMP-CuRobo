@@ -2238,11 +2238,10 @@ def test_a_layer_box_in_the_arms_fixed_spheres_is_refused_and_the_world_kept(
         "or shrink that box, or regenerate its layer"
     )
 
-    # below it the chair never reaches this guard: its layers are generated
-    # undersized by exactly the padding that is added back, so a smaller one
-    # leaves them not covering the chair they stand for, and the planner
-    # refuses to start at all
-    with pytest.raises(ValueError, match="undersized on each face"):
+    # below it the chair never reaches this guard: its layer set is certified
+    # only for the padding it was generated for, so the planner refuses to
+    # start at all
+    with pytest.raises(ValueError, match="certified only for the padding"):
         chair_at(0.01)
 
     # the same box as the scene's own is cuRobo's to judge, as in v1.0.0
@@ -2728,12 +2727,14 @@ def test_held_and_via_plans_on_the_chair_plan_in_its_layers_and_are_explained(
 
 
 def test_a_layer_generated_for_another_padding_is_refused(tmp_path):
-    """A generated layer is sized UNPADDED for the world_padding it states
-    (meta.padding_assumed_m), which the planner then adds per side. Composed
-    into a world with less padding it is undersized -- the chair quietly
-    smaller than the chair -- so the claim is checked rather than trusted.
-    Until now nothing read `meta`, and only a test held the two in step, which
-    cannot reach a layer file that ships in another repo.
+    """A generated layer set is certified only for the world_padding it states
+    (meta.padding_assumed_m): the person's carve-out around the arm's base is
+    sized for it, and the platform's merges were only made where the padded box
+    still cleared those spheres. The boxes themselves circumscribe the chair,
+    so this is not about size -- composing with LESS voids what the generator
+    decided, and is refused rather than trusted. Until now nothing read `meta`,
+    and only a test held the two in step, which cannot reach a layer file that
+    ships in another repo.
     """
     path = _layer(tmp_path / "chair.yaml", "chair")
     path.write_text(
@@ -2761,7 +2762,9 @@ def test_an_unreadable_padding_claim_is_refused_at_load(tmp_path):
     not silently exempted from the check above."""
     path = _layer(tmp_path / "chair.yaml", "chair")
     good = path.read_text()
-    for bad in ("lots", "[0.02]", ".nan", "-0.02"):
+    # `true` is a number to YAML's eyes only until bool is excluded, and a
+    # `meta` that is not a mapping cannot be asked for the claim at all
+    for bad in ("lots", "[0.02]", ".nan", "-0.02", "true"):
         path.write_text(
             good.replace(
                 "layer: chair\n", "layer: chair\nmeta: {padding_assumed_m: %s}\n" % bad
@@ -2770,3 +2773,17 @@ def test_an_unreadable_padding_claim_is_refused_at_load(tmp_path):
         with pytest.raises(ValueError, match="padding_assumed_m") as exc:
             load_layer(path)
         assert str(path) in str(exc.value), bad
+
+
+def test_a_meta_that_is_not_a_mapping_is_refused(tmp_path):
+    """A layer file whose `meta` is a list or a string cannot be asked for its
+    padding claim, and must not pass for "states none" -- it would then compose
+    at any padding, which is the one thing the claim exists to stop."""
+    path = _layer(tmp_path / "chair.yaml", "chair")
+    good = path.read_text()
+    for bad in ("[0.02]", "a string", "0.02"):
+        path.write_text(
+            good.replace("layer: chair\n", "layer: chair\nmeta: %s\n" % bad)
+        )
+        with pytest.raises(ValueError, match="'meta' must be a mapping"):
+            load_layer(path)

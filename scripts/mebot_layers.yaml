@@ -1,6 +1,6 @@
 # Inputs of scripts/generate_layers.py: the MEBot obstacle layers.
 #
-# Every number in core/rammp_curobo/configs/layer_mebot_{platform,person,floor}.yaml
+# Every number in core/tests/data/mebot/layer_mebot_{platform,person,floor}.yaml
 # comes from this file, or from the URDF and the robot config it names. Edit
 # here and run `make layers`; the layer files themselves are never hand-edited.
 #

@@ -121,11 +121,11 @@ class Layer:
     came from, as a resolved absolute path. `excludable` says whether a
     caller may leave the whole layer out of a world.
 
-    `padding_assumed` is the world_padding the boxes were sized for, as
-    the file's meta states it, or None when it states none (a layer built
-    in code, or one written by hand). compose_cuboids refuses a layer
-    composed with LESS padding than that: the boxes would not cover what
-    they stand for. More is allowed -- it only grows them."""
+    `padding_assumed` is the world_padding the layer set was generated
+    for, as the file's meta states it, or None when it states none (a
+    layer built in code, or one written by hand). compose_cuboids refuses
+    a layer composed with LESS padding than that: the set is certified
+    only for it. More is allowed -- it only grows the boxes."""
 
     __slots__ = ("name", "excludable", "obstacles", "path", "padding_assumed")
 
@@ -368,13 +368,23 @@ def load_layer(path):
 def _padding_assumed(data, where):
     """The world_padding `data`'s meta says its boxes were sized for, or None.
 
-    The generated layers are UNPADDED and undersized by exactly the padding
-    the planner adds per side, so the two have to agree; nothing else in
-    `meta` is read. A claim that is not a finite number >= 0 is refused here,
-    where the file is named, rather than left to pass for "no claim".
+    A generated layer set is certified only for the padding it was generated
+    for -- the person's carve-out around the arm's base is sized for it, and
+    the platform's merges were chosen to clear those spheres at it -- so the
+    two have to agree. Nothing else in `meta` is read. A claim that is not a
+    finite number >= 0 is refused here, where the file is named, rather than
+    left to pass for "no claim".
     """
     meta = data.get("meta")
-    if not isinstance(meta, dict) or "padding_assumed_m" not in meta:
+    if meta is None:
+        return None
+    # a meta that is not a mapping cannot be asked for the claim, and must not
+    # pass for "no claim": the file would then compose at any padding
+    if not isinstance(meta, dict):
+        raise ValueError(
+            "%s: 'meta' must be a mapping, got %s" % (where, type(meta).__name__)
+        )
+    if "padding_assumed_m" not in meta:
         return None
     value = meta["padding_assumed_m"]
     if isinstance(value, bool) or not isinstance(value, (int, float)):

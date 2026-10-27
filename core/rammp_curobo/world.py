@@ -134,21 +134,26 @@ def compose_cuboids(
                 )
         chosen.append(layer)
     for layer in chosen:
-        # A generated layer is sized UNPADDED for a stated world_padding, which
-        # the planner adds back per side. Less padding than that leaves the
-        # chair smaller than the chair with nothing downstream to say so, so it
-        # is refused; the layer states what it was generated for, and the two
-        # are checked rather than coordinated by hand. MORE is allowed: it only
-        # grows the boxes, and where that growth matters -- into the arm's own
-        # fixed spheres -- the keep-out guard below already refuses it, by the
-        # box it grew. This is the only part of `meta` anything reads.
+        # A generated layer set is certified only for the padding it was
+        # generated for, and states it. The boxes themselves circumscribe the
+        # chair (each layer carries the containment certificate that says so),
+        # so padding is margin, not size -- but two things were decided AT that
+        # padding: the person layer's carve-out around the arm's base column is
+        # sized for it, so a smaller one leaves part of the occupant uncovered
+        # beside the arm, and the platform's merges were only made where the
+        # padded box still cleared those spheres. Less is therefore refused;
+        # MORE is allowed, since it only grows the boxes, and growth into the
+        # arm's own spheres is caught by the keep-out guard, by the box it grew.
+        # This is the only part of `meta` anything reads.
         if layer.padding_assumed is None or padding >= layer.padding_assumed:
             continue
         raise ValueError(
             "layer %r (%s) was generated for world_padding %r and is composed "
-            "with %r: every box is %.1f mm undersized on each face, so the "
-            "layer no longer covers what it stands for; regenerate it for this "
-            "padding, or plan with the padding it was generated for"
+            "with %r, %.3g mm less: the layers are certified only for the "
+            "padding they were generated for -- the person's carve-out around "
+            "the arm's base is sized for it, and the platform's merges were "
+            "chosen to clear those spheres at it. Regenerate them for this "
+            "padding, or plan with the padding they were generated for"
             % (
                 layer.name,
                 layer.path,

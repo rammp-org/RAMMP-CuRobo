@@ -150,7 +150,8 @@ def test_each_world_holds_the_layers_it_is_said_to(tmp_path, monkeypatch):
     # layer files in the current directory must change nothing
     monkeypatch.chdir(tmp_path)
     (tmp_path / "layer_mebot_platform.yaml").write_text("not: a layer\n")
-    configs = {stack.CHAIR: "gen3_mebot.yaml", stack.CONTROL: "gen3.yaml"}
+    # the chair's config is not packaged (issue #19): it is named by path
+    configs = {stack.CHAIR: stack.chair_config(), stack.CONTROL: stack.CONTROL_CONFIG}
     for planner, world, sees in stack.worlds().values():
         cfg, where = load_planner_config(configs[planner])
         layers = load_layers(cfg["layers"], relative_to=where, listed_in="test")

@@ -6,7 +6,8 @@ link, plus the to-do to move to the Gen1.5 specs).
 The planner's collision world is boxes only (cuRobo v0.7.8 silently drops
 everything else), so the wheelchair and its occupant reach it as box layers.
 This script builds them on the CPU from scripts/mebot_layers.yaml and writes
-core/rammp_curobo/configs/layer_mebot_{platform,person,floor}.yaml:
+core/tests/data/mebot/layer_mebot_{platform,person,floor}.yaml (this
+checkout's copy; a robot's own is written with --outdir):
 
   * platform: the MEBot drive base. The URDF's collision primitives (boxes
     and cylinders, every joint at zero) are bounded exactly, placed in the
@@ -1108,7 +1109,8 @@ def main(argv=None):
         help="write the layer set into this directory, by file name, instead of"
         " the paths `outputs` declares -- the robot's own copy in a"
         " rammp-deployments checkout (config/robots/<robot>/curobo). The text"
-        " is rendered once, so the two copies cannot drift; --check reads the"
+        " is rendered from the same pinned inputs and the generator is"
+        " deterministic, so the bytes match; --check reads the"
         " copy there",
     )
     parser.add_argument(

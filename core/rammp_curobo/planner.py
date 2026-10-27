@@ -274,12 +274,22 @@ class CuRoboPlanner:
         hits = sphere_box_penetration(self._fixed_spheres, layered)
         if hits:
             key = max(hits, key=hits.get)
-            # The generated layers assume the default padding
-            # (padding_assumed_m in scripts/mebot_layers.yaml). The padding is
-            # to blame when it is above that and every box that intrudes
-            # clears the spheres at the default; otherwise a box reaches them
+            # The padding the intruding layers were generated for, as they
+            # state it (meta.padding_assumed_m), falling back to the default
+            # for a layer that states none. Read from the layers rather than
+            # assumed, so this and compose_cuboids' check cannot disagree.
+            # The padding is to blame when it is above that and every box that
+            # intrudes clears the spheres at it; otherwise a box reaches them
             # by itself, and restoring the padding would not help.
-            assumed = PLANNER_DEFAULTS["planner"]["world_padding"]
+            claims = {
+                layer.padding_assumed
+                for layer in self._layers + list(self._scene.layers)
+                if layer.name in {sources[k] for k in hits}
+                and layer.padding_assumed is not None
+            }
+            assumed = (
+                min(claims) if claims else PLANNER_DEFAULTS["planner"]["world_padding"]
+            )
             grown = 2.0 * (self.world_padding - assumed)
             shrunk = {
                 k: dict(layered[k], dims=[d - grown for d in layered[k]["dims"]])

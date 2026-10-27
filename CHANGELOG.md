@@ -169,7 +169,9 @@ Layer boxes are in `arm_mount`, like every world.
   `make layers`. CI regenerates the committed layers from those inputs and the
   pinned URDF on amd64 and arm64 and fails on any difference.
   `--outdir` / `make layers OUTDIR=<dir>` writes a robot's copy from the same
-  rendered text, so the two copies cannot drift.
+  pinned inputs. The bytes match because the generator is deterministic,
+  not because one run writes both: it runs once per destination, and only the
+  in-repo copy is diff-asserted here.
 - `CuRoboPlanner.world_boxes` and `CuRoboPlanner.world_summary()`.
 - Which layer, which box: a failed plan's error and `check_state_valid` name
   the world boxes the start or goal reach into, with depths, and a failed
@@ -178,12 +180,16 @@ Layer boxes are in `arm_mount`, like every world.
   every start state would be in collision.
 - A layer states the `world_padding` it was generated for
   (`meta.padding_assumed_m`, which the generator writes), and a world composed
-  with LESS than that is refused, naming the layer, its file and the shortfall:
-  the boxes are generated UNPADDED and undersized by exactly the padding the
-  planner adds back, so a smaller one leaves them not covering what they stand
-  for, with nothing downstream to say so. More padding is allowed — it only
-  grows them, and growth into the arm's own fixed spheres is already refused by
-  the box it grew. A layer that states no padding (one built in code, or
+  with LESS than that is refused, naming the layer, its file and the shortfall.
+  Not because the boxes are undersized — they circumscribe the chair, and each
+  layer carries the containment certificate that proves it. What is
+  padding-dependent is what the generator decided at that padding: the person
+  layer's carve-out around the arm's base column is sized for it, so a smaller
+  padding leaves part of the occupant uncovered beside the arm, and a platform
+  merge was only made where the padded box still cleared those spheres. The set
+  is certified for one padding and no other. More padding is allowed — it only
+  grows the boxes, and growth into the arm's own fixed spheres is already
+  refused by the box it grew. A layer that states no padding (one built in code, or
   hand-written) is composed at any padding, as before. This is the only part of
   `meta` anything reads.
 - The ROS 2 sim stack `sim/mebot_sim`: a MuJoCo Gen3 serving the arm driver's

@@ -96,19 +96,27 @@ plus the gripper services (2026-08-24, issue #6).
   pinned MEBot URDF: edit the inputs, run `make layers` (on unchanged inputs
   it must leave no diff) and commit what it writes. Never hand-edit them.
   `make layers OUTDIR=<robots>/mebot/curobo` writes the robot's copy from the
-  same rendered text, so the two cannot drift. `outputs:` in
+  same pinned inputs. The bytes match because the generator is
+  deterministic, not because one run writes both: `make layers OUTDIR=` runs
+  it twice, and only the in-repo copy is diff-asserted here (the deployment
+  repo composes its own copy in CI). `outputs:` in
   `mebot_layers.yaml` names the fixture copy, and `stack.layer_files()`
   follows it — which is why the sim's digest pin in
   `sim/mebot_sim/config/scenarios.yaml` survived the move untouched.
 - A layer states the padding it was generated for
   (`meta.padding_assumed_m`); composing it with LESS is REFUSED, naming the
-  layer and the shortfall. The boxes are written UNPADDED and undersized by
-  exactly the padding the planner adds back, so a smaller one leaves them not
-  covering the chair, and nothing downstream would say so. MORE is allowed —
-  it only grows them, and growth into the arm's own fixed spheres is already
-  refused by the keep-out guard, by the box it grew. This is the only part of
-  `meta` anything reads; before #19 only a test held the two in step, which
-  cannot reach a file that ships from another repo.
+  layer and the shortfall. NOT because the boxes are undersized — they
+  circumscribe the chair, and each layer carries the containment certificate
+  that proves it (`under_m3: 0.000000`). Padding is margin, not size. What is
+  padding-dependent is what the generator DECIDED at that padding: the person
+  layer is carved back around the arm's base column by
+  `padding_assumed_m + keep_out_margin_m`, so a smaller padding leaves part of
+  the occupant uncovered beside the arm; and a platform merge was only made
+  where the padded box still cleared those spheres. So the set is certified
+  for one padding and no other. MORE is allowed — it only grows the boxes, and
+  growth into the arm's spheres is caught by the keep-out guard, by the box it
+  grew. This is the only part of `meta` anything reads; before #19 only a test
+  held the two in step, which cannot reach a file that ships from another repo.
 - Nothing padded may touch the arm's joint-independent sphere column (the
   arm_base_link spheres and the arm_shoulder_link ones on the arm_joint_1 axis: z
   -0.015 .. 0.383 m, radius up to 0.080 m with the buffer), or every state

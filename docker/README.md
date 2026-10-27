@@ -94,11 +94,16 @@ docker run --rm -it --runtime nvidia --network host --ipc host \
   (`world_empty.yaml`: the arm alone, for a robot with nothing in reach to
   model). `ros2 launch rammp_curobo_ros planner.launch.py ...` still works
   but always exits 0. Under sheppy, see below.
-- The arm on the MEBot wheelchair (a release after 1.1.0). The chair's files
-  are NOT in this image: its planner config, its world and its three layer
-  files describe one chair's geometry and ship with that robot, in
-  rammp-deployments `config/robots/<robot>/curobo/` (issue #19). Mount the
-  robot's directory and name the config by path:
+- The arm on the MEBot wheelchair (a release after 1.1.0). The chair's planner
+  config, its world and its three layer files are NOT part of the installed
+  package, so no bare name resolves to them: they describe one chair's
+  geometry and ship with that robot, in rammp-deployments
+  `config/robots/<robot>/curobo/` (issue #19). The repo's **fixture** copy is
+  in the image, at `/opt/rammp_curobo_src/core/tests/data/mebot/`, because the
+  build copies the whole tree and `make verify` needs it — never point
+  `config:` at that path. It is whatever the image was built from, not what
+  the robot is wearing. Mount the robot's directory and name the config by
+  path:
   `... -v ./config/robots/current:/config/robot:ro rammp-curobo:jp6 /opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node --ros-args -p config:=/config/robot/curobo/gen3_mebot.yaml`.
   Set `world` to `""` if your manifest declares one: a non-empty `world`
   replaces whatever the planner config names.

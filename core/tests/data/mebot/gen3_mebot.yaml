@@ -2,7 +2,16 @@
 # RAMMS model pose, with the chair's drive base and its occupant in every
 # collision world.
 #
-#   ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_mebot.yaml
+# THIS IS THIS CHECKOUT'S FIXTURE COPY, for the tests and sim/mebot_sim. The
+# copy a robot runs lives with that robot, in rammp-deployments under
+# config/robots/<robot>/curobo, bind-mounted at /config/robot (issue #19):
+#
+#   config:=/config/robot/curobo/gen3_mebot.yaml
+#
+# Keep this copy in step with the robot's by hand -- only the three layer
+# files are generated. The deployment repo's CI composes its copy with the
+# planner's own loaders, which catches a layer that no longer resolves or a
+# world_padding the layers were not generated for.
 #
 # The two layers below are composed into EVERY world, set_world pushes
 # included: a push replaces the scene, never these. The scene it replaces

@@ -269,8 +269,11 @@ unverified on the real chair. It starts in a world of 25 boxes:
 | `floor`    | `layer_mebot_floor.yaml`    | 1     | a scene layer of `world_mebot.yaml` |
 
 Each layer records the `world_padding` it was generated for, and the planner
-refuses to start in a world composed with less: the boxes are written
-unpadded and undersized by exactly the padding that is added back.
+refuses to start in a world composed with less. The boxes circumscribe the
+chair, so padding is margin rather than size — but the person layer's
+carve-out around the arm's base is sized for that padding, and the platform's
+merges were only made where the padded box still cleared the arm's spheres, so
+the set is certified for one padding and no other. More is allowed.
 
 The platform is the drive base alone, with every joint at zero, and its
 coverage numbers below are for that pose. Nothing models the rest of
