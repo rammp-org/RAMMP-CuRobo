@@ -30,7 +30,7 @@ if not torch.cuda.is_available():
     pytest.skip("CUDA is not available", allow_module_level=True)
 
 from rammp_curobo import CuRoboPlanner  # noqa: E402
-from rammp_curobo.config import PACKAGED_CONFIG_DIR, resolve_config  # noqa: E402
+from rammp_curobo.config import resolve_config  # noqa: E402
 from rammp_curobo.scene import Obstacle, Scene  # noqa: E402
 from rammp_curobo.types import PlanResult, Trajectory  # noqa: E402
 from rammp_curobo.world import sphere_box_penetration  # noqa: E402
@@ -40,9 +40,11 @@ FAR = {"name": "far", "position": [1.5, 1.5, 0.5], "dims": [0.2, 0.2, 0.2]}
 # The chair is one robot's geometry, not package data: this checkout keeps a
 # fixture copy of what rammp-deployments ships (issue #19).
 MEBOT = Path(__file__).resolve().parent / "data" / "mebot"
-FLOOR = "layer_mebot_floor.yaml"
-PLATFORM = "layer_mebot_platform.yaml"
-PERSON = "layer_mebot_person.yaml"
+# By path: a scene written to tmp_path names its layers, and a bare name no
+# longer resolves against the package.
+FLOOR = str(MEBOT / "layer_mebot_floor.yaml")
+PLATFORM = str(MEBOT / "layer_mebot_platform.yaml")
+PERSON = str(MEBOT / "layer_mebot_person.yaml")
 
 
 @pytest.fixture(scope="session")
@@ -736,7 +738,7 @@ def test_chair_config_composes_the_layers_and_warms_up_first(chair_planner):
     # file, padded on every side
     entries = {}
     for name in (FLOOR, PLATFORM, PERSON):
-        data = yaml.safe_load((PACKAGED_CONFIG_DIR / name).read_text(encoding="utf-8"))
+        data = yaml.safe_load(Path(name).read_text(encoding="utf-8"))
         for entry in data["obstacles"]:
             entries["%s/%s" % (data["layer"], entry["name"])] = entry
     assert sorted(entries) == sorted(box["name"] for box in boxes)
