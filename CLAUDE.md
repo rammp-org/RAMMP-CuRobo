@@ -76,11 +76,11 @@ plus the gripper services (2026-08-24, issue #6).
   belongs in the planner config. Only an `excludable: true` layer may be
   dropped, by `ignore=`, from Python only (no IDL change).
 - The chair is NOT package data (issue #19, Swapnil's review of #28). The
-  three layers, `gen3_mebot.yaml` and `world_mebot.yaml` describe ONE chair
+  three layers, `planner.yaml` and `world.yaml` describe ONE chair
   and where the arm sits on it, so they ship with that robot:
-  rammp-deployments `december_2026/config/robots/mebot/curobo/`, bind-mounted
+  rammp-deployments `december_2026/config/robots/flatbot/curobo/`, bind-mounted
   at `/config/robot` and selected with
-  `config:=/config/robot/curobo/gen3_mebot.yaml` (profile `mebot.yaml`, which
+  `config:=/config/robot/curobo/planner.yaml` (profile `flatbot.yaml`, which
   MUST also override `world` to `""` — a non-empty `world` param replaces
   whatever the config names). `core` needed no change: `resolve_config` takes
   absolute paths, and a layer resolves next to the config that lists it. Do

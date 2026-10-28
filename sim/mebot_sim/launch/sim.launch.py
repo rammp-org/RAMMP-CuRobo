@@ -8,7 +8,7 @@
                            the live view (http://127.0.0.1:8765); it latches
                            the arm's model on /arm/robot_description, which
                            the planner nodes wait for
-    /rammp_curobo          config:=<checkout>/core/tests/data/mebot/gen3_mebot.yaml:
+    /rammp_curobo          config:=<checkout>/core/tests/data/mebot/planner.yaml:
                            what a consumer on the chair gets. By path, not by
                            name: the chair's files are one robot's geometry and
                            ship with that robot, not in the package (issue

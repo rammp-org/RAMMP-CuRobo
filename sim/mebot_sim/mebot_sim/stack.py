@@ -40,11 +40,11 @@ ARM_MODEL_TOPIC = "/arm/robot_description"
 # sees: that is the same request planned without a layer.
 CHAIR = "/rammp_curobo"
 CONTROL = "/rammp_curobo_control"
-CHAIR_CONFIG = "gen3_mebot.yaml"
+CHAIR_CONFIG = "planner.yaml"
 CONTROL_CONFIG = "gen3.yaml"
 # The chair planner's start-up world (the floor, under its config layers);
 # pushing it again puts the planner back in it.
-CHAIR_WORLD = "world_mebot.yaml"
+CHAIR_WORLD = "world.yaml"
 
 
 def on_bench_domain(environ):
@@ -170,10 +170,10 @@ def check_planner_imports(env):
 
 def arm_model():
     """The arm's model, as the arm publishes it on ARM_MODEL_TOPIC: the
-    checkout's rendering of it on a level mount (core/tests/data), which is
-    how the sim's arm sits on the MEBot, so that its arm_mount is the frame
-    the layers are generated in."""
-    path = checkout() / "core" / "tests" / "data" / "arm_level.urdf"
+    checkout's rendering of it on the 30-degree mount (core/tests/data),
+    which is how the sim's arm sits on the MEBot, tilted on an arm_mount
+    square to the chair, the frame the layers are generated in."""
+    path = checkout() / "core" / "tests" / "data" / "arm_tilt30.urdf"
     return path.read_text(encoding="utf-8")
 
 

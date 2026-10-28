@@ -74,7 +74,7 @@ def test_the_floor_is_the_floor_layers_top(assets, model):
 def test_the_overlays_are_the_padded_layers_and_touch_nothing(assets, model):
     m = model
     overlays = _geoms(m, "overlay/")
-    assert len(overlays) == 25  # floor 1, platform 16, person 8
+    assert len(overlays) == 26  # floor 1, platform 16, person 9
     for layer in assets.layers.values():
         for box in layer.obstacles:
             g = m.geom("overlay/%s/%s" % (layer.name, box.name))

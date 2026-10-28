@@ -7,7 +7,7 @@ plans in the sim-kitchen world.
 
 It is also where obstacle layers (issue #19) meet cuRobo: paired requests,
 the same one with and without a box, that fail if cuRobo ignores the box,
-and the generated chair on a second planner (gen3_mebot.yaml), built only
+and the generated chair on a second planner (planner.yaml), built only
 for the tests that use it. Every search is seeded and capped, and fails
 naming what it tried. A test that pushes a world puts back the one it
 found.
@@ -58,10 +58,20 @@ def planner(urdf_level):
 
 
 @pytest.fixture(scope="session")
-def chair_planner(urdf_level):
-    """The Gen3 on the MEBot: the generated platform and person layers in
-    every world. Built only when a test asks for it."""
-    return CuRoboPlanner.from_config(MEBOT / "gen3_mebot.yaml", urdf_path=urdf_level)
+def tilted_planner(urdf_tilt30):
+    """The gen3 planner on the chair's mount, tilted 30 degrees, with no
+    layers of its own: the chair's layers are pushed onto it as scene
+    layers, which unlike the chair config's can be left out. Built only
+    when a test asks for it."""
+    return CuRoboPlanner.from_config("gen3.yaml", urdf_path=urdf_tilt30)
+
+
+@pytest.fixture(scope="session")
+def chair_planner(urdf_tilt30):
+    """The Gen3 on the MEBot, tilted 30 degrees on its mount as the layers
+    were generated for: the platform and person layers in every world.
+    Built only when a test asks for it."""
+    return CuRoboPlanner.from_config(MEBOT / "planner.yaml", urdf_path=urdf_tilt30)
 
 
 @pytest.fixture
@@ -632,9 +642,10 @@ def _platform_pair(planner, with_platform, without):
     )
 
 
-def test_platform_layer_pair(planner, tmp_path):
-    # the generated platform, as a scene layer of the gen3 planner: the same
-    # request with it and without it
+def test_platform_layer_pair(tilted_planner, tmp_path):
+    # the generated platform, as a scene layer of the gen3 planner on the
+    # chair's mount: the same request with it and without it
+    planner = tilted_planner
     with_platform = _scene(tmp_path / "with.yaml", layers=[FLOOR, PLATFORM])
     without = _scene(tmp_path / "without.yaml", layers=[FLOOR])
     try:
@@ -726,14 +737,14 @@ def test_world_read_back_matches_composition(planner, chair_planner, tmp_path):
         chair_planner.update_world("world_sim_kitchen.yaml")
         _check_read_back(chair_planner)
     finally:
-        chair_planner.update_world(MEBOT / "world_mebot.yaml")
+        chair_planner.update_world(MEBOT / "world.yaml")
     _check_read_back(chair_planner)
 
 
 def test_chair_config_composes_the_layers_and_warms_up_first(chair_planner):
     boxes = chair_planner.world_boxes
     layers = Counter(box["layer"] for box in boxes)
-    assert layers == {"floor": 1, "platform": 16, "person": 8}
+    assert layers == {"floor": 1, "platform": 16, "person": 9}
     # the installed world is the layer files: each box is an entry of its
     # file, padded on every side
     entries = {}
@@ -755,12 +766,14 @@ def test_chair_config_composes_the_layers_and_warms_up_first(chair_planner):
 
 
 @pytest.fixture(scope="session")
-def platform_state(planner, chair_planner, tmp_path_factory):
+def platform_state(tilted_planner, chair_planner, tmp_path_factory):
     """Seeded and capped: a joint vector that the platform alone makes
-    invalid on the chair. The gen3 planner finds it valid with the floor
+    invalid on the chair. The gen3 planner on the chair's mount finds it
+    valid with the floor
     and invalid with the platform added, and its spheres reach 20 mm or
     more into platform boxes of the chair's start-up world, and into no
     other box. Fails, naming what it tried, if none does."""
+    planner = tilted_planner
     folder = tmp_path_factory.mktemp("platform_state")
     floor = _scene(folder / "floor.yaml", layers=[FLOOR])
     with_platform = _scene(folder / "platform.yaml", layers=[FLOOR, PLATFORM])
@@ -806,12 +819,12 @@ def test_chair_layers_survive_every_push(chair_planner, platform_state, tmp_path
         for form, world in pushes.items():
             chair_planner.update_world(world)
             layers = Counter(box["layer"] for box in chair_planner.world_boxes)
-            assert layers == {"scene": 1, "platform": 16, "person": 8}, form
+            assert layers == {"scene": 1, "platform": 16, "person": 9}, form
             # and in cuRobo: a state that only the platform blocks stays invalid
             ok, detail = chair_planner.check_state_valid(platform_state)
             assert not ok and "platform/" in detail, (form, detail)
     finally:
-        chair_planner.update_world(MEBOT / "world_mebot.yaml")
+        chair_planner.update_world(MEBOT / "world.yaml")
 
 
 def test_person_is_excluded_without_touching_the_platform(
@@ -822,7 +835,7 @@ def test_person_is_excluded_without_touching_the_platform(
     ok, detail = chair_planner.check_state_valid(retract)
     assert not ok and "person/" in detail, detail
     try:
-        chair_planner.update_world(MEBOT / "world_mebot.yaml", ignore={"person"})
+        chair_planner.update_world(MEBOT / "world.yaml", ignore={"person"})
         kept = chair_planner.world_boxes
         assert not [box for box in kept if box["layer"] == "person"]
         platform = [box for box in whole if box["layer"] == "platform"]
@@ -833,11 +846,11 @@ def test_person_is_excluded_without_touching_the_platform(
 
         # the platform cannot be left out, and asking leaves the world as it was
         with pytest.raises(ValueError, match="layer 'platform' is not excludable"):
-            chair_planner.update_world(MEBOT / "world_mebot.yaml", ignore={"platform"})
+            chair_planner.update_world(MEBOT / "world.yaml", ignore={"platform"})
         assert chair_planner.world_boxes == kept
         _check_read_back(chair_planner)
     finally:
-        chair_planner.update_world(MEBOT / "world_mebot.yaml")
+        chair_planner.update_world(MEBOT / "world.yaml")
 
 
 @pytest.fixture(scope="session")
@@ -888,7 +901,7 @@ def test_a_layer_box_over_the_arm_base_is_refused(chair_planner, tmp_path):
         assert chair_planner.world_boxes == before
         _check_read_back(chair_planner)
     finally:
-        chair_planner.update_world(MEBOT / "world_mebot.yaml")
+        chair_planner.update_world(MEBOT / "world.yaml")
 
 
 def test_plans_keep_curobo_spheres_outside_every_padded_box(
@@ -923,7 +936,7 @@ def test_plans_keep_curobo_spheres_outside_every_padded_box(
     # the same requests reach into it, as they would here if cuRobo ignored it
     depths = []
     try:
-        chair_planner.update_world(MEBOT / "world_mebot.yaml", ignore={"person"})
+        chair_planner.update_world(MEBOT / "world.yaml", ignore={"person"})
         for goal in planned:
             res = chair_planner.plan_to_joints(goal, start)
             if res.success:
@@ -931,7 +944,7 @@ def test_plans_keep_curobo_spheres_outside_every_padded_box(
                 hits = sphere_box_penetration(spheres[spheres[..., 3] > 0], person)
                 depths.append(max(hits.values(), default=0.0))
     finally:
-        chair_planner.update_world(MEBOT / "world_mebot.yaml")
+        chair_planner.update_world(MEBOT / "world.yaml")
     if max(depths, default=0.0) <= 0.0005:
         pytest.fail(
             "none of the %d requests that planned reaches into the person when "
@@ -955,7 +968,7 @@ def test_held_and_via_plans_on_the_chair_keep_out_of_its_layers(
     fixed = PoseConstraint(hold=HOLD_FIXED)
     via = ViaPoint(offset_m=0.05)
     world = re.compile(
-        r" \[world: \d+ boxes: .*config layers: platform 16, person 8 .*\]$"
+        r" \[world: \d+ boxes: .*config layers: platform 16, person 9 .*\]$"
     )
     retract = chair_planner.retract_pose
     pos, quat = chair_planner.fk(retract)
@@ -969,17 +982,20 @@ def test_held_and_via_plans_on_the_chair_keep_out_of_its_layers(
         )
         assert world.search(res.error), (kind, res.error)
 
-    # from a valid start to the seeded valid goals' tool points: held, at the
-    # start's own orientation, and approached through a via point at the
-    # goal's
+    # from a valid start toward the seeded valid goals' tool points: held, at
+    # the start's own orientation, 10 cm toward each (a random goal's point is
+    # often out of reach at the start's orientation), and approached through
+    # a via point at the goal's own
     start, goals = chair_states
-    _, start_quat = chair_planner.fk(start)
+    start_pos, start_quat = chair_planner.fk(start)
     boxes = _cuboids(chair_planner)
     planned, deep, failed = Counter(), {}, []
     for i, goal in enumerate(goals):
         goal_pos, goal_quat = chair_planner.fk(goal)
+        toward = np.asarray(goal_pos) - np.asarray(start_pos)
+        held_pos = np.asarray(start_pos) + 0.1 * toward / np.linalg.norm(toward)
         requests = (
-            ("hold", goal_pos, start_quat, dict(constraint=fixed)),
+            ("hold", held_pos.tolist(), start_quat, dict(constraint=fixed)),
             ("via", goal_pos, goal_quat, dict(via=via)),
         )
         for kind, p, q, kw in requests:
@@ -994,9 +1010,11 @@ def test_held_and_via_plans_on_the_chair_keep_out_of_its_layers(
                 {(kind, i, key): 1e3 * d for key, d in hits.items() if d > 0.0005}
             )
     # a failure cuRobo reports says where the world's boxes come from; one the
-    # planner refuses after a plan cuRobo found (the hold check) has its own
+    # planner refuses after a plan cuRobo found (the hold check, or
+    # post-validation's limits) has its own
+    refused = ("CONSTRAINT_VIOLATED", "CONSTRAINT_UNSATISFIABLE")
     for kind, i, status, error in failed:
-        if status not in ("CONSTRAINT_VIOLATED", "CONSTRAINT_UNSATISFIABLE"):
+        if status not in refused + ("LIBRARY_VALIDATION_FAILED",):
             assert world.search(error), (kind, i, status, error)
     print(
         "\n  chair: %d held and %d via plans of 8 each; failures: %s"

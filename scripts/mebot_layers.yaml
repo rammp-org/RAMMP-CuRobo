@@ -7,8 +7,9 @@
 # Metres unless a key says otherwise. The "mebot frame" is the root link of
 # the pinned URDF (x forward, y left, z up). The layers are written in
 # arm_mount, the root of the arm's own URDF, which the planner plans in.
-# arm_mount -> arm_base_link (arm_base_joint) is a rotation only, the identity
-# for a level mount, so `arm_base_in_mebot` below places arm_mount too.
+# arm_mount -> arm_base_link (arm_base_joint) is a rotation only, so
+# `arm_base_in_mebot` below places arm_mount too; arm_mount stays square to
+# the chair, and `arm_base_joint` tilts the arm on it.
 
 # The MEBot drive base: the RAMMP Gen1.2 URDF (available in Demo-Software),
 # https://github.com/rammp-org/Demo-Software/blob/80908b9f73f02e094106c0b82640a23c3cd6f41c/core/rammp_prototype_description/urdf/rammp_prototype_base.urdf
@@ -32,10 +33,19 @@ source:
 # Where the arm sits on the chair (owner decision, 2026-09-30): the RAMMS model
 # pose, UNVERIFIED on the real chair. A measurement is one edit here. A
 # non-zero rpy_deg is refused: the boxes are axis-aligned in arm_mount.
+# The arm is on the chair's LEFT, and the joystick on its right (owner,
+# 2026-10-27): the RAMMS model has them the other way round, so y is the
+# RAMMS chain's mirrored. Neither layer models the joystick.
 mount:
-  arm_base_in_mebot: {position: [0.505, -0.265, 0.376], rpy_deg: [0, 0, 0]}
-  # Provenance only. The RAMMS BP_Mebot_Ramms blueprint chain; the mount uses
-  # its sum with z rounded to 0.376.
+  arm_base_in_mebot: {position: [0.505, 0.265, 0.376], rpy_deg: [0, 0, 0]}
+  # The arm's tilt on arm_mount: arm_base_link's rotation in it, as
+  # rammp-deployments config/robots/flatbot/mount.yaml states it (the
+  # new_adapter_plate_v3, 30 degrees forward). It places the arm's fixed
+  # spheres, which the person is carved around and the platform's merges
+  # clear; the boxes themselves stay square to the chair.
+  arm_base_joint: {rpy_deg: [0, 30, 0]}
+  # Provenance only. The RAMMS BP_Mebot_Ramms blueprint chain (on the right
+  # rail, so y mirrored above); the mount uses its sum with z rounded to 0.376.
   chain:
     seat_base: [0.345, 0, 0.256381]
     rail_r: [0.020, -0.265, 0.085]

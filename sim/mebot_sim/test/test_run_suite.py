@@ -155,7 +155,7 @@ def test_only_a_planner_that_judged_a_request_and_found_no_plan_refuses_it(gates
 AUTO_IK_FAIL = (
     "MotionGenStatus.IK_FAIL: no collision-free joint solution AT the goal — move "
     "it away from obstacles or relax the orientation. [world: 25 boxes: scene 0 | "
-    "config layers: platform 16, person 8 | scene layers: floor 1]"
+    "config layers: platform 16, person 9 | scene layers: floor 1]"
 )
 
 
@@ -205,19 +205,19 @@ def test_a_positive_control_passes_only_when_it_hits_what_its_layer_covers():
 
 
 REPLY = (
-    "world set to /c/consumer_world.yaml (32 boxes: scene 8 | config layers: "
-    "platform 16, person 8 | scene layers: none)"
+    "world set to /c/consumer_world.yaml (33 boxes: scene 8 | config layers: "
+    "platform 16, person 9 | scene layers: none)"
 )
 
 
 def test_the_push_reply_names_every_config_layer_with_its_boxes():
-    expected = {"platform": 16, "person": 8}
+    expected = {"platform": 16, "person": 9}
     case = run_suite.pushed("here", True, REPLY, expected)
     assert case["gates"] == {"G4": True}
     for ok, reply in (
-        (True, REPLY.replace("person 8", "person 0")),
-        (True, REPLY.replace(", person 8", "")),
-        (True, "world set to /c/platform 16 person 8.yaml (8 boxes: scene 8)"),
+        (True, REPLY.replace("person 9", "person 0")),
+        (True, REPLY.replace(", person 9", "")),
+        (True, "world set to /c/platform 16 person 9.yaml (8 boxes: scene 8)"),
         (False, "collision world is empty; refusing it"),
     ):
         case = run_suite.pushed("here", ok, reply, expected)
@@ -426,7 +426,7 @@ def test_each_line_names_the_world_its_planner_said_it_planned_in(
     # what the planner replied to the push, and not what the suite pushed: a
     # chair config that drops the person is shown as the planner holds it
     taken = (
-        "world set to world_mebot.yaml (17 boxes: scene 0 | config layers: "
+        "world set to world.yaml (17 boxes: scene 0 | config layers: "
         "platform 16 | scene layers: floor 1)"
     )
     consumer = (
@@ -646,8 +646,8 @@ def test_a_push_reply_without_the_person_fails_whatever_the_chair_config_lists(
     layers, world = stack.chair_layers()
     platform_only = [layer for layer in layers if layer.name == "platform"]
     monkeypatch.setattr(stack, "chair_layers", lambda: (platform_only, world))
-    without = REPLY.replace(", person 8", "")
+    without = REPLY.replace(", person 9", "")
     monkeypatch.setattr(Scripted, "set_world", lambda self, world: (True, without))
     status, _, result = scripted(["--only", "S4"])
     assert status == 1 and result["gates"]["G4"] == "FAIL"
-    assert "person 8" in result["cases"][0]["outcome"]
+    assert "person 9" in result["cases"][0]["outcome"]

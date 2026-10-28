@@ -5,7 +5,7 @@ nodes plan, the driver interface flies, and the sim's own topics report.
     tester.connect()
     tester.teleport(start)
     report = tester.move(
-        stack.CHAIR, stack.CHAIR_WORLD, start, pos=[0.5, -0.4, 0.3], rpy_deg=[90, 0, 90]
+        stack.CHAIR, stack.CHAIR_WORLD, start, pos=[0.5, 0.4, 0.3], rpy_deg=[90, 0, 90]
     )
 
 Before each flight it reads the ROS graph, and flies nothing unless

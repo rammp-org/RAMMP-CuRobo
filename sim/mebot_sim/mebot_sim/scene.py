@@ -49,7 +49,7 @@ class Assets:
     checkout: the pinned URDF, scripts/mebot_layers.yaml (the mount, the
     seat, the occupant), the stand-in's postures (config/scenarios.yaml),
     and the chair planner's start-up world as it composes it
-    (gen3_mebot.yaml): `boxes`, [(key, layer, {dims, pose})] padded, and
+    (planner.yaml): `boxes`, [(key, layer, {dims, pose})] padded, and
     `layers`, {name: Layer} unpadded.
     """
 
@@ -68,6 +68,7 @@ class Assets:
         self.data = generator.load_data()
         self.urdf, self.urdf_origin = generator.fetch_pinned(self.data["source"])
         self.mount = np.array(self.data["mount"]["arm_base_in_mebot"]["position"])
+        self.tilt = self.data["mount"]["arm_base_joint"]["rpy_deg"]
         occupant = self.data["person"]["ansur_in"]
         self.sitting_height = occupant["sitting_height"]["inches"] * generator.INCH
         self.postures = stack.scenarios()["standin"]
@@ -213,6 +214,11 @@ def build(assets, posture, offscreen=(960, 720)):
     exclude.bodyname1, exclude.bodyname2 = "base_link", "shoulder_link"
     bracelet = spec.body("bracelet_link").add_frame(pos=GRIPPER_POS, quat=GRIPPER_QUAT)
     bracelet.attach_body(gripper.body("base"), "g_", "")
+    # the arm tilted on its mount, as arm_model()'s arm_base_joint has it
+    from rammp_curobo.geometry import euler_deg_to_quat_xyzw
+
+    x, y, z, w = euler_deg_to_quat_xyzw(assets.tilt)
+    spec.body("base_link").quat = [w, x, y, z]
 
     world = spec.worldbody
     mebot = world.add_frame(pos=list(-assets.mount), quat=[1.0, 0.0, 0.0, 0.0])

@@ -8,6 +8,7 @@ has an editable install of another checkout.
 """
 
 import hashlib
+import math
 import os
 import subprocess
 import sys
@@ -213,11 +214,14 @@ def test_the_arm_model_is_the_one_the_planner_takes_with_the_drivers_names():
     root = ET.fromstring(prepare_urdf(stack.arm_model()))
     joints = {j.get("name"): j for j in root.findall("joint")}
     assert all(name in joints for name in stack.JOINTS)
-    # the mount is level, so arm_mount is the arm's base: the layers' frame
+    # the arm is tilted on arm_mount, the layers' frame, by the tilt the
+    # layers were generated for and the MuJoCo arm is turned by
     mount = joints["arm_base_joint"]
     assert mount.find("parent").get("link") == ROOT_LINK
     origin = mount.find("origin")
-    assert [float(v) for v in origin.get("rpy").split()] == [0.0] * 3
+    tilt = stack.generator().load_data()["mount"]["arm_base_joint"]["rpy_deg"]
+    rpy = [float(v) for v in origin.get("rpy").split()]
+    assert rpy == pytest.approx([math.radians(v) for v in tilt], abs=1e-12)
     assert [float(v) for v in origin.get("xyz").split()] == [0.0] * 3
     # the driver publishes the knuckle under the model's name for it
     from mebot_sim import sim_arm

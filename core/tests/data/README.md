@@ -56,7 +56,7 @@ Regenerate with `make bake`, which expects no diff in either generated file.
 ## `mebot/` — the chair, as a robot ships it
 
 The MEBot's five files: the three generated obstacle layers, the chair planner
-config `gen3_mebot.yaml` and its start-up world `world_mebot.yaml`.
+config `planner.yaml` and its start-up world `world.yaml`.
 
 They are **not package data**. They describe one chair's geometry and where the
 arm sits on it, so they ship with that robot — rammp-deployments
@@ -77,7 +77,7 @@ URDF it pins. Run `make layers`; it must leave no diff. To write the robot's
 copy in the same run, from the same rendered text:
 
 ```bash
-make layers OUTDIR=<deployments>/december_2026/config/robots/mebot/curobo
+make layers OUTDIR=<deployments>/december_2026/config/robots/flatbot/curobo
 ```
 
 The two configs are hand-maintained, and the copy a robot ships is the one that

@@ -243,7 +243,7 @@ def test_the_standin_is_inside_the_padded_person_layer(
 def test_a_person_layer_without_its_lap_leaves_a_gap(assets, person):
     padded, column = person
     names = [o.name for o in assets.layers["person"].obstacles]
-    lapless = [b for name, b in zip(names, padded) if name != "lap"]
+    lapless = [b for name, b in zip(names, padded) if not name.startswith("lap")]
     geoms, _ = scene.standin(assets, "upright_lap")
     c = check_layers.coverage(geoms, lapless, column)
     assert c["gap_points"] > 0
@@ -295,7 +295,7 @@ def _layer_file(path, layer, obstacles):
 def test_s0_fails_its_gates_on_broken_layer_files(assets, monkeypatch, tmp_path):
     files = stack.layer_files()
     platform, person = (load_layer(files[name]) for name in ("platform", "person"))
-    lapless = [o for o in person.obstacles if o.name != "lap"]
+    lapless = [o for o in person.obstacles if not o.name.startswith("lap")]
     broken = dict(
         files,
         platform=_layer_file(tmp_path / "p.yaml", platform, platform.obstacles[1:]),
@@ -315,7 +315,7 @@ def test_g1_fails_when_the_column_excuses_what_the_person_layer_leaves_out(
     # and no gap is left to fail on
     files = stack.layer_files()
     person = load_layer(files["person"])
-    lapless = [o for o in person.obstacles if o.name != "lap"]
+    lapless = [o for o in person.obstacles if not o.name.startswith("lap")]
     carved = dict(files, person=_layer_file(tmp_path / "q.yaml", person, lapless))
     monkeypatch.setattr(stack, "layer_files", lambda: carved)
     monkeypatch.setattr(check_layers, "column", lambda assets: ([-5.0] * 3, [5.0] * 3))

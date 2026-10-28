@@ -67,16 +67,31 @@ Layer boxes are in `arm_mount`, like every world.
 
 ### Changed (breaking)
 
-- **The chair ships with the robot, not in the image.** `gen3_mebot.yaml`,
-  `world_mebot.yaml` and the three `layer_mebot_*.yaml` are no longer package
+- **The chair's arm is on its left, tilted 30° on its mount.** The MEBot
+  layers were generated for the RAMMS model's arm, level on the chair's right
+  rail; flatbot's is on the left, with the joystick on the right, and leans
+  30° forward on the `new_adapter_plate_v3` (its `mount.yaml`). The mount's y
+  is mirrored to 0.265 m, and the generator takes the tilt as
+  `mount.arm_base_joint.rpy_deg`: it places the arm's fixed spheres, which the
+  person is carved around and the platform's merges clear, while the boxes
+  stay square to the chair in `arm_mount`. The person is now 9 boxes, so the
+  chair's start-up world is 26. The tests' chair planners and the sim's arm
+  use the tilted model (`arm_tilt30.urdf`), and the sim's requests were found
+  again for it. Neither layer models the joystick.
+- **The chair's files have fixed names.** `gen3_mebot.yaml` is
+  `planner.yaml` and `world_mebot.yaml` is `world.yaml`, the same in every
+  robot's `curobo/` directory, so a manifest names them the same way for any
+  robot.
+- **The chair ships with the robot, not in the image.** `planner.yaml`,
+  `world.yaml` and the three `layer_mebot_*.yaml` are no longer package
   data: they describe ONE chair's geometry and where the arm sits on it, so
   they are per-robot data and live in rammp-deployments
   `december_2026/config/robots/<robot>/curobo/`, bind-mounted read-only at
   `/config/robot` (issue #19). Name the config by path —
-  `config:=/config/robot/curobo/gen3_mebot.yaml` — and, if your manifest
+  `config:=/config/robot/curobo/planner.yaml` — and, if your manifest
   declares a `world` parameter, override it to `""`: a non-empty `world`
   replaces whatever the planner config names, so a bench world left in place
-  plans the chair against the wrong room. Profile `mebot.yaml` does both.
+  plans the chair against the wrong room. Profile `flatbot.yaml` does both.
   Re-measuring the chair, and the Gen1.2 → Gen1.5 repin, are now a commit
   there rather than a release here.
   `core` needed no change: `resolve_config` already took absolute paths, and a
@@ -84,7 +99,7 @@ Layer boxes are in `arm_mount`, like every world.
   packaged fallback — Docker makes `/config/robot` an empty directory when a
   container starts before `set_robot.py` has run, and a fallback would let a
   bare layer name resolve against the image and plan the chair against stale
-  geometry with no warning. A bare `gen3_mebot.yaml` now fails to resolve
+  geometry with no warning. A bare `planner.yaml` now fails to resolve
   instead, naming every path tried. `core/tests/data/mebot/` is this
   checkout's fixture copy, for the tests and the sim, so verifying the chair
   needs no deployment checkout.
@@ -163,7 +178,7 @@ Layer boxes are in `arm_mount`, like every world.
   `person` (8 boxes, excludable) from the ANSUR II sizes and the seat in
   `scripts/mebot_layers.yaml`: any occupant from the 5th-percentile woman to
   the 95th-percentile man, plus 0.05 m.
-- The chair config `gen3_mebot.yaml` and its start-up world `world_mebot.yaml`,
+- The chair config `planner.yaml` and its start-up world `world.yaml`,
   likewise shipped with the robot.
 - `scripts/generate_layers.py` with its inputs `scripts/mebot_layers.yaml`, and
   `make layers`. CI regenerates the committed layers from those inputs and the

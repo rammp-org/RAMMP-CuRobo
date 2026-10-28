@@ -104,13 +104,13 @@ docker run --rm -it --runtime nvidia --network host --ipc host \
   `config:` at that path. It is whatever the image was built from, not what
   the robot is wearing. Mount the robot's directory and name the config by
   path:
-  `... -v ./config/robots/current:/config/robot:ro rammp-curobo:jp6 /opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node --ros-args -p config:=/config/robot/curobo/gen3_mebot.yaml`.
+  `... -v ./config/robots/current:/config/robot:ro rammp-curobo:jp6 /opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node --ros-args -p config:=/config/robot/curobo/planner.yaml`.
   Set `world` to `""` if your manifest declares one: a non-empty `world`
   replaces whatever the planner config names.
   The chair's drive base and the person in it are then in every world,
   worlds pushed over `/rammp_curobo/set_world` included, and the node's log
   says so:
-  `Collision world: 25 boxes: scene 0 | config layers: platform 16, person 8 | scene layers: floor 1`.
+  `Collision world: 26 boxes: scene 0 | config layers: platform 16, person 9 | scene layers: floor 1`.
   See INTEGRATION.md, "Planning on the MEBot". An image without obstacle
   layers has no such config and refuses it.
 - **Verify the bridge on first start** (the container runs as root; mixed

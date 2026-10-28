@@ -20,9 +20,9 @@ mujoco = pytest.importorskip("mujoco")
 from mebot_sim import scene, sim_arm, stack  # noqa: E402
 
 START = np.array(stack.scenarios()["start"])
-# A state inside the upright stand-in, found by a seeded search: its gripper
-# is 25 mm inside the left hand, and nothing else is touched.
-IN_STANDIN = [-0.472, 0.15, 2.264, -2.502, -0.712, 0.39, 2.172]
+# A state inside the upright stand-in, found by a seeded search: 21 mm inside
+# it, and nothing else is touched, on the way from START either.
+IN_STANDIN = [-0.968, -0.764, -2.324, 0.608, 1.785, -0.726, 2.177]
 
 
 @pytest.fixture
@@ -172,7 +172,7 @@ def test_contacts_over_a_newton_are_reported_by_group(sim):
     assert state["now"] == [] and state["worst"] == []
     moves = state["move"]
 
-    # flown into the stand-in, the arm's wrist meets its right upper arm
+    # flown into the stand-in, the arm meets it
     flight = sim_arm.Flight(*straight(np.subtract(IN_STANDIN, START), 3.0))
     sim.post("fly", flight)
     run(sim, 4.0)

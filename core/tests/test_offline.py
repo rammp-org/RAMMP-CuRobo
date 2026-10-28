@@ -152,8 +152,8 @@ def test_the_chair_is_not_packaged_and_resolves_to_no_stale_copy():
     geometry, with no warning. Absent, the same start fails instead.
     """
     chair = (
-        "gen3_mebot.yaml",
-        "world_mebot.yaml",
+        "planner.yaml",
+        "world.yaml",
         "layer_mebot_platform.yaml",
         "layer_mebot_person.yaml",
         "layer_mebot_floor.yaml",

@@ -89,6 +89,7 @@ def _inputs():
         "position": [0.505, -0.265, 0.376],
         "rpy_deg": [0, 0, 0],
     }
+    data["mount"]["arm_base_joint"] = {"rpy_deg": [0, 0, 0]}
     data["padding_assumed_m"] = 0.02
     data["keep_out_margin_m"] = 0.005
     data["keep_out"]["min_clearance_m"] = 0.004
@@ -1917,6 +1918,9 @@ def test_committed_layers_meet_budgets_and_clear_the_arm():
         (turn @ s["center"] + joint_1["xyz"], s["radius"] + buffer)
         for s in spheres["arm_shoulder_link"]
     ]
+    # tilted on arm_mount as the mount the layers name
+    tilt = _rpy_matrix(*np.radians(data["mount"]["arm_base_joint"]["rpy_deg"]))
+    fixed = [(tilt @ np.asarray(c), r) for c, r in fixed]
     for name, layer in layers.items():
         # padded as the planner pads them
         alone = Scene("arm_mount", [], [], layers=[layer])

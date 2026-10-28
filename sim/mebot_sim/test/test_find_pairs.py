@@ -23,9 +23,9 @@ LIMITS = np.array(
     ]
 )
 START = np.array(stack.scenarios()["start"])
-# A state inside the upright stand-in (test_sim_arm.py): its gripper is 25 mm
-# inside the left hand, and nothing else is touched.
-IN_STANDIN = np.array([-0.472, 0.15, 2.264, -2.502, -0.712, 0.39, 2.172])
+# A state inside the upright stand-in (test_sim_arm.py): 21 mm inside it, and
+# nothing else is touched.
+IN_STANDIN = np.array([-0.968, -0.764, -2.324, 0.608, 1.785, -0.726, 2.177])
 
 
 def test_turning_joints_are_the_ones_whose_limits_span_more_than_a_turn():

@@ -448,10 +448,11 @@ def keep_out_spheres(data):
     config's collision_sphere_buffer, as cuRobo's do. A sphere that is not
     finite, in the config or through arm_shoulder_link's origin, is refused too.
 
-    The column is placed for a level mount: arm_mount -> arm_base_link
-    (arm_base_joint) taken as the identity, as it is on the MEBot. A tilted
-    mount moves the column in arm_mount; the planner's FK-based guard, which
-    refuses a layer box touching the live column, covers that case.
+    The column is placed for the mount's tilt: arm_mount -> arm_base_link
+    (arm_base_joint) is the rotation `mount.arm_base_joint.rpy_deg`, which
+    must match the robot's mount.yaml. The planner's FK-based guard, which
+    refuses a layer box touching the live column, catches a mismatch that
+    reaches the spheres.
     """
     keep_out = data["keep_out"]
     path = PACKAGED_CONFIG_DIR / keep_out["robot_config"]
@@ -493,7 +494,12 @@ def keep_out_spheres(data):
             sum(pose[i][k] * c[k] for k in range(3)) + pose[i][3] for i in range(3)
         )
         spheres.append((centre, radius, "arm_shoulder_link"))
-    return spheres
+    rpy_deg = data["mount"]["arm_base_joint"]["rpy_deg"]
+    tilt = _transform([0.0, 0.0, 0.0], [math.radians(v) for v in rpy_deg])
+    return [
+        (tuple(sum(tilt[i][k] * c[k] for k in range(3)) for i in range(3)), r, link)
+        for c, r, link in spheres
+    ]
 
 
 def clearance(box, spheres, pad):
@@ -836,6 +842,7 @@ def _frame_meta(data):
     mount = data["mount"]["arm_base_in_mebot"]
     return [
         "arm_base_in_mebot: %s" % _flow(mount, "position", "rpy_deg"),
+        "arm_base_joint: %s" % _flow(data["mount"]["arm_base_joint"], "rpy_deg"),
         "grid_m: %s" % data["grid_m"],
         "padding_assumed_m: %s" % data["padding_assumed_m"],
     ]
@@ -951,12 +958,18 @@ def generate(data, urdf_bytes, perturb=0.0):
             "keep_out min_clearance_m must not be negative, got %s"
             % data["keep_out"]["min_clearance_m"]
         )
+    # A tilt that is not three finite angles places the column nowhere.
+    tilt = data["mount"]["arm_base_joint"]["rpy_deg"]
+    if len(tilt) != 3 or not all(math.isfinite(v) for v in tilt):
+        raise ValueError(
+            "mount arm_base_joint rpy_deg must be three finite angles, got %s" % tilt
+        )
     mount = data["mount"]["arm_base_in_mebot"]
     if any(mount["rpy_deg"]):
         raise ValueError(
             "mount rpy_deg %s is not supported: the boxes are axis-aligned in"
-            " arm_mount, so the arm must be mounted square to the chair"
-            % mount["rpy_deg"]
+            " arm_mount, so arm_mount must be square to the chair (an arm tilted"
+            " on its mount is arm_base_joint's rpy_deg)" % mount["rpy_deg"]
         )
     # The arm's spheres come from the rammp_curobo that is imported, and a
     # host may have an editable install of another checkout: the layers would

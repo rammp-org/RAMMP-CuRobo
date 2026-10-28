@@ -243,10 +243,10 @@ it is refused, naming every source, and nothing is truncated.
 
 ```bash
 ros2 launch rammp_curobo_ros planner.launch.py \
-  config:=/config/robot/curobo/gen3_mebot.yaml
+  config:=/config/robot/curobo/planner.yaml
 ```
 
-**The chair does not ship here.** `gen3_mebot.yaml`, its world and the three
+**The chair does not ship here.** `planner.yaml`, its world and the three
 layer files describe one chair's geometry and where the arm sits on it, so
 they are per-robot data and live with the robot: rammp-deployments
 `december_2026/config/robots/<robot>/curobo/`, which the planner container
@@ -258,15 +258,16 @@ the chair against stale geometry.
 If you override the `world` parameter in a manifest, a chair robot must set it
 to `""`: a non-empty `world` replaces whatever the planner config names.
 
-`gen3_mebot.yaml` is the Gen3 on the MEBot, its base at the RAMMS model
-pose (0.505, -0.265, 0.376) m in the MEBot's frame, square to the chair —
-unverified on the real chair. It starts in a world of 25 boxes:
+`planner.yaml` is the Gen3 on the MEBot, its base at the RAMMS model
+pose mirrored to the chair's left, (0.505, 0.265, 0.376) m in the MEBot's
+frame, and tilted 30° forward on it as flatbot's `mount.yaml` says —
+the position unverified on the real chair. It starts in a world of 26 boxes:
 
-| Layer      | File                        | Boxes | In the world as                     |
-| ---------- | --------------------------- | ----- | ----------------------------------- |
-| `platform` | `layer_mebot_platform.yaml` | 16    | a config layer, not excludable      |
-| `person`   | `layer_mebot_person.yaml`   | 8     | a config layer, excludable          |
-| `floor`    | `layer_mebot_floor.yaml`    | 1     | a scene layer of `world_mebot.yaml` |
+| Layer      | File                        | Boxes | In the world as                |
+| ---------- | --------------------------- | ----- | ------------------------------ |
+| `platform` | `layer_mebot_platform.yaml` | 16    | a config layer, not excludable |
+| `person`   | `layer_mebot_person.yaml`   | 9     | a config layer, excludable     |
+| `floor`    | `layer_mebot_floor.yaml`    | 1     | a scene layer of `world.yaml`  |
 
 Each layer records the `world_padding` it was generated for, and the planner
 refuses to start in a world composed with less. The boxes circumscribe the
@@ -294,7 +295,7 @@ returns it with every world SetWorld takes — the visible proof that the
 chair config is active:
 
 ```text
-Collision world: 25 boxes: scene 0 | config layers: platform 16, person 8 | scene layers: floor 1
+Collision world: 26 boxes: scene 0 | config layers: platform 16, person 9 | scene layers: floor 1
 ```
 
 The floor belongs to the start-up scene, so the first push replaces it: a
@@ -308,7 +309,7 @@ it at start-up. Plan from the arm's measured state, as every caller must
 anyway. A start inside a layer fails `INVALID_START`, naming the boxes:
 
 ```text
-... [start collides with person/lap (154 mm), person/torso_head_3 (134 mm), person/torso_head_1 (89 mm)] [world: 25 boxes: scene 0 | config layers: platform 16, person 8 | scene layers: floor 1]
+... [start collides with person/lap_0 (161 mm), person/lap_2 (73 mm), person/legs_0 (35 mm), person/torso_head_2 (4 mm)] [world: 26 boxes: scene 0 | config layers: platform 16, person 9 | scene layers: floor 1]
 ```
 
 ### Leaving the person out
@@ -317,7 +318,7 @@ A layer marked `excludable: true` may be left out of one world. The person
 is; the platform is not:
 
 ```python
-chair = "/config/robot/curobo/world_mebot.yaml"
+chair = "/config/robot/curobo/world.yaml"
 planner.update_world(chair, ignore={"person"})  # platform untouched
 planner.update_world(chair)                     # the person is back
 ```

@@ -108,7 +108,7 @@ config. It does NOT ship in this image: the chair's planner config, its world
 and its three layer files describe one chair's geometry and where the arm sits
 on it, so they are per-robot data and live with the robot, in rammp-deployments
 `config/robots/<robot>/curobo/`, bind-mounted read-only at `/config/robot`
-(issue #19). So `config:=/config/robot/curobo/gen3_mebot.yaml` for the node, or
+(issue #19). So `config:=/config/robot/curobo/planner.yaml` for the node, or
 `CuRoboPlanner.from_config("<that path>")` for the library. Re-measuring the
 chair is a commit there, not a release here, and nothing resolves these files
 by bare name — a packaged fallback would let an unmounted `/config/robot` plan
@@ -153,7 +153,7 @@ they cost. For a caller:
   at start-up. Start from the arm's measured state, which `start_joints`
   requires anyway. A failed plan's error now ends with the boxes its start
   or goal reach into and where the world's boxes come from, e.g.
-  `[start collides with person/lap (154 mm), ...] [world: 25 boxes: ...]`;
+  `[start collides with person/lap_0 (161 mm), ...] [world: 26 boxes: ...]`;
   over ROS it arrives in the result's `message` as `<status>: <error>`.
 
 - **Excluding the person is Python-only.**
@@ -175,7 +175,7 @@ they cost. For a caller:
 
 - **A 1.0.0 image refuses the chair config.** Mounting the chair's files
   into one does not help: 1.0.0 ignores `layers:`, finds no obstacles in
-  `world_mebot.yaml` and refuses it as an empty world at start-up. It never
+  `world.yaml` and refuses it as an empty world at start-up. It never
   plans without the chair; pin a release that carries the layers.
 
 ## Adopting into a RAMMP module

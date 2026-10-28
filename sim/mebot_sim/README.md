@@ -5,11 +5,11 @@ the way a consumer uses the planner: over ROS. A MuJoCo Gen3 stands in for
 the arm driver, with the driver's names, beside two of this repo's planner
 nodes, on a ROS domain of its own:
 
-| Node                    | What it is                                                                                                                                                                                                                                                                                                                    |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/mebot_sim`            | the menagerie Gen3 + 2F-85 with physics, the exact MEBot (its pinned URDF through MuJoCo's own importer), a seated stand-in and the floor; `/joint_states`, `/execute_joint_trajectory`, the arm's model latched on `/arm/robot_description` (`core/tests/data/arm_level.urdf`, a level mount), a live view                   |
-| `/rammp_curobo`         | the planner with `config:=<checkout>/core/tests/data/mebot/gen3_mebot.yaml`: the platform and person layers in every world, what a consumer on the chair gets. By path, not by name — the chair's files ship with the robot, not in the package (issue #19), so the sim runs this checkout's fixture copy (`stack.chair_dir`) |
-| `/rammp_curobo_control` | the planner with `config:=gen3.yaml`, which composes no layers: the suite pushes it scenes that list only some, so that the same request is planned without a layer                                                                                                                                                           |
+| Node                    | What it is                                                                                                                                                                                                                                                                                                                 |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/mebot_sim`            | the menagerie Gen3 + 2F-85 with physics, the exact MEBot (its pinned URDF through MuJoCo's own importer), a seated stand-in and the floor; `/joint_states`, `/execute_joint_trajectory`, the arm's model latched on `/arm/robot_description` (`core/tests/data/arm_level.urdf`, a level mount), a live view                |
+| `/rammp_curobo`         | the planner with `config:=<checkout>/core/tests/data/mebot/planner.yaml`: the platform and person layers in every world, what a consumer on the chair gets. By path, not by name — the chair's files ship with the robot, not in the package (issue #19), so the sim runs this checkout's fixture copy (`stack.chair_dir`) |
+| `/rammp_curobo_control` | the planner with `config:=gen3.yaml`, which composes no layers: the suite pushes it scenes that list only some, so that the same request is planned without a layer                                                                                                                                                        |
 
 Contacts are MuJoCo's, against the true shapes: any arm or gripper contact
 with the MEBot, the stand-in or the floor pressing with more than 1 N. A
@@ -177,7 +177,7 @@ as the planner summed it up in its reply to the push, its boxes by the
 layers they come from:
 
 ```text
-/rammp_curobo (25 boxes: scene 0 | config layers: platform 16, person 8 | scene layers: floor 1)
+/rammp_curobo (26 boxes: scene 0 | config layers: platform 16, person 9 | scene layers: floor 1)
 ```
 
 Then each gate's verdict, the reported numbers, and the result file:

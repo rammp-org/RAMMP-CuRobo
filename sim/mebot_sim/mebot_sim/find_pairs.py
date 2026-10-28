@@ -70,10 +70,10 @@ PERSON = {
 REACHES = {
     "seed": 33,
     "states": 1000000,
-    "start_tool": [0.25, -0.35, 0.25],
+    "start_tool": [0.25, 0.35, 0.25],
     "regions": {
-        "front": {"x": [0.55, 0.95], "y": [-0.30, 0.65], "z": [0.05, 0.60]},
-        "beside": {"x": [-0.30, 0.75], "y": [-0.80, -0.20], "z": [0.00, 0.60]},
+        "front": {"x": [0.55, 0.95], "y": [-0.65, 0.30], "z": [0.05, 0.60]},
+        "beside": {"x": [-0.30, 0.75], "y": [0.20, 0.80], "z": [0.00, 0.60]},
     },
     "per_region": 4,
 }
@@ -252,7 +252,7 @@ class Planner:
 
 def chair_scene():
     """The chair planner's start-up world as a scene for the control planner:
-    world_mebot.yaml, with gen3_mebot.yaml's layers beside its own."""
+    world.yaml, with planner.yaml's layers beside its own."""
     layers, world = stack.chair_layers()
     from rammp_curobo.scene import Scene
 
