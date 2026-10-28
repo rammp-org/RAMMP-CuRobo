@@ -425,9 +425,12 @@ def load_layers(refs, relative_to, listed_in):
         try:
             path = resolve_config(ref, relative_to=relative_to, search_cwd=False)
         except FileNotFoundError as exc:
+            # an example: ref has no "tried:" list; its message names the examples
+            detail = str(exc)
+            if "tried: " in detail:
+                detail = "tried: " + detail.partition("tried: ")[2]
             raise FileNotFoundError(
-                "layer %r listed in %s not found; tried: %s"
-                % (ref, listed_in, str(exc).partition("tried: ")[2])
+                "layer %r listed in %s not found; %s" % (ref, listed_in, detail)
             ) from None
         layer = load_layer(path)
         if any(layer.path == other.path for other in layers):

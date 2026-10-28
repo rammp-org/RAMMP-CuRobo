@@ -196,6 +196,8 @@ def test_the_chair_is_not_packaged_and_resolves_to_no_stale_copy():
         assert not (PACKAGED_CONFIG_DIR / name).exists(), name
         with pytest.raises(FileNotFoundError):
             resolve_config(name, search_cwd=False)
+        with pytest.raises(FileNotFoundError):
+            resolve_config("example:" + name)
         assert (fixtures / name).is_file(), name
 
 

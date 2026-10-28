@@ -2842,3 +2842,19 @@ def test_a_meta_that_is_not_a_mapping_is_refused(tmp_path):
         )
         with pytest.raises(ValueError, match="'meta' must be a mapping"):
             load_layer(path)
+
+
+def test_bad_example_layer_names_the_examples(tmp_path):
+    with pytest.raises(FileNotFoundError) as exc:
+        load_layers(["example:nope.yaml"], relative_to=tmp_path, listed_in="scene.yaml")
+    msg = str(exc.value)
+    assert "layer 'example:nope.yaml' listed in scene.yaml" in msg
+    assert "gen3.yaml" in msg and "robot_gen3_2f85.yaml" in msg
+
+
+def test_bare_layer_name_in_the_image_is_refused_with_the_example_hint(tmp_path):
+    # gen3.yaml stands in for any file that exists only in the image
+    with pytest.raises(FileNotFoundError) as exc:
+        load_layers(["gen3.yaml"], relative_to=tmp_path, listed_in="scene.yaml")
+    assert "write example:gen3.yaml" in str(exc.value)
+    assert str(tmp_path / "gen3.yaml") in str(exc.value)
