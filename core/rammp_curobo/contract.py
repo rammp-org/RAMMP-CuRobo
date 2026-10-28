@@ -57,6 +57,8 @@ def check_robot_dir(cfg, cfg_dir, urdf_xml):
     def attempt(what):
         try:
             return what()
+        except KeyError as exc:  # a config dict short of a key
+            problems.append("planner config has no %s entry" % exc)
         except _LOAD_ERRORS as exc:
             problems.append(str(exc))
             return None
@@ -79,13 +81,12 @@ def check_robot_dir(cfg, cfg_dir, urdf_xml):
     if layers is not None and (scene is not None or frame):
         # padding below what a layer states, an invalid or duplicate box, a
         # world over the cache: refused when composed, so say so now
-        p = cfg["planner"]
         attempt(
             lambda: compose_cuboids(
                 scene or Scene(frame, [], []),
-                padding=p["world_padding"],
-                no_pad_names=frozenset(p["no_pad_names"] or []),
-                cache_obb=p["collision_cache_obb"],
+                padding=cfg["planner"]["world_padding"],
+                no_pad_names=frozenset(cfg["planner"]["no_pad_names"] or []),
+                cache_obb=cfg["planner"]["collision_cache_obb"],
                 layers=layers,
                 allow_empty=True,
             )

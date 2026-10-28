@@ -141,7 +141,14 @@ def load_planner_config(name_or_path):
 
     path = resolve_config(name_or_path)
     with open(path, "r", encoding="utf-8") as f:
-        data = yaml.load(f, Loader=_StrictLoader) or {}
+        try:
+            data = yaml.load(f, Loader=_StrictLoader) or {}
+        except yaml.YAMLError as exc:
+            raise ValueError("planner config %s is not valid YAML: %s" % (path, exc)) from None
+    if not isinstance(data, dict):
+        raise ValueError(
+            "planner config %s is not a mapping, got %s" % (path, type(data).__name__)
+        )
     # Configs copied from <= v1.1.0 carry execution.speed_scale: 0.25, which
     # nothing ever read (issue #22). Execution speed is the executor's job;
     # drop the block so it cannot pass for a live setting.
