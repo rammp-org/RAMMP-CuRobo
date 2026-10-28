@@ -22,7 +22,7 @@ SIM_OVERLAY ?= ~/rammp_deps_ws/install/setup.bash
 # view's default port is taken.
 SIM_ARGS ?=
 
-.PHONY: lint test colcon build verify run shell bake layers sim-build sim-test sim
+.PHONY: lint test colcon build verify image-contents run shell bake layers sim-build sim-test sim
 
 lint:                      ## pre-commit run --all-files
 	pre-commit run --all-files
@@ -48,9 +48,14 @@ build:                     ## Build the Jetson image (~1 h, ~15 GB)
 # RAMMP_CUROBO_GPU=1: the GPU half is the point here, so where it would skip
 # (no device passed through, a torch or cuRobo that does not import) the run
 # fails instead of passing on the offline half.
-verify:                    ## Run the core suite inside the image (needs a GPU)
-	docker run --rm --runtime nvidia -e RAMMP_CUROBO_GPU=1 $(IMAGE) \
-	  python3 -m pytest /opt/rammp_curobo_src/core/tests -q
+verify:                    ## Run this checkout's core suite against the image's package (needs a GPU)
+	docker run --rm --runtime nvidia -e RAMMP_CUROBO_GPU=1 -v $(CURDIR):/src:ro -w /src $(IMAGE) \
+	  python3 -m pytest /src/core/tests -q -p no:cacheprovider
+
+# The image holds code and the packaged examples, not the repo.
+image-contents:            ## Assert the image carries no tests, scripts, sim or docs
+	docker run --rm $(IMAGE) sh -c 'cd /opt/rammp_curobo_src && ! ls -d core/tests scripts sim docs 2>/dev/null | grep .' \
+	  || { echo "image has repo content beyond code"; exit 1; }
 
 run:                       ## Run the planner node from the image
 	docker run --rm -it --runtime nvidia --network host --ipc host \
