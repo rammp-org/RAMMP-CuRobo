@@ -1983,7 +1983,9 @@ def test_chair_config_composes_within_the_cache():
     inputs = Path(__file__).resolve().parents[2] / "scripts" / "mebot_layers.yaml"
     keep_out = yaml.safe_load(inputs.read_text(encoding="utf-8"))["keep_out"]
     robot = resolve_config(cfg["robot"], relative_to=folder)
-    assert robot == PACKAGED_CONFIG_DIR / keep_out["robot_config"]
+    assert robot == resolve_config(
+            keep_out["robot_config"], relative_to=inputs.parent, search_cwd=False
+        )
 
 
 def test_chair_startup_world_is_empty_to_a_v100_loader():
