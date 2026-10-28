@@ -99,7 +99,7 @@ plus the gripper services (2026-08-24, issue #6).
   same pinned inputs. The bytes match because the generator is
   deterministic, not because one run writes both: `make layers OUTDIR=` runs
   it twice, and only the in-repo copy is diff-asserted here (the deployment
-  repo composes its own copy in CI). `outputs:` in
+  repo's CI does not check its copy yet). `outputs:` in
   `mebot_layers.yaml` names the fixture copy, and `stack.layer_files()`
   follows it — which is why the sim's digest pin in
   `sim/mebot_sim/config/scenarios.yaml` survived the move untouched.

@@ -9,9 +9,10 @@
 #   config:=/config/robot/curobo/planner.yaml
 #
 # Keep this copy in step with the robot's by hand -- only the three layer
-# files are generated. The deployment repo's CI composes its copy with the
-# planner's own loaders, which catches a layer that no longer resolves or a
-# world_padding the layers were not generated for.
+# files are generated. Nothing checks the robot's copy yet: the deployment
+# repo's CI does not compose it, so a layer that no longer resolves or a
+# world_padding the layers were not generated for shows only when the planner
+# starts (and refuses).
 #
 # The two layers below are composed into EVERY world, set_world pushes
 # included: a push replaces the scene, never these. The scene it replaces
