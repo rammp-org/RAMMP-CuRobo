@@ -86,17 +86,29 @@ bake:                      ## Regenerate the robot config (expect no diff)
 #
 #   make layers OUTDIR=~/rammp-deployments/december_2026/config/robots/mebot/curobo
 #
+# Another robot's own measurements, next to its own robot file (keep_out.robot_config:
+# robot.yaml), generate only into that robot's directory:
+#
+#   make layers DATA=<robot>/mebot_layers.yaml OUTDIR=<robot>/curobo
+#
 # Two runs of a deterministic generator, not one rendering: the bytes match
 # because the inputs are pinned and the output is snapped to a grid, which is
 # also why the in-repo copy can be diff-asserted. The robot's copy has no
 # gate here, nor yet in the deployment repo's CI.
-layers:                    ## Regenerate the MEBot layers (expect no diff; OUTDIR= also writes a robot's copy)
-	python3 scripts/generate_layers.py
+DATA ?= scripts/mebot_layers.yaml
+
+layers:                    ## Regenerate the MEBot layers (expect no diff; OUTDIR= also writes a robot's copy; DATA= another robot's inputs)
+ifeq ($(DATA),scripts/mebot_layers.yaml)
+	python3 scripts/generate_layers.py --data "$(DATA)"
 	git diff --exit-code core/tests/data/mebot/layer_mebot_platform.yaml \
+	  core/tests/data/mebot/layer_mebot_seat.yaml \
 	  core/tests/data/mebot/layer_mebot_person.yaml \
 	  core/tests/data/mebot/layer_mebot_floor.yaml
+else ifeq ($(OUTDIR),)
+	$(error DATA= is another robot's inputs: give OUTDIR= too, or this checkout's fixtures would be overwritten)
+endif
 ifneq ($(OUTDIR),)
-	python3 scripts/generate_layers.py --outdir "$(OUTDIR)"
+	python3 scripts/generate_layers.py --data "$(DATA)" --outdir "$(OUTDIR)"
 endif
 
 # The sim stack (sim/mebot_sim) and the two packages it runs, built into the

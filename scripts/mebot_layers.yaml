@@ -84,8 +84,9 @@ keep_out_margin_m: 0.005
 # mount (arm_base_joint the identity); the planner's FK-based guard checks
 # every layer box against the column of the live mount, tilted or not.
 keep_out:
-  # Packaged; the spheres and collision_sphere_buffer are read from it.
-  robot_config: robot_gen3_2f85.yaml
+  # The robot file the spheres and collision_sphere_buffer are read from: a
+  # name resolves next to THIS file, `example:<name>` is the image's example.
+  robot_config: example:robot_gen3_2f85.yaml
   # arm_joint_1's origin, which places arm_shoulder_link in arm_base_link
   # (cuRobo v0.7.8, kinova_gen3_7dof.urdf:55; the same in the arm's URDF).
   # The key keeps its pre-#38 name.
