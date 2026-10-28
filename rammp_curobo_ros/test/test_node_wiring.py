@@ -80,6 +80,15 @@ def test_the_sanitised_model_and_the_world_param_reach_the_planner(make_node):
     assert node.count_subscribers(planner_node.ROBOT_DESCRIPTION_TOPIC) == 1
 
 
+def test_a_missing_robot_file_is_a_fatal_exit_1_naming_it(make_node, tmp_path, capfd):
+    (tmp_path / "planner.yaml").write_text("robot: nope.yaml\nworld: world.yaml\n")
+    with pytest.raises(SystemExit) as exc:
+        make_node(FIXTURE.read_text(), "config:=%s" % (tmp_path / "planner.yaml"))
+    assert exc.value.code == 1 and not _FakePlanner.made
+    err = capfd.readouterr().err
+    assert "FATAL" in err and "nope.yaml" in err
+
+
 @pytest.mark.parametrize("value", ["0.0", "-1", "abc", ".nan"])
 def test_a_bad_timeout_exits_1_before_the_wait(make_node, value):
     with pytest.raises(SystemExit) as exc:

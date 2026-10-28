@@ -30,10 +30,12 @@ Jetson-specific decisions inherited from RAMMP-Kinova's field notes (do not
 import logging
 import math
 import time
+from pathlib import Path
 
 import numpy as np
 
 from rammp_curobo import blend, geometry
+from rammp_curobo.contract import check_robot_dir
 from rammp_curobo.config import PLANNER_DEFAULTS, load_planner_config, resolve_config
 from rammp_curobo import constraints
 from rammp_curobo.constraints import PoseConstraint, ViaPoint
@@ -104,6 +106,10 @@ class CuRoboPlanner:
         self.tool_spin_deg = float(config["tool"]["spin_deg"])
         self.tool_tip_offset = float(config["tool"]["tip_offset_m"])
 
+        if urdf_path is not None:
+            # one error listing every problem, before any file is loaded for
+            # real; a model checked already (the node) checks again, silently
+            check_robot_dir(config, config_dir, Path(urdf_path).read_text())
         robot_path = resolve_config(config["robot"], relative_to=config_dir)
         world_path = resolve_config(config["world"], relative_to=config_dir)
         # The arm's model: the URDF from /arm/robot_description, as a file.

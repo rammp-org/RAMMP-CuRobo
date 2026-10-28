@@ -18,6 +18,7 @@ import yaml
 import rammp_curobo
 from core_test_helpers import load_scene, scene_from_obstacles
 from rammp_curobo.config import PACKAGED_CONFIG_DIR, load_planner_config, resolve_config
+from rammp_curobo.contract import RobotDataError
 from rammp_curobo.geometry import euler_deg_to_quat_xyzw
 from rammp_curobo.planner import CuRoboPlanner
 from rammp_curobo.scene import (
@@ -874,12 +875,12 @@ def test_missing_layer_is_named_with_every_path_tried(
         "world: example:world_sim_kitchen.yaml\n"
         "layers: [gone.yaml]\n"
     )
-    with pytest.raises(FileNotFoundError) as exc:
+    with pytest.raises(RobotDataError) as exc:
         CuRoboPlanner.from_config(config, urdf_path=urdf_level)
-    assert str(exc.value) == (
+    assert exc.value.problems == [
         "layer 'gone.yaml' listed in planner config in %s not found; tried: %s"
         % (tmp_path, tmp_path / "gone.yaml")
-    )
+    ]
     assert inits == []
 
 
@@ -2111,13 +2112,13 @@ def test_config_layers_reach_every_world_input(urdf_level, tmp_path, monkeypatch
         config.read_text(encoding="utf-8") + "planner: {collision_cache_obb: 29}\n",
         encoding="utf-8",
     )
-    with pytest.raises(ValueError) as exc:
+    with pytest.raises(RobotDataError) as exc:
         CuRoboPlanner.from_config(mounted / "small.yaml", urdf_path=urdf_level)
-    assert str(exc.value) == (
+    assert exc.value.problems == [
         "30 collision boxes > collision_cache_obb=29 (platform 16, seat 5, "
         "person 8, floor 1); raise the cache setting in the planner config or "
         "shrink a layer"
-    )
+    ]
     assert inits == [True, True]
 
 

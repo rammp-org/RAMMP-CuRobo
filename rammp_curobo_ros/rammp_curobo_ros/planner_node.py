@@ -44,9 +44,9 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
 from rammp_curobo import PoseConstraint, ViaPoint
-from rammp_curobo.config import load_planner_config, resolve_config
-from rammp_curobo.robot_config import load_robot_spec
-from rammp_curobo.urdf_model import prepare_urdf, write_urdf
+from rammp_curobo.config import load_planner_config
+from rammp_curobo.contract import check_robot_dir
+from rammp_curobo.urdf_model import write_urdf
 from rammp_curobo_interfaces.action import Blend, PlanToJoints, PlanToPose
 from rammp_curobo_interfaces.srv import SetWorld
 from rammp_curobo_ros.conversions import trajectory_from_msg, trajectory_to_msg
@@ -231,14 +231,13 @@ class RammpCuroboNode(Node):
 
         # The model first: no planner and no servers until a valid one is in.
         model = self._wait_for_model(timeout_s)
-        planner_cfg = planner_config(self.config, self.world)
-        spec = load_robot_spec(
-            resolve_config(planner_cfg[0]["robot"], relative_to=planner_cfg[1])
-        )
         try:
-            xml = prepare_urdf(model, spec)
-        except ValueError as exc:
-            self.get_logger().fatal("model on %s: %s" % (ROBOT_DESCRIPTION_TOPIC, exc))
+            planner_cfg = planner_config(self.config, self.world)
+            xml = check_robot_dir(*planner_cfg, model)
+        except (OSError, ValueError, KeyError) as exc:
+            self.get_logger().fatal(
+                "robot data or the model on %s: %s" % (ROBOT_DESCRIPTION_TOPIC, exc)
+            )
             raise SystemExit(1)
         # Removed in destroy_node; inside the container it dies with it anyway.
         self._model_dir = tempfile.TemporaryDirectory(prefix="rammp_curobo_")
