@@ -8,8 +8,6 @@ finds, so a bad deployment is fixed in one pass, not one restart per fault.
 Pure Python: nothing here imports cuRobo, torch or ROS.
 """
 
-from pathlib import Path
-
 import yaml
 
 from rammp_curobo.config import resolve_config

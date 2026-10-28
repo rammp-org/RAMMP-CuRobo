@@ -66,9 +66,7 @@ def load_robot_spec(path):
         )
     missing = [k for k, v in values.items() if not v]
     if missing:
-        raise ValueError(
-            "robot file %s is missing %s" % (path, ", ".join(missing))
-        )
+        raise ValueError("robot file %s is missing %s" % (path, ", ".join(missing)))
     return RobotSpec(
         root_link=str(values["robot_cfg.kinematics.base_link"]),
         ee_link=str(values["robot_cfg.kinematics.ee_link"]),

@@ -1166,7 +1166,12 @@ def test_a_robot_file_missing_fields_is_refused_naming_each(tmp_path):
     robot.write_text("robot_cfg:\n  kinematics:\n    base_link: root\n")
     with pytest.raises(ValueError) as e:
         load_robot_spec(robot)
-    for field in ("ee_link", "joint_names", "model_check.arm_base_link", "kinematics_reference"):
+    for field in (
+        "ee_link",
+        "joint_names",
+        "model_check.arm_base_link",
+        "kinematics_reference",
+    ):
         assert field in str(e.value)
     assert str(robot) in str(e.value)
     assert "kinematics.base_link" not in str(e.value)  # present, so not named
@@ -1184,9 +1189,7 @@ def test_a_non_gen3_arm_passes_with_its_own_robot_file():
 def test_an_arm_base_link_the_model_lacks_is_refused(tmp_path):
     robot = tmp_path / "robot.yaml"
     robot.write_text(
-        (DATA / "two_link" / "robot.yaml")
-        .read_text()
-        .replace("link0", "no_such_link")
+        (DATA / "two_link" / "robot.yaml").read_text().replace("link0", "no_such_link")
     )
     (tmp_path / "arm_kinematics.json").write_text("{}")
     with pytest.raises(ValueError, match="no 'no_such_link' link"):
@@ -1204,9 +1207,7 @@ def test_an_empty_kinematics_reference_is_refused(tmp_path):
 def test_a_string_for_joint_names_is_refused(tmp_path):
     robot = tmp_path / "robot.yaml"
     robot.write_text(
-        (DATA / "two_link" / "robot.yaml")
-        .read_text()
-        .replace("[j1, j2]", "j1")
+        (DATA / "two_link" / "robot.yaml").read_text().replace("[j1, j2]", "j1")
     )
     with pytest.raises(ValueError, match="must be a list"):
         load_robot_spec(robot)
@@ -1215,7 +1216,10 @@ def test_a_string_for_joint_names_is_refused(tmp_path):
 def test_prepare_urdf_is_idempotent(caplog):
     for xml, spec in [
         (read("arm_level.urdf"), gen3_spec()),
-        ((DATA / "two_link" / "two_link.urdf").read_text(), load_robot_spec(DATA / "two_link" / "robot.yaml")),
+        (
+            (DATA / "two_link" / "two_link.urdf").read_text(),
+            load_robot_spec(DATA / "two_link" / "robot.yaml"),
+        ),
     ]:
         once = prepare_urdf(xml, spec)
         with caplog.at_level("WARNING", logger="rammp_curobo"):
@@ -1230,10 +1234,11 @@ def test_a_reference_next_to_the_robot_file_is_resolved_there(tmp_path):
         .read_text()
         .replace("arm_kinematics.json", "example:arm_kinematics.json")
     )
-    assert load_robot_spec(robot).kinematics_reference == EXAMPLE_DIR / "arm_kinematics.json"
-    robot.write_text(
-        (DATA / "two_link" / "robot.yaml").read_text()
+    assert (
+        load_robot_spec(robot).kinematics_reference
+        == EXAMPLE_DIR / "arm_kinematics.json"
     )
+    robot.write_text((DATA / "two_link" / "robot.yaml").read_text())
     with pytest.raises(FileNotFoundError, match="arm_kinematics.json"):
         load_robot_spec(robot)  # not copied here
 
@@ -1318,7 +1323,9 @@ def test_robot_config_takes_the_urdf_path(tmp_path, monkeypatch):
     kin = load_robot_config("example:robot_gen3_2f85.yaml", urdf_path=p)["kinematics"]
     assert kin["urdf_path"] == str(p) and kin["asset_root_path"] == str(tmp_path)
     monkeypatch.chdir(tmp_path)
-    kin = load_robot_config("example:robot_gen3_2f85.yaml", urdf_path=p.name)["kinematics"]
+    kin = load_robot_config("example:robot_gen3_2f85.yaml", urdf_path=p.name)[
+        "kinematics"
+    ]
     assert Path(kin["urdf_path"]).is_absolute() and kin["urdf_path"] == str(p)
 
 

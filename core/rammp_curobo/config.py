@@ -60,9 +60,7 @@ PLANNER_DEFAULTS = {
 
 def _example_names():
     return sorted(
-        f.name
-        for f in EXAMPLE_DIR.iterdir()
-        if f.suffix in (".yaml", ".json", ".urdf")
+        f.name for f in EXAMPLE_DIR.iterdir() if f.suffix in (".yaml", ".json", ".urdf")
     )
 
 
@@ -90,7 +88,11 @@ def resolve_config(name_or_path, relative_to=None, search_cwd=True):
     ref = str(name_or_path)
     if ref.startswith(EXAMPLE_PREFIX):
         name = ref[len(EXAMPLE_PREFIX) :]
-        if "/" not in name and name not in ("", "..") and (EXAMPLE_DIR / name).is_file():
+        if (
+            "/" not in name
+            and name not in ("", "..")
+            and (EXAMPLE_DIR / name).is_file()
+        ):
             return EXAMPLE_DIR / name
         raise FileNotFoundError(
             "config %r not found; the examples are: %s"
@@ -144,7 +146,9 @@ def load_planner_config(name_or_path):
         try:
             data = yaml.load(f, Loader=_StrictLoader) or {}
         except yaml.YAMLError as exc:
-            raise ValueError("planner config %s is not valid YAML: %s" % (path, exc)) from None
+            raise ValueError(
+                "planner config %s is not valid YAML: %s" % (path, exc)
+            ) from None
     if not isinstance(data, dict):
         raise ValueError(
             "planner config %s is not a mapping, got %s" % (path, type(data).__name__)

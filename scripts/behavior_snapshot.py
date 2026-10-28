@@ -32,12 +32,21 @@ REPO = Path(__file__).resolve().parent.parent
 
 # case -> (candidate planner configs, first existing wins; URDF), repo-relative
 CASES = {
-    "kitchen": (["core/rammp_curobo/configs/gen3.yaml"], "core/tests/data/arm_level.urdf"),
-    "bench": (
-        ["core/rammp_curobo/configs/gen3_real.yaml", "core/tests/data/dojo/planner.yaml"],
+    "kitchen": (
+        ["core/rammp_curobo/configs/gen3.yaml"],
         "core/tests/data/arm_level.urdf",
     ),
-    "mebot": (["core/tests/data/mebot/planner.yaml"], "core/tests/data/arm_tilt30.urdf"),
+    "bench": (
+        [
+            "core/rammp_curobo/configs/gen3_real.yaml",
+            "core/tests/data/dojo/planner.yaml",
+        ],
+        "core/tests/data/arm_level.urdf",
+    ),
+    "mebot": (
+        ["core/tests/data/mebot/planner.yaml"],
+        "core/tests/data/arm_tilt30.urdf",
+    ),
 }
 N_FK, N_CHECK, N_PLAN = 50, 200, 8
 
@@ -64,7 +73,9 @@ def _urdf_text(config, robot_name_or_path, cfg_dir, xml):
         return prepare_urdf(xml)
     from rammp_curobo.robot_config import load_robot_spec
 
-    return prepare_urdf(xml, load_robot_spec(resolve_config(robot_name_or_path, relative_to=cfg_dir)))
+    return prepare_urdf(
+        xml, load_robot_spec(resolve_config(robot_name_or_path, relative_to=cfg_dir))
+    )
 
 
 def _guard(fn):
@@ -91,7 +102,10 @@ def _ser(x, seen=()):
     if x is None or isinstance(x, (bool, int, str, float)):
         if isinstance(x, str):
             if x.startswith("/") and len(x) < 1024 and os.path.isfile(x):
-                return {"file": os.path.basename(x), "sha256": hashlib.sha256(Path(x).read_bytes()).hexdigest()}
+                return {
+                    "file": os.path.basename(x),
+                    "sha256": hashlib.sha256(Path(x).read_bytes()).hexdigest(),
+                }
             for t in _TMPDIRS:
                 x = x.replace(t, "<tmp>")
         return x
@@ -102,19 +116,36 @@ def _ser(x, seen=()):
         return _ser(str(x), seen)
     if hasattr(x, "detach") and hasattr(x, "tolist"):  # torch tensor
         t = x.detach().cpu()
-        if t.numel() > 1000:  # solver buffers inside MotionGen.__init__'s config: hash, exactly
-            return {"tensor_sha256": hashlib.sha256(t.contiguous().numpy().tobytes()).hexdigest(), "shape": list(t.shape), "dtype": str(t.dtype)}
+        if (
+            t.numel() > 1000
+        ):  # solver buffers inside MotionGen.__init__'s config: hash, exactly
+            return {
+                "tensor_sha256": hashlib.sha256(
+                    t.contiguous().numpy().tobytes()
+                ).hexdigest(),
+                "shape": list(t.shape),
+                "dtype": str(t.dtype),
+            }
         return {"tensor": t.tolist(), "dtype": str(t.dtype)}
     if isinstance(x, (np.ndarray, np.generic)):
         return _plain(x)
     if isinstance(x, dict):
         return {str(k): _ser(v, seen) for k, v in x.items()}
     if isinstance(x, (list, tuple, set, frozenset)):
-        return [_ser(v, seen) for v in (sorted(x, key=repr) if isinstance(x, (set, frozenset)) else x)]
+        return [
+            _ser(v, seen)
+            for v in (sorted(x, key=repr) if isinstance(x, (set, frozenset)) else x)
+        ]
     if dataclasses.is_dataclass(x) and not isinstance(x, type):
-        return {"__type__": type(x).__name__, **{f.name: _ser(getattr(x, f.name), seen) for f in dataclasses.fields(x)}}
+        return {
+            "__type__": type(x).__name__,
+            **{f.name: _ser(getattr(x, f.name), seen) for f in dataclasses.fields(x)},
+        }
     if hasattr(x, "__dict__") and not isinstance(x, type) and not inspect.isroutine(x):
-        return {"__type__": type(x).__name__, **{k: _ser(v, seen) for k, v in sorted(vars(x).items())}}
+        return {
+            "__type__": type(x).__name__,
+            **{k: _ser(v, seen) for k, v in sorted(vars(x).items())},
+        }
     r = repr(x)
     return type(x).__name__ if _ADDRESS.search(r) else r
 
@@ -128,17 +159,31 @@ def _install_recorders():
         @functools.wraps(fn)
         def inner(*args, **kwargs):
             _CALLS.append(
-                {"call": name, "args": _ser(list(args[1:] if name != "load_from_robot_config" else args)), "kwargs": _ser(kwargs)}
+                {
+                    "call": name,
+                    "args": _ser(
+                        list(args[1:] if name != "load_from_robot_config" else args)
+                    ),
+                    "kwargs": _ser(kwargs),
+                }
             )
             return fn(*args, **kwargs)
 
         return inner
 
     cfg_fn = MotionGenConfig.__dict__["load_from_robot_config"].__func__
-    MotionGenConfig.load_from_robot_config = staticmethod(wrap(cfg_fn, "load_from_robot_config"))
+    MotionGenConfig.load_from_robot_config = staticmethod(
+        wrap(cfg_fn, "load_from_robot_config")
+    )
     for n in dir(MotionGen):
-        if (n in ("update_world", "warmup", "__init__") or n.startswith("plan")) and callable(getattr(MotionGen, n)):
-            setattr(MotionGen, n, wrap(MotionGen.__dict__.get(n) or getattr(MotionGen, n), n))
+        if (
+            n in ("update_world", "warmup", "__init__") or n.startswith("plan")
+        ) and callable(getattr(MotionGen, n)):
+            setattr(
+                MotionGen,
+                n,
+                wrap(MotionGen.__dict__.get(n) or getattr(MotionGen, n), n),
+            )
 
 
 def _seeded(plan):
@@ -161,7 +206,9 @@ def _result(r, lim):
             positions=_plain(t.positions),
             velocities=_plain(t.velocities),
             dt=float(t.dt),
-            within_limits=bool(np.all(pos >= lim[0] - 1e-6) and np.all(pos <= lim[1] + 1e-6)),
+            within_limits=bool(
+                np.all(pos >= lim[0] - 1e-6) and np.all(pos <= lim[1] + 1e-6)
+            ),
             max_step=float(np.abs(np.diff(pos, axis=0)).max()) if len(pos) > 1 else 0.0,
         )
     return out
@@ -189,7 +236,9 @@ def _refusals(planner, lim, start, invalid):
         "start_wrong_length": (goal, good[:-1]),
     }
     return {
-        k: _guard(lambda g=g, s=s: _result(_seeded(lambda: planner.plan_to_joints(g, s)), lim))
+        k: _guard(
+            lambda g=g, s=s: _result(_seeded(lambda: planner.plan_to_joints(g, s)), lim)
+        )
         for k, (g, s) in calls.items()
     }
 
@@ -219,7 +268,11 @@ def record_case(name):
         _TMPDIRS[:] = [tmp]
         urdf_path = write_urdf(_urdf_text(config, cfg["robot"], cfg_dir, xml), tmp)
         planner = CuRoboPlanner.from_config(str(config), urdf_path=str(urdf_path))
-    world = str(resolve_config(cfg["world"], relative_to=cfg_dir)) if cfg.get("world") else None
+    world = (
+        str(resolve_config(cfg["world"], relative_to=cfg_dir))
+        if cfg.get("world")
+        else None
+    )
 
     lim = planner.joint_limits()
     rec = {
@@ -233,34 +286,55 @@ def record_case(name):
     }
     cuboids, sources = planner._compose(planner._scene, allow_empty=True)
     rec["composed_boxes"] = [
-        {"name": k, "source": sources[k], "pose": _plain(cuboids[k]["pose"]), "dims": _plain(cuboids[k]["dims"])}
+        {
+            "name": k,
+            "source": sources[k],
+            "pose": _plain(cuboids[k]["pose"]),
+            "dims": _plain(cuboids[k]["dims"]),
+        }
         for k in sorted(cuboids)
     ]
     pos = lim["position"]
     rng = np.random.default_rng(1)
     rec["fk"] = [
-        _guard(lambda q=rng.uniform(pos[0], pos[1]): _plain(planner.fk(q))) for _ in range(N_FK)
+        _guard(lambda q=rng.uniform(pos[0], pos[1]): _plain(planner.fk(q)))
+        for _ in range(N_FK)
     ]
     rng = np.random.default_rng(2)
     states = [rng.uniform(pos[0], pos[1]) for _ in range(N_CHECK)]
     checks = [_guard(lambda q=q: _plain(planner.check_state_valid(q))) for q in states]
     rec["check_state_valid"] = checks
-    start = next((q for q, c in zip(states, checks) if isinstance(c, list) and c[0]), None)
+    start = next(
+        (q for q, c in zip(states, checks) if isinstance(c, list) and c[0]), None
+    )
     rec["plan_start"] = _plain(start)
     if start is None:
         rec["plan_to_joints"] = rec["plan_to_pose"] = "no valid start state"
     else:
         goals = _valid_states(planner, np.random.default_rng(3), pos, N_PLAN)
         rec["plan_to_joints"] = [
-            _guard(lambda g=g: _result(_seeded(lambda: planner.plan_to_joints(g, start)), pos)) for g in goals
+            _guard(
+                lambda g=g: _result(
+                    _seeded(lambda: planner.plan_to_joints(g, start)), pos
+                )
+            )
+            for g in goals
         ]
         poses = [
-            planner.fk(q) for q in _valid_states(planner, np.random.default_rng(4), pos, N_PLAN)
+            planner.fk(q)
+            for q in _valid_states(planner, np.random.default_rng(4), pos, N_PLAN)
         ]
         rec["plan_to_pose"] = [
-            _guard(lambda p=p: _result(_seeded(lambda: planner.plan_to_pose(p[0], p[1], start)), pos)) for p in poses
+            _guard(
+                lambda p=p: _result(
+                    _seeded(lambda: planner.plan_to_pose(p[0], p[1], start)), pos
+                )
+            )
+            for p in poses
         ]
-    invalid = next((q for q, c in zip(states, checks) if isinstance(c, list) and not c[0]), None)
+    invalid = next(
+        (q for q, c in zip(states, checks) if isinstance(c, list) and not c[0]), None
+    )
     if start is not None and invalid is not None:
         rec["refusals"] = _refusals(planner, pos, start, invalid)
     if world:
@@ -290,7 +364,12 @@ MAX_STEP_ATOL = 3e-3
 
 def _plan_diffs(path, a, b):
     """Plans are not bit-reproducible: compare the outcome and the two ends."""
-    if "raised" in a or "raised" in b or a.get("success") is not True or b.get("success") is not True:
+    if (
+        "raised" in a
+        or "raised" in b
+        or a.get("success") is not True
+        or b.get("success") is not True
+    ):
         for k in sorted(set(a) | set(b)):
             if a.get(k) != b.get(k) and k not in ("positions", "velocities", "dt"):
                 yield "%s/%s: %r -> %r" % (path, k, a.get(k), b.get(k))
@@ -303,7 +382,9 @@ def _plan_diffs(path, a, b):
     for field in ("positions", "velocities"):
         for name, i in (("first", 0), ("last", -1)):
             pa, pb = a[field][i], b[field][i]
-            if len(pa) != len(pb) or any(abs(x - y) > PLAN_ATOL for x, y in zip(pa, pb)):
+            if len(pa) != len(pb) or any(
+                abs(x - y) > PLAN_ATOL for x, y in zip(pa, pb)
+            ):
                 yield "%s/%s[%s]: %r -> %r" % (path, field, name, pa, pb)
 
 
@@ -313,7 +394,12 @@ def _diffs(path, a, b, atol):
     elif isinstance(a, dict) and isinstance(b, dict):
         for k in sorted(set(a) | set(b)):
             if k not in a or k not in b:
-                yield "%s/%s: %s -> %s" % (path, k, a.get(k, "<absent>"), b.get(k, "<absent>"))
+                yield "%s/%s: %s -> %s" % (
+                    path,
+                    k,
+                    a.get(k, "<absent>"),
+                    b.get(k, "<absent>"),
+                )
             else:
                 yield from _diffs("%s/%s" % (path, k) if path else k, a[k], b[k], atol)
     elif isinstance(a, list) and isinstance(b, list):
@@ -321,7 +407,12 @@ def _diffs(path, a, b, atol):
             yield "%s: length %d -> %d" % (path, len(a), len(b))
         for i, (x, y) in enumerate(zip(a, b)):
             yield from _diffs("%s[%d]" % (path, i), x, y, atol)
-    elif isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool) and not isinstance(b, bool):
+    elif (
+        isinstance(a, (int, float))
+        and isinstance(b, (int, float))
+        and not isinstance(a, bool)
+        and not isinstance(b, bool)
+    ):
         same = a == b or (a != a and b != b) or abs(a - b) <= atol
         if not same:
             yield "%s: %r -> %r" % (path, a, b)

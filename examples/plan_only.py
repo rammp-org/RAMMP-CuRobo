@@ -47,7 +47,9 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument(
-        "--config", default="example:gen3.yaml", help="planner YAML (example:<name> or path)"
+        "--config",
+        default="example:gen3.yaml",
+        help="planner YAML (example:<name> or path)",
     )
     ap.add_argument(
         "--urdf",

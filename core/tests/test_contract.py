@@ -95,7 +95,10 @@ def test_the_mebot_chair_fixture_passes_with_the_tilted_urdf():
 
 
 def test_a_cache_overflow_is_listed(tmp_path):
-    d = _dir(tmp_path, "robot: robot.yaml\nworld: world.yaml\nplanner: {collision_cache_obb: 1}\n")
+    d = _dir(
+        tmp_path,
+        "robot: robot.yaml\nworld: world.yaml\nplanner: {collision_cache_obb: 1}\n",
+    )
     (d / "world.yaml").write_text(
         "base_frame: arm_mount\nobstacles:\n"
         "  - {name: a, position: [1,0,0], dims: [.1,.1,.1]}\n"
@@ -129,7 +132,9 @@ def test_a_config_dict_without_planner_is_a_listed_problem(tmp_path):
 
 
 @pytest.mark.parametrize("text", ["robot: [unclosed\n", "- a\n- b\n"])
-def test_a_planner_config_that_is_not_a_mapping_or_yaml_is_a_value_error(tmp_path, text):
+def test_a_planner_config_that_is_not_a_mapping_or_yaml_is_a_value_error(
+    tmp_path, text
+):
     (tmp_path / "planner.yaml").write_text(text)
     with pytest.raises(ValueError, match="planner.yaml"):
         load_planner_config(tmp_path / "planner.yaml")

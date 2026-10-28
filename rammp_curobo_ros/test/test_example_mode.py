@@ -83,7 +83,10 @@ def test_no_config_builds_the_example_robot_with_the_banner_first(make_node, cap
     node = make_node()
     assert node.example_mode and not waits
     ((cfg, _dir, urdf_path),) = _FakePlanner.made
-    assert cfg["world"] == "world_sim_kitchen.yaml" and "<robot" in Path(urdf_path).read_text()
+    assert (
+        cfg["world"] == "world_sim_kitchen.yaml"
+        and "<robot" in Path(urdf_path).read_text()
+    )
     err = capfd.readouterr().err
     assert err.index(BANNER) < err.index("Loading cuRobo planner")
     assert "pass config:=/config/robot/curobo/planner.yaml. ===" in err
@@ -93,7 +96,9 @@ def test_no_config_builds_the_example_robot_with_the_banner_first(make_node, cap
 
 def test_a_published_model_is_ignored_with_one_warn(make_node, capfd):
     node = make_node()
-    pub = node.create_publisher(String, planner_node.ROBOT_DESCRIPTION_TOPIC, planner_node.MODEL_QOS)
+    pub = node.create_publisher(
+        String, planner_node.ROBOT_DESCRIPTION_TOPIC, planner_node.MODEL_QOS
+    )
     for _ in range(3):
         pub.publish(String(data="<robot name='other'/>"))
         _spin(node, 0.5)
@@ -103,9 +108,12 @@ def test_a_published_model_is_ignored_with_one_warn(make_node, capfd):
 def test_results_and_set_world_replies_carry_the_marker(make_node):
     node = make_node()
     assert node._tag("planned 5 points").endswith(" " + EXAMPLE_MARKER)
-    resp = node._set_world_cb(SetWorld.Request(world="example:world_empty.yaml"), SetWorld.Response())
+    resp = node._set_world_cb(
+        SetWorld.Request(world="example:world_empty.yaml"), SetWorld.Response()
+    )
     assert resp.success and resp.message.endswith(" " + EXAMPLE_MARKER)
     assert "(example, image)" in resp.message
+
     def refuse(world):
         raise ValueError("refused")
 
@@ -126,7 +134,9 @@ def test_a_named_config_has_no_marker_and_no_banner(make_node, tmp_path, capfd):
     assert "(example, image)" in err  # its robot file and world are the image's
 
 
-def test_an_unresolvable_config_is_fatal_naming_it_and_never_example_mode(make_node, capfd):
+def test_an_unresolvable_config_is_fatal_naming_it_and_never_example_mode(
+    make_node, capfd
+):
     with pytest.raises(SystemExit) as exc:
         make_node("config:=/nonexistent/planner.yaml")
     assert exc.value.code == 1 and not _FakePlanner.made
