@@ -61,6 +61,9 @@ def cpu_planner(monkeypatch, urdf_level):
         lambda: {"position": (lo, hi), "velocity": np.full(7, 10.0)},
     )
     monkeypatch.setattr(p, "_recheck_constraints", lambda plan: [])
+    # set by the stubbed _init_curobo, from cuRobo's FK: with none, no layer
+    # box is refused for reaching into the arm's fixed spheres
+    p._fixed_spheres = np.empty((0, 4))
     return p
 
 
@@ -143,8 +146,10 @@ def test_update_world_refuses_before_reaching_curobo(
     cpu_planner, monkeypatch, tmp_path
 ):
     geom = types.ModuleType("curobo.geom.types")
+    # every kind is listed: to_world_config checks what the WorldConfig holds
+    kinds = dict(sphere=[], cylinder=[], capsule=[], mesh=[])
     geom.WorldConfig = types.SimpleNamespace(
-        from_dict=lambda d: types.SimpleNamespace(cuboid=list(d["cuboid"]))
+        from_dict=lambda d: types.SimpleNamespace(cuboid=list(d["cuboid"]), **kinds)
     )
     for name in ("curobo", "curobo.geom"):
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))

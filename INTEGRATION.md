@@ -46,9 +46,9 @@ baked robot config refuses to load. `pos`/`quat` are `arm_tool_frame` in
 `arm_mount`, and `res.joint_traj.frame_id` is `"arm_mount"`.
 
 Config is one YAML (`core/rammp_curobo/configs/gen3.yaml` — robot file,
-world file, planner knobs). Copy it next to your code and point
-`from_config` at your copy to customize; bare names resolve to the packaged
-defaults. No cuRobo types cross the API.
+world file, obstacle layers, planner knobs). Copy it next to your code and
+point `from_config` at your copy to customize; bare names resolve to the
+packaged defaults. No cuRobo types cross the API.
 
 Requirements: the pinned GPU stack from the README (torch + cuRobo v0.7.8)
 and `pip install --user --no-build-isolation -e <repo>/core`.
@@ -99,7 +99,84 @@ status:
 | `BAD_CONSTRAINT`           | a malformed via point, or a hold sent together with a via                                           |
 
 `PlanToPose.action` has the full contract. `/rammp_curobo/set_world` swaps the
-collision world. There is nothing here that can move an arm.
+collision world's scene. There is nothing here that can move an arm.
+
+## Planning on the MEBot (≥ 1.1.0)
+
+With the arm on the MEBot wheelchair, run the planner with the chair
+config. It does NOT ship in this image: the chair's planner config, its world
+and its three layer files describe one chair's geometry and where the arm sits
+on it, so they are per-robot data and live with the robot, in rammp-deployments
+`config/robots/<robot>/curobo/`, bind-mounted read-only at `/config/robot`
+(issue #19). So `config:=/config/robot/curobo/planner.yaml` for the node, or
+`CuRoboPlanner.from_config("<that path>")` for the library. Re-measuring the
+chair is a commit there, not a release here, and nothing resolves these files
+by bare name — a packaged fallback would let an unmounted `/config/robot` plan
+the chair against stale geometry.
+
+If your manifest sets the `world` parameter, a chair robot must override it to
+`""`: a non-empty `world` replaces whatever the planner config names, so a
+bench world left in place would plan the chair against the wrong room. The chair's drive base,
+modelled with every joint at zero (layer `platform`, 16 boxes), and the
+person in it (layer `person`, 8 boxes) are then in every collision world the
+planner builds. Nothing models the rest of the chair: its seat, backrest,
+armrests and footplate, or the plate the arm is mounted on. Nor does the
+person layer cover the column carved around the arm's base (±0.105 m about
+its axis in x and y, z -0.040 to 0.409 m in `arm_mount`): most of it is open
+space beside the shoulder that the arm can move through, so the occupant's
+right hip, elbow or forearm beside the mount is not kept from the arm there.
+See the README's **Obstacle layers** for how the layers are made and what
+they cost. For a caller:
+
+- **A pushed scene replaces only your task geometry.** `set_world` and
+  `update_world` replace the scene, as before; the layers the config lists
+  stay in every world. The start-up scene's floor is task geometry too: the
+  first push replaces it, so carry your own floor in the scenes you push.
+  The two layers take 24 of the 60-box cache, which leaves 36 for your
+  scene. A scene with no obstacles, objects or layers of its own is
+  refused, and so is one that overflows the cache; the previous world
+  stays.
+
+- **The SetWorld reply lists the layers.** On success it reads
+  `world set to <world> (<summary>)`, e.g. for an 8-box scene:
+
+  ```text
+  world set to /config/my_world.yaml (32 boxes: scene 8 | config layers: platform 16, person 8 | scene layers: none)
+  ```
+
+  `platform 16, person 8` there is your proof that the chair is in the
+  world. A refused push replies with the reason, as before.
+
+- **The bench retract is not a valid start on the chair.** The robot
+  config's retract (`planner.retract_pose`, also cuRobo's IK seed) is
+  154.4 mm inside the padded person layer, and the planner warns about it
+  at start-up. Start from the arm's measured state, which `start_joints`
+  requires anyway. A failed plan's error now ends with the boxes its start
+  or goal reach into and where the world's boxes come from, e.g.
+  `[start collides with person/lap_0 (161 mm), ...] [world: 26 boxes: ...]`;
+  over ROS it arrives in the result's `message` as `<status>: <error>`.
+
+- **Excluding the person is Python-only.**
+  `planner.update_world(world, ignore={"person"})` leaves the person out of
+  that one world, the platform untouched; the next push without `ignore`
+  brings the person back. SetWorld has no field for it — adding one would
+  be a MAJOR change — and `ignore={"platform"}` is refused. Over the seat
+  and at the backrest the person layer is the only geometry, so that world
+  has none there: if your plans go near them, carry boxes for them in the
+  scene you push.
+
+- **A subclass that overrides `CuRoboPlanner._finish` keeps working.**
+  `_finish(result, t0, q_goal=None)` keeps its v1.0.0 signature and code;
+  the note on which boxes a failure involves is added after it returns. A
+  failure cuRobo reports carries it whether your override passes it on,
+  relabels it or leaves its error empty. A plan cuRobo found and your
+  override rejects comes back exactly as your override made it, with no
+  note.
+
+- **A 1.0.0 image refuses the chair config.** Mounting the chair's files
+  into one does not help: 1.0.0 ignores `layers:`, finds no obstacles in
+  `world.yaml` and refuses it as an empty world at start-up. It never
+  plans without the chair; pin a release that carries the layers.
 
 ## Adopting into a RAMMP module
 

@@ -214,6 +214,9 @@ class RammpCuroboNode(Node):
                 ", ".join(self.planner.joint_names),
             )
         )
+        # The core library's INFO logs do not reach the ROS logger, and this
+        # line is the operator's proof of which layers are in the world.
+        self.get_logger().info("Collision world: %s" % self.planner.world_summary())
         self._model_sub = self._watch_model(model)
 
         ActionServer(
@@ -249,9 +252,13 @@ class RammpCuroboNode(Node):
             )
 
         self.get_logger().info(
-            "rammp_curobo ready — planning only, %d joints, world %s. "
+            "rammp_curobo ready — planning only, %d joints, world %s (%s). "
             "This node never moves the arm; execution is the caller's."
-            % (len(self.planner.joint_names), world_name)
+            % (
+                len(self.planner.joint_names),
+                world_name,
+                self.planner.world_summary(),
+            )
         )
 
     def _wait_for_model(self, timeout_s):
@@ -413,7 +420,11 @@ class RammpCuroboNode(Node):
             try:
                 self.planner.update_world(request.world)
                 response.success = True
-                response.message = "world set to %s" % request.world
+                # the layers the config adds to every world are in the reply
+                response.message = "world set to %s (%s)" % (
+                    request.world,
+                    self.planner.world_summary(),
+                )
             except Exception as exc:
                 response.success = False
                 response.message = str(exc)

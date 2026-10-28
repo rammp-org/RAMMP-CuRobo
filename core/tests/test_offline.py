@@ -5,6 +5,8 @@ These run anywhere (CI, a laptop) — no torch, no cuRobo, no ROS.
 
 import importlib.util
 import math
+import os
+import subprocess
 import sys
 import types
 import xml.etree.ElementTree as ET
@@ -60,6 +62,72 @@ def load_yaml_robot(name_or_path):
     return yaml.safe_load(resolve_config(name_or_path).read_text())["robot_cfg"]
 
 
+def test_conftest_refuses_only_another_checkouts_core(tmp_path, monkeypatch):
+    # loaded by path: `import conftest` names whichever conftest.py pytest
+    # imported last
+    spec = importlib.util.spec_from_file_location(
+        "wrong_tree_guard", Path(__file__).with_name("conftest.py")
+    )
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+
+    def imported_from(parent):
+        stub = types.ModuleType("rammp_curobo")
+        stub.__file__ = str(parent / "rammp_curobo" / "__init__.py")
+        monkeypatch.setitem(sys.modules, "rammp_curobo", stub)
+        guard.pytest_configure(None)
+
+    here = Path(__file__).resolve().parents[1]
+    with pytest.raises(pytest.UsageError) as exc:
+        imported_from(tmp_path / "core")
+    assert str(exc.value) == (
+        "rammp_curobo is imported from %s, not this checkout (%s); "
+        "run with PYTHONPATH=%s" % (tmp_path / "core", here, here)
+    )
+    # a non-editable install (the image) is not another checkout
+    imported_from(tmp_path / "site-packages")
+
+
+def test_the_gpu_tests_cannot_skip_where_they_must_run():
+    # On the Jetson they are the gate, and a run that skipped them would pass
+    # on the offline tests alone: with RAMMP_CUROBO_GPU=1, which make verify
+    # sets, a skip of test_smoke.py fails. Without it, as in CI, they skip.
+    # The child pytest runs an offline test and test_smoke.py, as a machine
+    # without torch would
+    repo = Path(__file__).resolve().parents[2]
+    env = {k: v for k, v in os.environ.items() if k != "RAMMP_CUROBO_GPU"}
+    env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [str(repo / "core"), env.get("PYTHONPATH")])
+    )
+    code = (
+        "import sys; sys.modules['torch'] = None; import pytest; "
+        "sys.exit(pytest.main(sys.argv[1:]))"
+    )
+    tests = ["core/tests/test_offline.py::test_packaged_configs_exist"]
+    tests += ["core/tests/test_smoke.py"]
+
+    def run(**switch):
+        return subprocess.run(
+            [sys.executable, "-c", code, *tests, "-q", "-p", "no:cacheprovider"],
+            cwd=repo,
+            env=dict(env, **switch),
+            capture_output=True,
+            text=True,
+        )
+
+    skipped = run()
+    assert skipped.returncode == 0, skipped.stdout + skipped.stderr
+    assert "1 passed, 1 skipped" in skipped.stdout
+    # a module that cannot be collected stops the whole run
+    failed = run(RAMMP_CUROBO_GPU="1")
+    assert failed.returncode != 0
+    assert "1 error" in failed.stdout and "passed" not in failed.stdout
+    assert (
+        "RAMMP_CUROBO_GPU=1 skips no GPU test: Skipped: could not import 'torch'"
+        in failed.stdout
+    ), failed.stdout
+
+
 def test_packaged_configs_exist():
     for name in (
         "gen3.yaml",
@@ -69,6 +137,33 @@ def test_packaged_configs_exist():
         "world_empty.yaml",
     ):
         assert (PACKAGED_CONFIG_DIR / name).is_file(), name
+
+
+def test_the_chair_is_not_packaged_and_resolves_to_no_stale_copy():
+    """The chair's five files are ONE robot's geometry, not module config, so
+    they ship with that robot (rammp-deployments, config/robots/<robot>/curobo)
+    and this checkout keeps only a fixture copy under core/tests/data/mebot
+    (issue #19).
+
+    Nothing may leave a packaged copy behind. The planner container bind-mounts
+    config/robots/current, and Docker makes that an empty directory when it
+    starts before set_robot.py has run: a packaged fallback would let a bare
+    layer name resolve against the image and plan the chair against stale
+    geometry, with no warning. Absent, the same start fails instead.
+    """
+    chair = (
+        "planner.yaml",
+        "world.yaml",
+        "layer_mebot_platform.yaml",
+        "layer_mebot_person.yaml",
+        "layer_mebot_floor.yaml",
+    )
+    fixtures = Path(__file__).resolve().parent / "data" / "mebot"
+    for name in chair:
+        assert not (PACKAGED_CONFIG_DIR / name).exists(), name
+        with pytest.raises(FileNotFoundError):
+            resolve_config(name, search_cwd=False)
+        assert (fixtures / name).is_file(), name
 
 
 def test_planner_config_loads_and_merges():
@@ -93,6 +188,11 @@ def test_gen3_yaml_matches_planner_defaults():
         assert cfg[section] == PLANNER_DEFAULTS[section], section
     assert cfg["joint_names"] == PLANNER_DEFAULTS["joint_names"]
     assert cfg["joint_names"] == ["arm_joint_%d" % i for i in range(1, 8)]
+    assert cfg["layers"] == PLANNER_DEFAULTS["layers"]
+    # merged, a line deleted from the file reads as its default: `layers` is
+    # also read from the file itself, where its comment explains the key
+    text = (PACKAGED_CONFIG_DIR / "gen3.yaml").read_text(encoding="utf-8")
+    assert yaml.safe_load(text)["layers"] == []
 
 
 def test_baked_robot_config_is_the_upstream_model():
@@ -173,13 +273,17 @@ def test_empty_world_only_when_allowed(monkeypatch):
     # cuRobo stubbed so CI's offline job runs the guard; test_smoke covers
     # the real WorldConfig
     geom = types.ModuleType("curobo.geom.types")
-    geom.WorldConfig = types.SimpleNamespace(from_dict=lambda d: d)
+    # every kind is listed: to_world_config checks what the WorldConfig holds
+    kinds = dict(sphere=[], cylinder=[], capsule=[], mesh=[])
+    geom.WorldConfig = types.SimpleNamespace(
+        from_dict=lambda d: types.SimpleNamespace(cuboid=list(d["cuboid"]), **kinds)
+    )
     for name in ("curobo", "curobo.geom"):
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
     monkeypatch.setitem(sys.modules, "curobo.geom.types", geom)
     scene = load_scene(resolve_config("world_empty.yaml"))
     assert scene.base_frame == "arm_mount"
-    assert make_world_config(scene, allow_empty=True) == {"cuboid": {}}
+    assert make_world_config(scene, allow_empty=True).cuboid == []
     with pytest.raises(ValueError, match="empty"):
         make_world_config(scene)
 

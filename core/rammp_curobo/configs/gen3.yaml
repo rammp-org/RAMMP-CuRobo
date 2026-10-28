@@ -14,6 +14,9 @@
 
 robot: robot_gen3_2f85.yaml          # baked cuRobo robot config (generated)
 world: world_sim_kitchen.yaml        # collision world; swap for your scene
+layers: []                           # obstacle layer files composed into EVERY
+                                     # world, set_world pushes included: a push
+                                     # replaces the scene, never these
 
 # Controller joint order — the arm's own names, as on /arm/robot_description.
 joint_names: [arm_joint_1, arm_joint_2, arm_joint_3, arm_joint_4, arm_joint_5, arm_joint_6, arm_joint_7]

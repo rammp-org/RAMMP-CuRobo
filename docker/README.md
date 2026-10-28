@@ -94,6 +94,25 @@ docker run --rm -it --runtime nvidia --network host --ipc host \
   (`world_empty.yaml`: the arm alone, for a robot with nothing in reach to
   model). `ros2 launch rammp_curobo_ros planner.launch.py ...` still works
   but always exits 0. Under sheppy, see below.
+- The arm on the MEBot wheelchair (a release after 1.1.0). The chair's planner
+  config, its world and its three layer files are NOT part of the installed
+  package, so no bare name resolves to them: they describe one chair's
+  geometry and ship with that robot, in rammp-deployments
+  `config/robots/<robot>/curobo/` (issue #19). The repo's **fixture** copy is
+  in the image, at `/opt/rammp_curobo_src/core/tests/data/mebot/`, because the
+  build copies the whole tree and `make verify` needs it — never point
+  `config:` at that path. It is whatever the image was built from, not what
+  the robot is wearing. Mount the robot's directory and name the config by
+  path:
+  `... -v ./config/robots/current:/config/robot:ro rammp-curobo:jp6 /opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node --ros-args -p config:=/config/robot/curobo/planner.yaml`.
+  Set `world` to `""` if your manifest declares one: a non-empty `world`
+  replaces whatever the planner config names.
+  The chair's drive base and the person in it are then in every world,
+  worlds pushed over `/rammp_curobo/set_world` included, and the node's log
+  says so:
+  `Collision world: 26 boxes: scene 0 | config layers: platform 16, person 9 | scene layers: floor 1`.
+  See INTEGRATION.md, "Planning on the MEBot". An image without obstacle
+  layers has no such config and refuses it.
 - **Verify the bridge on first start** (the container runs as root; mixed
   root/non-root Fast DDS shared memory is a classic silent-delivery
   failure): from a host shell, `ros2 action list | grep rammp_curobo`
@@ -185,6 +204,10 @@ including merging chained plans into one continuous trajectory).
 ## Verify the image (no arm needed)
 
 ```bash
-docker run --rm --runtime nvidia rammp-curobo:jp6 \
+docker run --rm --runtime nvidia -e RAMMP_CUROBO_GPU=1 rammp-curobo:jp6 \
     python3 -m pytest /opt/rammp_curobo_src/core/tests -q
 ```
+
+`RAMMP_CUROBO_GPU=1` fails the run where the GPU tests would skip (no GPU
+passed through, a torch or cuRobo that does not import), instead of
+passing it on the offline tests alone.
