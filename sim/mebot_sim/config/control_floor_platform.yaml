@@ -1,6 +1,6 @@
 # A scene for the control planner (/rammp_curobo_control, gen3.yaml, which
-# composes no layers of its own): the MEBot's floor and platform layers, and
-# no person. The same request planned here and on the chair planner differs
+# composes no layers of its own): the MEBot's floor, platform and seat
+# layers, and no person. The same request planned here and on the chair planner differs
 # by the person layer alone.
 
 # The layers are named by paths relative to THIS file, not by name: the MEBot
@@ -17,3 +17,4 @@ obstacles: []
 layers:
   - ../../../core/tests/data/mebot/layer_mebot_floor.yaml
   - ../../../core/tests/data/mebot/layer_mebot_platform.yaml
+  - ../../../core/tests/data/mebot/layer_mebot_seat.yaml

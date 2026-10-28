@@ -52,7 +52,7 @@ gen = _load_generator()
 QUARTER = "1.5707963267948966"
 X, Y, Z = 0, 1, 2
 LO, HI = 0, 1
-SEGMENTS = ("torso_head", "lap", "legs")
+SEGMENTS = ("hips", "torso", "head", "thighs", "forearms", "legs")
 # The occupants the person layer holds: each ANSUR II size, in
 # inches, from the smaller sex's 5th percentile to the larger sex's 95th, with
 # its row in the NCSU table.
@@ -67,6 +67,9 @@ OCCUPANTS_IN = {
     "hip_breadth": (12.13, 15.75),  # row 19
     "chest_depth": (8.07, 11.73),  # row 20
     "abdominal_depth": (7.24, 12.60),  # row 21
+    "elbow_fingertip_length": (15.91, 20.47),  # row 23
+    "head_length": (7.01, 8.31),  # row 26
+    "head_breadth": (5.51, 6.42),  # row 27
     "hand_breadth": (2.83, 3.78),  # row 29
     "foot_length": (8.90, 11.54),  # row 30
 }
@@ -75,6 +78,15 @@ OCCUPANTS_IN = {
 # the knees, which the shortest thigh brings nearest the seat.
 OCCUPANT_IN = {key: high for key, (_, high) in OCCUPANTS_IN.items()}
 OCCUPANT_IN["buttock_popliteal_length"] = OCCUPANTS_IN["buttock_popliteal_length"][0]
+# ... and three faces the small end puts furthest out (the chin, which the
+# torso and the head meet at, and the thighs' top under the forearms)
+for _key in (
+    "sitting_height",
+    "head_length",
+    "thigh_clearance",
+    "sitting_elbow_height",
+):
+    OCCUPANT_IN[_key + "_low"] = OCCUPANTS_IN[_key][0]
 
 
 def _inputs():
@@ -98,11 +110,23 @@ def _inputs():
     for key, inches in OCCUPANT_IN.items():
         person["ansur_in"][key]["inches"] = inches
     person["margin_m"] = 0.05
+    # the RAMMS mount is on the chair's right
+    person["arm_side"] = -1
     person["seat"] = {
         "pan_top_z": 0.4705,
         "backrest_face_x": [0.1587, 0.2733],
         "backrest_rear_x": -0.1502,
         "centreline_y": 0,
+    }
+    # The RAMMS seat as the RAMMS model has it, its armrest on the left, across
+    # the chair from that mount's arm
+    data["seat"] = {
+        "keep_out_margin_m": 0.035,
+        "boxes": {
+            "base": [[0.1587, -0.2950, 0.2177], [0.7011, 0.2962, 0.4705]],
+            "backrest": [[-0.1502, -0.2950, 0.4705], [0.2733, 0.2962, 0.8497]],
+            "armrest": [[0.2192, 0.2237, 0.5925], [0.7334, 0.3679, 0.7953]],
+        },
     }
     data["floor"] = {"half_extent_m": 1.5, "thickness_m": 0.1}
     return data
@@ -487,6 +511,21 @@ def test_unsupported_input_is_refused(data, tmp_path, monkeypatch):
         with pytest.raises(ValueError, match="rpy_deg"):
             _generate(rotated, FAR_BOX)
 
+    # An arm side that is neither side, or not the side the mount is on (the
+    # RAMMS mount is on the right, -1), or a mount on the centreline, which
+    # is on neither: the forearms would be narrowed on the armrest's side.
+    for side in (0, 2, 1, -2):
+        wrong = _inputs()
+        wrong["person"]["arm_side"] = side
+        with pytest.raises(ValueError, match="arm_side %r must be" % side):
+            _generate(wrong, FAR_BOX)
+    centred = _inputs()
+    centred["mount"]["arm_base_in_mebot"]["position"][Y] = 0.0
+    for side in (1, -1):
+        centred["person"]["arm_side"] = side
+        with pytest.raises(ValueError, match="arm_side"):
+            _generate(centred, FAR_BOX)
+
     # A grid the printed decimals do not match.
     coarse = _inputs()
     coarse["grid_m"] = 0.001
@@ -494,16 +533,21 @@ def test_unsupported_input_is_refused(data, tmp_path, monkeypatch):
         _generate(coarse, FAR_BOX)
 
     # Data that would write a box without volume, which cuRobo never sees: a
-    # floor with no thickness, a torso turned inside out by a backrest whose
-    # rear is in front of the chest.
+    # floor with no thickness, thighs turned inside out by a knee nearer the
+    # backrest than the chest's front, a seat part written high corner first.
     flat = _inputs()
     flat["floor"]["thickness_m"] = 0.0
     with pytest.raises(ValueError, match="layer floor: box 'floor'"):
         _generate(flat, FAR_BOX)
     inverted = _inputs()
-    inverted["person"]["seat"]["backrest_rear_x"] = 1.0
-    with pytest.raises(ValueError, match="layer person: box 'torso_head'"):
+    inverted["person"]["ansur_in"]["buttock_knee_length"]["inches"] = 5.0
+    with pytest.raises(ValueError, match="layer person: box 'thighs'"):
         _generate(inverted, FAR_BOX)
+    backwards = _inputs()
+    lo, hi = backwards["seat"]["boxes"]["backrest"]
+    backwards["seat"]["boxes"]["backrest"] = [hi, lo]
+    with pytest.raises(ValueError, match="layer seat: box 'backrest'"):
+        _generate(backwards, FAR_BOX)
 
     # Data no gate on the boxes can see, because the boxes keep their volume:
     # a body size that is not positive (a foot of -11.54 in puts the legs'
@@ -1206,11 +1250,12 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
 
     margin = data["keep_out_margin_m"]
     # The RAMMS mount and 0.02 m padding, where the column stands in the torso and
-    # the legs, and a mount that stands it in all three segments, with more
+    # the legs, and a mount that stands it in other segments, with more
     # padding.
     for mount, pad in (([0.505, -0.265, 0.376], 0.02), ([0.65, 0.1, 0.30], 0.03)):
         placed = _inputs()
         placed["mount"]["arm_base_in_mebot"]["position"] = mount
+        placed["person"]["arm_side"] = 1 if mount[1] > 0 else -1
         placed["padding_assumed_m"] = pad
         result = _generate(placed, FAR_BOX)
         person = result["person"]
@@ -1275,18 +1320,29 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
         )
 
     # Where the boxes are, which the deltas below cannot see: the design
-    # occupant at the RAMMS mount is these eight boxes. The
-    # legs reach back under the seat to the arm's column, which carves them.
+    # occupant at the RAMMS mount is these sixteen boxes. The hips, the torso
+    # and the forearms (which reach back to the back) stand beside the arm's
+    # column and the legs reach back under the seat to it, and it carves all
+    # four. The forearms are hip-wide on the arm's side (-y here) and
+    # shoulder-wide on the other.
     files = _generate(_inputs(), FAR_BOX)["files"]
     assert _obstacle_lines(files[data["outputs"]["person"]]) == _box_lines(
-        ("lap", "0.31285, 0.26500, 0.28800", "0.3491, 0.6670, 0.4872"),
+        ("forearms_0", "-0.25075, 0.30670, 0.36055", "0.2913, 0.5836, 0.3421"),
+        ("forearms_1", "0.22170, 0.30670, 0.36055", "0.2332, 0.5836, 0.3421"),
+        ("forearms_2", "0.00000, 0.35180, 0.36055", "0.2102, 0.4934, 0.3421"),
+        ("forearms_3", "0.00000, 0.06000, 0.47005", "0.2102, 0.0902, 0.1231"),
+        ("head", "-0.07625, 0.26500, 0.87885", "0.6403, 0.2632, 0.4851"),
+        ("hips_0", "-0.25075, 0.26500, 0.13895", "0.2913, 0.5002, 0.1891"),
+        ("hips_1", "0.12175, 0.26500, 0.13895", "0.0333, 0.5002, 0.1891"),
+        ("hips_2", "0.00000, 0.31010, 0.13895", "0.2102, 0.4100, 0.1891"),
         ("legs_0", "0.44280, 0.26500, -0.19095", "0.6754, 0.5002, 0.4711"),
-        ("legs_1", "0.07485, 0.31010, -0.19095", "0.0605, 0.4100, 0.4711"),
-        ("legs_2", "0.07485, 0.06000, -0.23330", "0.0605, 0.0902, 0.3864"),
-        ("torso_head_0", "-0.40520, 0.26500, 0.58290", "0.6002, 0.6670, 1.0770"),
-        ("torso_head_1", "0.12175, 0.26500, 0.58290", "0.0333, 0.6670, 1.0770"),
-        ("torso_head_2", "0.00000, 0.35180, 0.58290", "0.2102, 0.4934, 1.0770"),
-        ("torso_head_3", "0.00000, 0.01830, 0.76495", "0.2102, 0.1736, 0.7129"),
+        ("legs_1", "0.00155, 0.31010, -0.19095", "0.2071, 0.4100, 0.4711"),
+        ("legs_2", "0.00155, 0.06000, -0.23330", "0.2071, 0.0902, 0.3864"),
+        ("thighs", "0.31285, 0.26500, 0.19800", "0.3491, 0.5002, 0.3072"),
+        ("torso_0", "-0.25075, 0.26500, 0.58840", "0.2913, 0.6670, 0.7100"),
+        ("torso_1", "0.12175, 0.26500, 0.58840", "0.0333, 0.6670, 0.7100"),
+        ("torso_2", "0.00000, 0.35180, 0.58840", "0.2102, 0.4934, 0.7100"),
+        ("torso_3", "0.00000, 0.01830, 0.67595", "0.2102, 0.1736, 0.5349"),
     )
 
     # Each parameter moves exactly its faces. Lengths grow by 0.1 m (1000
@@ -1295,24 +1351,49 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
     grow = 0.1 / 0.0254
     all_z = {(s, side, Z): 1000 for s in SEGMENTS for side in (LO, HI)}
     all_y = {(s, side, Y): 1000 for s in SEGMENTS for side in (LO, HI)}
-    wider = {("torso_head", LO, Y): -500, ("torso_head", HI, Y): 500}
-    wider.update({("lap", LO, Y): -500, ("lap", HI, Y): 500})
-    chest = {("torso_head", HI, X): 1000, ("lap", LO, X): 1000}
+
+    def breadth(*segments):
+        return {(s, side, Y): (-500, 500)[side] for s in segments for side in (LO, HI)}
+
+    # the chest's front: the torso's and the thighs' faces on it, and the
+    # head's, which reaches half its length past it (the forearms start at
+    # the back)
+    chest = {(s, HI, X): 1000 for s in ("hips", "torso", "head")}
+    chest.update({(s, LO, X): 1000 for s in ("thighs",)})
     ansur = {
-        "sitting_height": {("torso_head", HI, Z): 1000},
-        "sitting_elbow_height": {("lap", HI, Z): 1000},
-        "hand_breadth": {("lap", HI, Z): 1000},
-        "buttock_knee_length": {("lap", HI, X): 1000, ("legs", HI, X): 1000},
+        # its top; the torso's (the chin) is this less the shortest head
+        "sitting_height": {("torso", HI, Z): 1000, ("head", HI, Z): 1000},
+        # the lowest chin, the head's bottom
+        "sitting_height_low": {("head", LO, Z): 1000},
+        "head_length": {("head", LO, Z): -1000, ("head", HI, X): 500},
+        "head_length_low": {("torso", HI, Z): -1000},
+        "head_breadth": breadth("head"),
+        "sitting_elbow_height": {("forearms", HI, Z): 1000},
+        # the lowest elbow, where the hips give way to the shoulder-wide torso
+        "sitting_elbow_height_low": {("hips", HI, Z): 1000, ("torso", LO, Z): 1000},
+        "hand_breadth": {("forearms", HI, Z): 1000},
+        "thigh_clearance": {("thighs", HI, Z): 1000},
+        # the thinnest thighs, which the forearms rest lowest on
+        "thigh_clearance_low": {("forearms", LO, Z): 1000},
+        "elbow_fingertip_length": {("forearms", HI, X): 1000},
+        "buttock_knee_length": {("thighs", HI, X): 1000, ("legs", HI, X): 1000},
         "buttock_popliteal_length": {("legs", LO, X): 1000},
         "popliteal_height": {("legs", LO, Z): -1000},
-        "shoulder_breadth_bideltoid": wider,
-        "hip_breadth": {("legs", LO, Y): -500, ("legs", HI, Y): 500},
+        # the forearms: shoulder-wide away from the arm (+y here), hip-wide on
+        # its side
+        "shoulder_breadth_bideltoid": {**breadth("torso"), ("forearms", HI, Y): 500},
+        "hip_breadth": {
+            **breadth("hips", "thighs", "legs"),
+            ("forearms", LO, Y): -500,
+        },
         "abdominal_depth": chest,
-        "foot_length": {("legs", HI, X): 1000},
+        # the feet ahead of the knees, and tucked half a foot behind them
+        "foot_length": {("legs", HI, X): 1000, ("legs", LO, X): -500},
     }
     seat = {
         "pan_top_z": all_z,
-        "backrest_rear_x": {("torso_head", LO, X): 1000},
+        # the backrest's rear no longer bounds the person: its back is the face
+        "backrest_rear_x": {},
         "centreline_y": all_y,
     }
 
@@ -1349,34 +1430,29 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
         assert moved(shift) == every_face, axis
 
     # The smaller term of a max() moves nothing until it is the larger one:
-    # the thighs under the forearms, the chest behind the abdomen.
-    def raise_thigh(person, mount):
-        rows = person["ansur_in"]
-        forearms = (
-            rows["sitting_elbow_height"]["inches"] + rows["hand_breadth"]["inches"]
-        )
-        rows["thigh_clearance"]["inches"] = forearms + grow
-
+    # the chest behind the abdomen.
     def raise_chest(person, mount):
         rows = person["ansur_in"]
         rows["chest_depth"]["inches"] = rows["abdominal_depth"]["inches"] + grow
 
-    assert moved(inches("thigh_clearance", grow / 10)) == {}
     assert moved(inches("chest_depth", grow / 10)) == {}
-    assert moved(raise_thigh) == {("lap", HI, Z): 1000}
     assert moved(raise_chest) == chest
 
-    # The backrest face is a range: its front sets the chest and the knees
-    # (and the feet), its rear sets the back of the knees.
+    # The backrest face is a range: its front sets the chest, the knees (and
+    # the feet) and the fingertips, its rear the back and the back of the
+    # knees.
     def backrest(index):
         def change(person, mount):
             person["seat"]["backrest_face_x"][index] += 0.1
 
         return change
 
-    knees = {("lap", HI, X): 1000, ("legs", HI, X): 1000}
-    assert moved(backrest(1)) == {**chest, **knees}
-    assert moved(backrest(0)) == {("legs", LO, X): 1000}
+    knees = {("thighs", HI, X): 1000, ("legs", HI, X): 1000}
+    fingertips = {("forearms", HI, X): 1000}
+    assert moved(backrest(1)) == {**chest, **knees, **fingertips}
+    assert moved(backrest(0)) == {
+        (s, LO, X): 1000 for s in ("hips", "torso", "head", "forearms", "legs")
+    }
 
     # ... whichever end of the range is written first.
     def front_first(person, mount):
@@ -1389,26 +1465,19 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
     def margin_up(person, mount):
         person["margin_m"] += 0.01
 
-    assert moved(margin_up) == {
-        ("torso_head", LO, X): -100,
-        ("torso_head", HI, X): 100,
-        ("torso_head", LO, Y): -100,
-        ("torso_head", HI, Y): 100,
-        ("torso_head", LO, Z): -100,
-        ("torso_head", HI, Z): 100,
-        ("lap", LO, X): 100,
-        ("lap", HI, X): 100,
-        ("lap", LO, Y): -100,
-        ("lap", HI, Y): 100,
-        ("lap", LO, Z): -100,
-        ("lap", HI, Z): 100,
-        ("legs", LO, X): -100,
-        ("legs", HI, X): 100,
-        ("legs", LO, Y): -100,
-        ("legs", HI, Y): 100,
-        ("legs", LO, Z): -100,
-        ("legs", HI, Z): -100,
+    outward = {
+        (s, side, k): (-100, 100)[side]
+        for s in SEGMENTS
+        for side in (LO, HI)
+        for k in (X, Y, Z)
     }
+    # the chest's front is the thighs' back face, the pan's underside the
+    # legs' top, and the lowest elbow less the margin the hips' top (the
+    # forearms' back face is the back's, which the margin moves out)
+    outward[("thighs", LO, X)] = 100
+    outward[("legs", HI, Z)] = -100
+    outward[("hips", HI, Z)] = -100
+    assert moved(margin_up) == outward
 
     # Carved back by only 1 mm, the padded person comes within 4 mm of the
     # arm: such a layer is not written. Nor is the default one (5.1 mm clear)
@@ -1421,6 +1490,98 @@ def test_person_boxes_are_the_envelope_minus_the_arm_column(data):
     strict["keep_out"]["min_clearance_m"] = 0.006
     with pytest.raises(ValueError, match="person"):
         _generate(strict, FAR_BOX)
+
+
+def test_the_forearms_are_hip_wide_on_the_arms_side_and_shoulder_wide_on_the_other():
+    # The armrest is across the chair from the arm: a forearm rests on it,
+    # shoulder-wide, on that side, and on the thigh, hip-wide, on the arm's.
+    # Mirrored with the mount, and with arm_side.
+    for y, side in ((-0.265, -1), (0.265, 1)):
+        placed = _inputs()
+        placed["mount"]["arm_base_in_mebot"]["position"][Y] = y
+        placed["person"]["arm_side"] = side
+        envelope = dict(_generate(placed, FAR_BOX)["person"]["envelope"])
+        forearms, hips, torso = (envelope[k] for k in ("forearms", "hips", "torso"))
+        arm, other = (LO, HI) if side < 0 else (HI, LO)
+        assert forearms[arm][Y] == hips[arm][Y], side
+        assert forearms[other][Y] == torso[other][Y], side
+        # the shoulders are the wider: the forearms are narrower on the arm's
+        # side than on the other, by the difference
+        centre = (placed["person"]["seat"]["centreline_y"] - y) / 1e-4
+        reach = [abs(forearms[s][Y] - centre) for s in (arm, other)]
+        rows = placed["person"]["ansur_in"]
+        gap = (
+            rows["shoulder_breadth_bideltoid"]["inches"] - rows["hip_breadth"]["inches"]
+        )
+        assert reach[1] - reach[0] == pytest.approx(gap / 2 * 254, abs=2)
+
+
+def test_seat_boxes_are_its_parts_minus_a_wider_arm_column(data):
+    # The seat's parts, as the data gives them in the mebot frame, placed in
+    # arm_mount and carved around the arm's fixed spheres: by a column grown
+    # by the padding and the seat's OWN margin, wider than the person's, since
+    # closer than the planner's collision activation distance those spheres
+    # carry a cost no joint can lower (DT_EXCEPTION on nearly every plan).
+    spheres = gen.keep_out_spheres(data)
+    centres = np.array([c for c, _, _ in spheres])
+    radii = np.array([r for _, r, _ in spheres])
+    pad, margin = data["padding_assumed_m"], data["seat"]["keep_out_margin_m"]
+    assert margin > data["keep_out_margin_m"]
+    result = _generate(data, FAR_BOX)
+    seat = result["seat"]
+    mount = np.array(data["mount"]["arm_base_in_mebot"]["position"])
+
+    # the parts, in arm_mount, snapped outward to the grid
+    parts = {
+        name: gen._snap(*[[v - o for v, o in zip(c, mount)] for c in corners])
+        for name, corners in data["seat"]["boxes"].items()
+    }
+    assert sorted(parts) == ["armrest", "backrest", "base"]
+
+    # the column: the spheres' bounding box grown by padding and the seat's
+    # margin, snapped outward by at most a tick
+    column = gen._column(data, spheres, margin)
+    grown_lo = (centres - radii[:, None]).min(axis=0) - pad - margin
+    grown_hi = (centres + radii[:, None]).max(axis=0) + pad + margin
+    slack_lo = grown_lo - np.array(column[LO]) * 1e-4
+    slack_hi = np.array(column[HI]) * 1e-4 - grown_hi
+    assert (slack_lo > 0).all() and (slack_lo < 1e-4 + 2e-9).all()
+    assert (slack_hi > 0).all() and (slack_hi < 1e-4 + 2e-9).all()
+
+    # exactly the parts minus that column, cell for cell
+    boxes = [b["box"] for b in seat["boxes"]]
+    every = boxes + list(parts.values()) + [column]
+    cuts = [sorted({b[s][k] for b in every for s in (LO, HI)}) for k in (X, Y, Z)]
+    whole = _occupied(list(parts.values()), cuts)
+    carved = whole & ~_occupied([column], cuts)
+    assert np.array_equal(_occupied(boxes, cuts), carved)
+    assert carved.any() and carved.sum() < whole.sum()  # the base: it did carve
+
+    # padded, the boxes clear the spheres by the seat's margin, and the file
+    # says by how much
+    clear = _clearance(boxes, spheres, pad)
+    assert clear >= margin
+    assert seat["clearance_m"] == pytest.approx(clear, abs=1e-9)
+    meta = yaml.safe_load(result["files"][data["outputs"]["seat"]])["meta"]
+    assert meta["keep_out_margin_m"] == margin
+    assert meta["keep_out_clearance_m"] == pytest.approx(clear, abs=5e-5)
+
+    # a part whole keeps its name; pieces are numbered
+    names = [b["name"] for b in seat["boxes"]]
+    for part in parts:
+        pieces = sorted(n for n in names if n == part or n.startswith(part + "_"))
+        numbered = ["%s_%d" % (part, k) for k in range(len(pieces))]
+        assert pieces == [part] or (len(pieces) > 1 and pieces == numbered)
+
+    # the margin is the seat's own: at the person's, the seat comes as close
+    # as the person does
+    narrow = _inputs()
+    narrow["seat"]["keep_out_margin_m"] = narrow["keep_out_margin_m"]
+    near = _generate(narrow, FAR_BOX)
+    assert near["seat"]["clearance_m"] < margin
+    assert near["seat"]["clearance_m"] == pytest.approx(
+        near["person"]["clearance_m"], abs=2e-4
+    )
 
 
 def _union(boxes):
@@ -1453,6 +1614,7 @@ def _segments(data, sizes, backrest):
         "ansur_in": {key: {"inches": inches} for key, inches in sizes.items()},
         "seat": dict(person["seat"], backrest_face_x=backrest),
         "margin_m": person["margin_m"],
+        "arm_side": person["arm_side"],
     }
     return [(lo, hi) for _, lo, hi in gen._person_segments({"person": occupant})]
 
@@ -1483,14 +1645,17 @@ def test_the_person_holds_every_occupant_of_its_range():
         for box in segments:
             assert _within(box, envelope), (sizes, face)
 
-    # Sized by the largest occupant alone, the legs leave the smallest one's
-    # shins and feet behind their back face: the shorter the thigh, the
-    # nearer the seat the shins hang.
+    # Sized by the largest occupant alone, four segments leave the smallest
+    # one out: the torso and the forearms start above its lower elbows and
+    # thinner thighs, and the legs leave its shins and feet behind their back
+    # face (the shorter the thigh, the nearer the seat the shins hang). Its
+    # head is held: below the largest's chin it is inside the largest's
+    # torso.
     largest = {key: high for key, (_, high) in OCCUPANTS_IN.items()}
     smallest = {key: low for key, (low, _) in OCCUPANTS_IN.items()}
     alone = _union(_segments(placed, largest, faces))
     held = [_within(box, alone) for box in _segments(placed, smallest, faces[:1] * 2)]
-    assert held == [True, True, False]  # torso_head, lap, legs
+    assert held == [True, False, True, True, False, False]  # SEGMENTS' order
 
 
 # --------------------------------------------------------------- determinism
@@ -1590,7 +1755,8 @@ def test_cli_writes_only_after_every_gate_and_check_prints_a_diff(
     monkeypatch.setattr(gen, "PACKAGED_CONFIG_DIR", packaged)
     monkeypatch.chdir(elsewhere)
     out = repo / "out"
-    names = {layer: "%s.yaml" % layer for layer in ("platform", "person", "floor")}
+    layers = ("platform", "person", "seat", "floor")
+    names = {layer: "%s.yaml" % layer for layer in layers}
 
     def run(*flags, into="out", max_boxes=2, sha256=pinned, clone=clone, cache="cache"):
         data = _inputs()
@@ -1615,11 +1781,13 @@ def test_cli_writes_only_after_every_gate_and_check_prints_a_diff(
     assert {layer: doc["layer"] for layer, doc in loaded.items()} == {
         "platform": "platform",
         "person": "person",
+        "seat": "seat",
         "floor": "floor",
     }
     assert {layer: doc["excludable"] for layer, doc in loaded.items()} == {
         "platform": False,
         "person": True,
+        "seat": False,
         "floor": False,
     }
     boxes = [o["name"] for o in loaded["platform"]["obstacles"]]
@@ -1667,7 +1835,9 @@ def test_cli_writes_only_after_every_gate_and_check_prints_a_diff(
             run()
     capsys.readouterr()
     assert (out / names["platform"]).read_text() == edited
-    assert sorted(os.listdir(out)) == [names["person"], names["platform"]]
+    assert sorted(os.listdir(out)) == sorted(
+        names[layer] for layer in ("person", "platform", "seat")
+    )
 
     # Regenerating puts them back.
     status, said = run()
@@ -1872,14 +2042,16 @@ def test_committed_person_holds_every_occupant_of_its_range():
 
     # The layer generated with the back of the knees at the larger sex's 5th
     # percentile (18.07 in, row 14) leaves out every occupant with the
-    # shortest thigh and its back at the rear of the backrest's range, and
-    # no other.
+    # shortest thigh and the longest foot (tucked furthest back under the
+    # knee) and its back at the rear of the backrest's range, and no other.
     data["person"]["ansur_in"]["buttock_popliteal_length"]["inches"] = 18.07
     person = _generate(data, FAR_BOX)["person"]
     shorter = lost([b["box"] for b in person["boxes"]] + [person["column"]])
     rear = min(data["person"]["seat"]["backrest_face_x"])
-    assert len(shorter) == 2048
-    assert {(s["buttock_popliteal_length"], b) for s, b in shorter} == {(17.36, rear)}
+    assert len(shorter) == 2 ** (len(OCCUPANTS_IN) - 2) * 2  # both faces: one range
+    assert {
+        (s["buttock_popliteal_length"], s["foot_length"], b) for s, b in shorter
+    } == {(17.36, 11.54, rear)}
 
 
 def test_committed_layers_meet_budgets_and_clear_the_arm():
@@ -1894,6 +2066,7 @@ def test_committed_layers_meet_budgets_and_clear_the_arm():
     assert {name: (layer.name, layer.excludable) for name, layer in layers.items()} == {
         "platform": ("platform", False),
         "person": ("person", True),
+        "seat": ("seat", False),
         "floor": ("floor", False),
     }
     for layer in layers.values():
@@ -1930,6 +2103,12 @@ def test_committed_layers_meet_budgets_and_clear_the_arm():
         # and the file says how close they come
         claimed = meta[name]["keep_out_clearance_m"]
         assert claimed == pytest.approx(clear, abs=5e-5), name
+        # the seat, around the arm's base, is kept clear by its own, wider
+        # margin: beyond the planner's collision activation distance
+        if name == "seat":
+            margin = data["seat"]["keep_out_margin_m"]
+            assert meta[name]["keep_out_margin_m"] == margin
+            assert clear >= margin
 
 
 def test_outdir_writes_the_layer_set_beside_the_robot_that_uses_it(
@@ -1955,7 +2134,7 @@ def test_outdir_writes_the_layer_set_beside_the_robot_that_uses_it(
     monkeypatch.setattr(gen, "PACKAGED_CONFIG_DIR", packaged)
     names = {
         layer: "layer_mebot_%s.yaml" % layer
-        for layer in ("platform", "person", "floor")
+        for layer in ("platform", "person", "seat", "floor")
     }
 
     def run(*flags):

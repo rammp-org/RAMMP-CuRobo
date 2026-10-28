@@ -97,9 +97,11 @@ def test_the_mebot_registers_in_the_platform_and_a_1mm_shrink_is_caught(
     assets, empty_chair
 ):
     platform = assets.layers["platform"]
+    # the drive base's geoms: the seat, under mebot/ too, is its own layer's
     kinds = [
         int(empty_chair.geom_type[g])
         for g in scene.contact_groups(empty_chair)[1]["mebot"]
+        if empty_chair.body(empty_chair.geom_bodyid[g]).name != "mebot/seat"
     ]
     whole = check_layers.registration(empty_chair, platform)
     assert whole["geoms"] == len(kinds)
@@ -240,10 +242,10 @@ def test_the_standin_is_inside_the_padded_person_layer(
     assert c["body_m3"] == pytest.approx(whole, rel=0.02)
 
 
-def test_a_person_layer_without_its_lap_leaves_a_gap(assets, person):
+def test_a_person_layer_without_its_thighs_leaves_a_gap(assets, person):
     padded, column = person
     names = [o.name for o in assets.layers["person"].obstacles]
-    lapless = [b for name, b in zip(names, padded) if not name.startswith("lap")]
+    lapless = [b for name, b in zip(names, padded) if not name.startswith("thighs")]
     geoms, _ = scene.standin(assets, "upright_lap")
     c = check_layers.coverage(geoms, lapless, column)
     assert c["gap_points"] > 0
@@ -295,7 +297,7 @@ def _layer_file(path, layer, obstacles):
 def test_s0_fails_its_gates_on_broken_layer_files(assets, monkeypatch, tmp_path):
     files = stack.layer_files()
     platform, person = (load_layer(files[name]) for name in ("platform", "person"))
-    lapless = [o for o in person.obstacles if not o.name.startswith("lap")]
+    lapless = [o for o in person.obstacles if not o.name.startswith("thighs")]
     broken = dict(
         files,
         platform=_layer_file(tmp_path / "p.yaml", platform, platform.obstacles[1:]),
@@ -315,7 +317,7 @@ def test_g1_fails_when_the_column_excuses_what_the_person_layer_leaves_out(
     # and no gap is left to fail on
     files = stack.layer_files()
     person = load_layer(files["person"])
-    lapless = [o for o in person.obstacles if not o.name.startswith("lap")]
+    lapless = [o for o in person.obstacles if not o.name.startswith("thighs")]
     carved = dict(files, person=_layer_file(tmp_path / "q.yaml", person, lapless))
     monkeypatch.setattr(stack, "layer_files", lambda: carved)
     monkeypatch.setattr(check_layers, "column", lambda assets: ([-5.0] * 3, [5.0] * 3))
@@ -378,14 +380,18 @@ def test_s0_with_no_size_to_seat_the_standin_at_is_an_error(
 def test_g1_fails_legs_sized_by_the_95th_percentile_thigh_alone(
     assets, monkeypatch, tmp_path
 ):
-    # The person layer as it was generated for the 95th-percentile man alone,
-    # its legs' back face at his thigh (21.57 in). With their back at the rear
-    # of the backrest's range, the smaller bodies' shins and feet hang behind
-    # it, under the lap: G1 fails them, and only them.
+    # The person layer as it would be generated for the 95th-percentile man
+    # alone: its legs' back face as far forward as still holds his shins and
+    # feet. The smaller bodies' shins and feet, nearer the seat, hang behind
+    # it, under the lap: G1 fails them, and only them. Since the legs reach
+    # half a foot behind the back of the knee, that face is no longer at his
+    # thigh (21.57 in); it was found by bisecting buttock_popliteal_length
+    # against G1 on the committed geometry: the 95th man is held up to 26.50
+    # in, the 50th fails from 25.29 in, and 25.89 in is the middle of that.
     generator = stack.generator()
     data = generator.load_data()
-    thigh = data["person"]["ansur_in"]["buttock_popliteal_length"]
-    thigh.update(sex="men", percentile=95, inches=21.57)
+    rows = data["person"]["ansur_in"]
+    rows["buttock_popliteal_length"].update(sex="men", percentile=95, inches=25.89)
     old = tmp_path / "layer_mebot_person.yaml"
     old.write_text(
         generator.generate(data, assets.urdf)["files"][data["outputs"]["person"]]
@@ -393,12 +399,14 @@ def test_g1_fails_legs_sized_by_the_95th_percentile_thigh_alone(
     files = dict(stack.layer_files(), person=old)
     monkeypatch.setattr(stack, "layer_files", lambda: files)
     standins = check_layers.cases(assets)[1:]
-    rear = "%.4f" % min(assets.data["person"]["seat"]["backrest_face_x"])
+    faces = sorted(assets.data["person"]["seat"]["backrest_face_x"])
     failed = [c for c in standins if not c["passed"]]
     assert [c["case"] for c in failed] == [
-        "S0 %s %s %s" % (size, posture, rear)
+        "S0 %s %s %.4f" % (size, posture, face)
         for size in ("woman_5th", "man_50th")
         for posture in POSTURES
+        for face in faces
+        if face == faces[0]
     ]
     for c in failed:
         assert c["gates"] == {"G1": False} and c["gap_m3"] > 0
@@ -408,16 +416,18 @@ def test_g1_fails_legs_sized_by_the_95th_percentile_thigh_alone(
 
 
 def test_g1_bounds_are_the_scenarios_thresholds(assets, monkeypatch):
+    # bounds the committed layer cannot meet: every stand-in is covered whole
+    # (100 %), so a bound past that is under for each of them
     data = stack.scenarios()
     strict = dict(
         data,
-        thresholds=dict(data["thresholds"], covered_pct=99.9, body_volume_pct=0.01),
+        thresholds=dict(data["thresholds"], covered_pct=100.01, body_volume_pct=0.01),
     )
     monkeypatch.setattr(stack, "scenarios", lambda: strict)
     standins = check_layers.cases(assets)[1:]
     assert all(c["gates"] == {"G1": False} for c in standins)
-    under = [c for c in standins if c["covered_pct"] < 99.9]
-    assert under and all("covered (under 99.9)" in c["outcome"] for c in under)
+    under = [c for c in standins if c["covered_pct"] < 100.01]
+    assert under and all("covered (under 100.01)" in c["outcome"] for c in under)
     assert all("m3 (not the humanoid's " in c["outcome"] for c in standins)
 
 
