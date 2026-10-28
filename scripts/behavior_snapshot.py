@@ -15,8 +15,13 @@ changes (prepare_urdf) and are the only version-dependent lines. Needs a GPU.
 """
 
 import argparse
+import dataclasses
+import functools
+import hashlib
 import inspect
 import json
+import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -70,6 +75,69 @@ def _guard(fn):
         return {"raised": type(e).__name__, "message": str(e)}
 
 
+# ---- what the planner hands cuRobo, recorded exactly -----------------------
+# Plans are not bit-reproducible on the GPU, so the proof that the planner is
+# unchanged is that cuRobo is handed the same inputs. These wrap cuRobo's
+# entry points (this script only) and serialise every argument to plain JSON.
+
+_CALLS = []  # (entry point, serialised args), in call order, for the case being built
+_TMPDIRS = []  # temp dirs whose random names must not count as a difference
+_ADDRESS = re.compile(r" at 0x[0-9a-fA-F]+")
+
+
+def _ser(x, seen=()):
+    """Deterministic plain-JSON form of x: tensors as lists at full precision,
+    config objects as dicts of fields, files as sha256 + basename."""
+    if x is None or isinstance(x, (bool, int, str, float)):
+        if isinstance(x, str):
+            if x.startswith("/") and len(x) < 1024 and os.path.isfile(x):
+                return {"file": os.path.basename(x), "sha256": hashlib.sha256(Path(x).read_bytes()).hexdigest()}
+            for t in _TMPDIRS:
+                x = x.replace(t, "<tmp>")
+        return x
+    if id(x) in seen:
+        return "<cycle %s>" % type(x).__name__
+    seen = seen + (id(x),)
+    if isinstance(x, Path):
+        return _ser(str(x), seen)
+    if hasattr(x, "detach") and hasattr(x, "tolist"):  # torch tensor
+        return {"tensor": x.detach().cpu().tolist(), "dtype": str(x.dtype)}
+    if isinstance(x, (np.ndarray, np.generic)):
+        return _plain(x)
+    if isinstance(x, dict):
+        return {str(k): _ser(v, seen) for k, v in x.items()}
+    if isinstance(x, (list, tuple, set, frozenset)):
+        return [_ser(v, seen) for v in (sorted(x, key=repr) if isinstance(x, (set, frozenset)) else x)]
+    if dataclasses.is_dataclass(x) and not isinstance(x, type):
+        return {"__type__": type(x).__name__, **{f.name: _ser(getattr(x, f.name), seen) for f in dataclasses.fields(x)}}
+    if hasattr(x, "__dict__") and not isinstance(x, type) and not inspect.isroutine(x):
+        return {"__type__": type(x).__name__, **{k: _ser(v, seen) for k, v in sorted(vars(x).items())}}
+    r = repr(x)
+    return type(x).__name__ if _ADDRESS.search(r) else r
+
+
+def _install_recorders():
+    """Wrap MotionGenConfig.load_from_robot_config, MotionGen.update_world and
+    every MotionGen method named plan*, once, to append to _CALLS."""
+    from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
+
+    def wrap(fn, name):
+        @functools.wraps(fn)
+        def inner(*args, **kwargs):
+            _CALLS.append(
+                {"call": name, "args": _ser(list(args[1:] if name != "load_from_robot_config" else args)), "kwargs": _ser(kwargs)}
+            )
+            return fn(*args, **kwargs)
+
+        return inner
+
+    cfg_fn = MotionGenConfig.__dict__["load_from_robot_config"].__func__
+    MotionGenConfig.load_from_robot_config = staticmethod(wrap(cfg_fn, "load_from_robot_config"))
+    for n in dir(MotionGen):
+        if (n == "update_world" or n.startswith("plan")) and callable(getattr(MotionGen, n)):
+            setattr(MotionGen, n, wrap(MotionGen.__dict__.get(n) or getattr(MotionGen, n), n))
+
+
 def _seeded(plan):
     """Run a plan call after reseeding torch: cuRobo's solver seeds draw from
     torch's generator, so without this two runs plan different trajectories."""
@@ -113,7 +181,9 @@ def record_case(name):
     config = next(REPO / c for c in cands if (REPO / c).is_file())
     cfg, cfg_dir = load_planner_config(str(config))
     xml = (REPO / urdf).read_text()
+    _CALLS.clear()
     with tempfile.TemporaryDirectory() as tmp:
+        _TMPDIRS[:] = [tmp]
         urdf_path = write_urdf(_urdf_text(config, cfg["robot"], cfg_dir, xml), tmp)
         planner = CuRoboPlanner.from_config(str(config), urdf_path=str(urdf_path))
     world = str(resolve_config(cfg["world"], relative_to=cfg_dir)) if cfg.get("world") else None
@@ -160,10 +230,12 @@ def record_case(name):
     if world:
         rec["update_world"] = _guard(lambda: (planner.update_world(world), "ok")[1])
         rec["world_summary_after_update"] = planner.world_summary()
+    rec["curobo_inputs"] = list(_CALLS)
     return rec
 
 
 def record(out):
+    _install_recorders()
     snap = {}
     for name in CASES:
         print("recording %s ..." % name, flush=True)
@@ -172,8 +244,30 @@ def record(out):
     print("wrote", out)
 
 
+_PLAN = re.compile(r"(^|/)plan_to_(joints|pose)\[\d+\]$")
+PLAN_ATOL = 1e-6
+
+
+def _plan_diffs(path, a, b):
+    """Plans are not bit-reproducible: compare the outcome and the two ends."""
+    if "raised" in a or "raised" in b or a.get("success") is not True or b.get("success") is not True:
+        for k in sorted(set(a) | set(b)):
+            if a.get(k) != b.get(k) and k not in ("positions", "velocities", "dt"):
+                yield "%s/%s: %r -> %r" % (path, k, a.get(k), b.get(k))
+        return
+    for k in ("success", "status", "error", "joint_names"):
+        if a.get(k) != b.get(k):
+            yield "%s/%s: %r -> %r" % (path, k, a.get(k), b.get(k))
+    for name, i in (("first", 0), ("last", -1)):
+        pa, pb = a["positions"][i], b["positions"][i]
+        if len(pa) != len(pb) or any(abs(x - y) > PLAN_ATOL for x, y in zip(pa, pb)):
+            yield "%s/positions[%s]: %r -> %r" % (path, name, pa, pb)
+
+
 def _diffs(path, a, b, atol):
-    if isinstance(a, dict) and isinstance(b, dict):
+    if _PLAN.search(path) and isinstance(a, dict) and isinstance(b, dict):
+        yield from _plan_diffs(path, a, b)
+    elif isinstance(a, dict) and isinstance(b, dict):
         for k in sorted(set(a) | set(b)):
             if k not in a or k not in b:
                 yield "%s/%s: %s -> %s" % (path, k, a.get(k, "<absent>"), b.get(k, "<absent>"))
