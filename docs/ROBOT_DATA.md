@@ -13,13 +13,13 @@ Conventionally `config/robots/<robot>/curobo/` in rammp-deployments, mounted
 read-only at `/config/robot/curobo/` in the planner container and selected with
 `config:=/config/robot/curobo/planner.yaml`.
 
-| File                                  | Says                                                                                                                                                               | Required      |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------- |
-| `planner.yaml`                        | names the robot file and the start-up world; lists the always-on layers; optional planner settings                                                                 | yes           |
-| robot file (any name, e.g. `robot.yaml`) | cuRobo's robot config: root link, tool link, planned joints, collision spheres, self-collision, locked joints, IK seed (`retract_config`), and a `model_check` block | yes           |
-| kinematics reference (JSON)           | the arm's joints below its base, as the spheres were fitted on them (`model_check.kinematics_reference`)                                                           | yes           |
-| start-up world (e.g. `world.yaml`)    | `base_frame` equal to the robot file's root link; the scene the planner starts with; replaced by the first `set_world` push                                        | yes           |
-| layer files                           | always-on obstacles (the chair, the person), each with `meta.padding_assumed_m`                                                                                    | only if listed |
+| File                                     | Says                                                                                                                                                                 | Required       |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
+| `planner.yaml`                           | names the robot file and the start-up world; lists the always-on layers; optional planner settings                                                                   | yes            |
+| robot file (any name, e.g. `robot.yaml`) | cuRobo's robot config: root link, tool link, planned joints, collision spheres, self-collision, locked joints, IK seed (`retract_config`), and a `model_check` block | yes            |
+| kinematics reference (JSON)              | the arm's joints below its base, as the spheres were fitted on them (`model_check.kinematics_reference`)                                                             | yes            |
+| start-up world (e.g. `world.yaml`)       | `base_frame` equal to the robot file's root link; the scene the planner starts with; replaced by the first `set_world` push                                          | yes            |
+| layer files                              | always-on obstacles (the chair, the person), each with `meta.padding_assumed_m`                                                                                      | only if listed |
 
 The arm's URDF is **not** in the directory. It arrives on
 `/arm/robot_description` from `arm_state_publisher` (rendered from the robot's
@@ -49,13 +49,13 @@ never change their spheres or IK seed); `example:` is allowed and visible.
 
 ## `planner.yaml`
 
-| Key       | Required | Notes                                                                                           |
-| --------- | -------- | ----------------------------------------------------------------------------------------------- |
-| `robot`   | yes      | the robot file                                                                                  |
-| `world`   | yes      | the start-up world; an empty one (`obstacles: []`) is accepted here only |
-| `layers`  | no       | obstacle layer files composed into every world, pushes included; default `[]`                  |
-| `planner` | no       | tuning knobs; each defaults field by field from `config.PLANNER_DEFAULTS`                       |
-| `tool`    | no       | tool corrections (`spin_deg`, `tip_offset_m`); default 0.0                                      |
+| Key       | Required | Notes                                                                         |
+| --------- | -------- | ----------------------------------------------------------------------------- |
+| `robot`   | yes      | the robot file                                                                |
+| `world`   | yes      | the start-up world; an empty one (`obstacles: []`) is accepted here only      |
+| `layers`  | no       | obstacle layer files composed into every world, pushes included; default `[]` |
+| `planner` | no       | tuning knobs; each defaults field by field from `config.PLANNER_DEFAULTS`     |
+| `tool`    | no       | tool corrections (`spin_deg`, `tip_offset_m`); default 0.0                    |
 
 Robot data (robot file, world) is whole or refused: it is never merged field
 by field with the example's. Only the planner settings default. There is no
@@ -69,17 +69,17 @@ The planner reads these fields; the example's values are given for orientation
 (`core/rammp_curobo/configs/robot_gen3_2f85.yaml`, generated by
 `scripts/bake_robot_config.py`).
 
-| Field                                      | Meaning                                                              | Example                                        |
-| ------------------------------------------ | -------------------------------------------------------------------- | ---------------------------------------------- |
-| `robot_cfg.kinematics.base_link`           | the root link: the frame plans, worlds and layers are in             | `arm_mount`                                    |
-| `robot_cfg.kinematics.ee_link`             | the tool link goals are given for                                    | `arm_tool_frame`                               |
-| `robot_cfg.kinematics.cspace.joint_names`  | the planned joints, in order (also the order of every returned plan) | `arm_joint_1` .. `arm_joint_7`                 |
-| `robot_cfg.kinematics.cspace.retract_config` | the IK seed, not a home pose                                       | bent-elbow family (`arm_joint_3` near pi)      |
-| `robot_cfg.kinematics.lock_joints`         | joints held fixed, by their actuated joint only (cuRobo folds in mimics) | `arm_robotiq_85_left_knuckle_joint: 0.0`   |
-| `robot_cfg.kinematics.urdf_path`           | the sentinel `from_robot_description`: the model comes from the topic | `from_robot_description`                     |
-| `robot_cfg.kinematics.collision_spheres`, `collision_link_names`, `self_collision_*` | the collision model | audited Gen3 + 2F-85 spheres |
-| `model_check.arm_base_link`                | where the kinematics reference starts; the joint above it (the mount) may vary | `arm_base_link`              |
-| `model_check.kinematics_reference`         | JSON of every joint below `arm_base_link` the spheres were fitted on, resolved next to the robot file or via `example:` | `arm_kinematics.json` |
+| Field                                                                                | Meaning                                                                                                                 | Example                                   |
+| ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `robot_cfg.kinematics.base_link`                                                     | the root link: the frame plans, worlds and layers are in                                                                | `arm_mount`                               |
+| `robot_cfg.kinematics.ee_link`                                                       | the tool link goals are given for                                                                                       | `arm_tool_frame`                          |
+| `robot_cfg.kinematics.cspace.joint_names`                                            | the planned joints, in order (also the order of every returned plan)                                                    | `arm_joint_1` .. `arm_joint_7`            |
+| `robot_cfg.kinematics.cspace.retract_config`                                         | the IK seed, not a home pose                                                                                            | bent-elbow family (`arm_joint_3` near pi) |
+| `robot_cfg.kinematics.lock_joints`                                                   | joints held fixed, by their actuated joint only (cuRobo folds in mimics)                                                | `arm_robotiq_85_left_knuckle_joint: 0.0`  |
+| `robot_cfg.kinematics.urdf_path`                                                     | the sentinel `from_robot_description`: the model comes from the topic                                                   | `from_robot_description`                  |
+| `robot_cfg.kinematics.collision_spheres`, `collision_link_names`, `self_collision_*` | the collision model                                                                                                     | audited Gen3 + 2F-85 spheres              |
+| `model_check.arm_base_link`                                                          | where the kinematics reference starts; the joint above it (the mount) may vary                                          | `arm_base_link`                           |
+| `model_check.kinematics_reference`                                                   | JSON of every joint below `arm_base_link` the spheres were fitted on, resolved next to the robot file or via `example:` | `arm_kinematics.json`                     |
 
 `load_robot_spec` refuses a file missing `base_link`, `ee_link`,
 `cspace.joint_names`, `model_check.arm_base_link` or
