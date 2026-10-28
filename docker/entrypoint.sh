@@ -1,6 +1,6 @@
 #!/bin/bash
 # Source ROS + the built workspace, then run whatever was asked (default
-# CMD: the planning-only planner node on gen3_real.yaml).
+# CMD: the planning-only planner node; the robot's config is passed to it).
 set -e
 # Both files exist only inside the image, so shellcheck cannot follow them from
 # the repo. SC1091 here is unfollowable-path, not an unchecked script.

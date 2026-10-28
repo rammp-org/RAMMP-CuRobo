@@ -7,7 +7,7 @@ client, and no /joint_states subscription. Executing the returned
 trajectory is the caller's job (kinova_arm_ros2 on this bench).
 
     ros2 launch rammp_curobo_ros planner.launch.py
-    ros2 launch rammp_curobo_ros planner.launch.py config:=example:gen3_real.yaml
+    ros2 launch rammp_curobo_ros planner.launch.py config:=/config/robot/curobo/planner.yaml
 
 There is no execute flag: nothing this node does can move the arm.
 

@@ -274,7 +274,7 @@ def test_a_goal_on_a_joint_limit_is_not_planned_to_it(planner):
     )
     lo, hi = planner.joint_limits()["position"]
     try:
-        planner.update_world("example:world_real_bench.yaml")  # where it was captured
+        planner.update_world(MEBOT.parent / "dojo" / "world.yaml")  # where it was captured
         for _ in range(8):  # cuRobo hit the limit on ~1 in 7 of these
             res = planner.plan_to_pose(*goal, start)
             assert res.status != "LIBRARY_VALIDATION_FAILED", res.error

@@ -136,7 +136,7 @@ kinova-gen3-ros2); write it to a file and pass that as `--urdf`.
 ```bash
 export ROS_LOCALHOST_ONLY=1
 source /opt/ros/humble/setup.zsh && source ~/RAMMP-CuRobo/install/setup.zsh
-ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml
+ros2 launch rammp_curobo_ros planner.launch.py config:=/config/robot/curobo/planner.yaml
 ```
 
 That's the whole service: `/rammp_curobo/plan_to_pose` and
@@ -452,7 +452,7 @@ that cuRobo honours them.
 | node exits 1: "no model on /arm/robot_description"                 | `arm_state_publisher` is not running in this ROS domain (or not discoverable) — start it, then the planner                                                                                        |
 | plan refused naming `arm_joint_4` from the park pose               | the park pose (-2.674) is outside the URDF's ±2.57 by more than the 0.05 clamp — move out of park first (kinova-gen3-ros2#49)                                                                     |
 | plans ignore a new mount                                           | the model is read once at startup — restart the planner after changing the robot's mount                                                                                                          |
-| node warns about SIM world without sim time                        | you're (probably) on the real arm with the kitchen world — relaunch with `world:=world_real_bench.yaml` (measured!)                                                                               |
+| node warns about SIM world without sim time                        | you're (probably) on the real arm with the kitchen world — relaunch with `config:=/config/robot/curobo/planner.yaml` (the robot's own config; measured!)                                                                               |
 | nodes can't see each other's topics                                | `ROS_LOCALHOST_ONLY=1` must be exported in EVERY shell (non-interactive shells skip `~/.zshrc` — export explicitly; RAMMP-Kinova's `tools/launch_stack.zsh` does)                                 |
 | both bringups fight / controllers flap                             | MuJoCo sim and kortex bringup both claim `/controller_manager` — run exactly one                                                                                                                  |
 | `update_world` seems ignored / obstacles missing                   | cuRobo v0.7.8: cylinders/spheres in a WorldConfig are silently dropped (cuboids only), and an empty world silently keeps the previous one — the library guards both, custom worlds go in as boxes |

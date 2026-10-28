@@ -163,7 +163,6 @@ def test_packaged_configs_exist():
         "gen3.yaml",
         "robot_gen3_2f85.yaml",
         "world_sim_kitchen.yaml",
-        "world_real_bench.yaml",
         "world_empty.yaml",
     ):
         assert (PACKAGED_CONFIG_DIR / name).is_file(), name
@@ -363,8 +362,9 @@ def test_load_scene_refuses_mis_keyed_world(tmp_path, text, match):
 
 
 def test_packaged_worlds_load():
-    for name in ("world_sim_kitchen.yaml", "world_real_bench.yaml", "world_empty.yaml"):
+    for name in ("world_sim_kitchen.yaml", "world_empty.yaml"):
         load_scene(resolve_config("example:" + name))
+    load_scene(DATA / "dojo" / "world.yaml")
     assert load_scene(resolve_config("example:world_empty.yaml")).obstacles == []
 
 
@@ -469,9 +469,9 @@ def test_yaw_about_world_z_keeps_attitude_level():
 
 
 def test_real_arm_config_loads():
-    cfg, cfg_dir = load_planner_config("example:gen3_real.yaml")
-    assert cfg["world"] == "world_real_bench.yaml"
-    assert cfg["robot"] == "robot_gen3_2f85.yaml"
+    cfg, cfg_dir = load_planner_config(DATA / "dojo" / "planner.yaml")
+    assert cfg["world"] == "world.yaml"
+    assert cfg["robot"] == "example:robot_gen3_2f85.yaml"
     # inherits the same planner defaults gen3.yaml declares explicitly
     assert cfg["planner"]["enable_graph"] is False
     assert "execution" not in cfg

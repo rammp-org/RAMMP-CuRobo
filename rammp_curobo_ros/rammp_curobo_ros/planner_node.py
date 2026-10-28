@@ -344,8 +344,9 @@ class RammpCuroboNode(Node):
             self.get_logger().warning(
                 "=== Planning against the SIM world (%s) WITHOUT sim time — "
                 "if these plans are for the real arm, relaunch with "
-                "world:=world_real_bench.yaml (MEASURED first; see "
-                "docs/HARDWARE_BRINGUP.md). ===" % world_name
+                "your robot's config (config:=/config/robot/curobo/planner.yaml; "
+                "its world MEASURED first, see docs/HARDWARE_BRINGUP.md). ==="
+                % world_name
             )
 
         self.get_logger().info(

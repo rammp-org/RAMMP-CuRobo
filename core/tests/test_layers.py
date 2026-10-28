@@ -43,6 +43,7 @@ from rammp_curobo.world import (
 # The chair is one robot's geometry, not package data: this checkout keeps a
 # fixture copy of what rammp-deployments ships under config/robots/<robot>/curobo.
 MEBOT = Path(__file__).resolve().parent / "data" / "mebot"
+DOJO = Path(__file__).resolve().parent / "data" / "dojo"
 
 # a layer file that uses every allowed key. Each malformed case below is this
 # file with one edit, so its refusal is about that edit alone
@@ -761,8 +762,8 @@ def test_scene_layers_resolve_next_to_the_scene_and_never_from_cwd(
     tmp_path, monkeypatch
 ):
     # a scene that lists no layers has none
-    for name in ("world_sim_kitchen.yaml", "world_real_bench.yaml"):
-        assert load_scene(PACKAGED_CONFIG_DIR / name).layers == []
+    for world in (PACKAGED_CONFIG_DIR / "world_sim_kitchen.yaml", DOJO / "world.yaml"):
+        assert load_scene(world).layers == []
     assert scene_from_obstacles([]).layers == []
 
     scenes, cwd, packaged, far, links = (
@@ -1264,7 +1265,7 @@ def test_layer_boxes_are_namespaced_padded_and_attributed(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "config", ["example:gen3.yaml", "example:gen3_real.yaml"], ids=["kitchen", "bench"]
+    "config", ["example:gen3.yaml", DOJO / "planner.yaml"], ids=["kitchen", "bench"]
 )
 def test_layer_free_worlds_compose_exactly_as_v100(config):
     cfg, cfg_dir = load_planner_config(config)

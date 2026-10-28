@@ -9,7 +9,7 @@
 # they were authored WITH tool corrections (spin_deg 90, tip_offset 0.021)
 # enabled, so reaching them exactly needs those values set in gen3.yaml.
 #
-# NOT the real bench. For hardware use world_real_bench.yaml (measured).
+# NOT the real bench. For hardware use the robot's own config (its world is measured).
 
 # Laid out for an identity mount (dojo's), where arm_mount is the arm's base.
 base_frame: arm_mount
