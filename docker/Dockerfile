@@ -131,9 +131,9 @@ RUN chmod +x /entrypoint.sh
 # /root/.cache as a named volume to keep them across container restarts.
 ENTRYPOINT ["/entrypoint.sh"]
 # The node itself is PID 1, so the container's exit code is the node's: 1 when
-# no model arrives on /arm/robot_description. `ros2 launch` exits 0 after its
+# a named config's model never arrives on /arm/robot_description. With no
+# config the node runs the image's example robot. `ros2 launch` exits 0 after its
 # only process dies, and `ros2 run` as PID 1 ignores docker stop's SIGTERM
 # (killed after 10 s). The node name (rammp_curobo) and use_sim_time=false are
 # the node's own defaults, as in planner.launch.py, which stays for interactive use.
-CMD ["/opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node", \
-     "--ros-args", "-p", "config:=example:gen3_real.yaml"]
+CMD ["/opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node"]

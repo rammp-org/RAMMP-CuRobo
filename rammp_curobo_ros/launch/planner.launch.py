@@ -28,8 +28,8 @@ def generate_launch_description():
     args = [
         DeclareLaunchArgument(
             "config",
-            default_value="example:gen3.yaml",
-            description="planner YAML (example:<name> or path)",
+            default_value="",
+            description="planner YAML path (empty = the image's example robot)",
         ),
         DeclareLaunchArgument(
             "world",

@@ -42,7 +42,17 @@ class _FakePlanner:
 
 
 @pytest.fixture
-def make_node(monkeypatch, domain_id):
+def named_config(tmp_path_factory):
+    """A named config (no config at all would be example mode)."""
+    d = tmp_path_factory.mktemp("named")
+    (d / "planner.yaml").write_text(
+        "robot: example:robot_gen3_2f85.yaml\nworld: example:world_sim_kitchen.yaml\n"
+    )
+    return "config:=%s" % (d / "planner.yaml")
+
+
+@pytest.fixture
+def make_node(monkeypatch, domain_id, named_config):
     monkeypatch.setattr(rammp_curobo, "CuRoboPlanner", _FakePlanner)
     _FakePlanner.made.clear()
     nodes = []
@@ -51,6 +61,8 @@ def make_node(monkeypatch, domain_id):
         monkeypatch.setattr(
             planner_node.RammpCuroboNode, "_wait_for_model", lambda self, t: model
         )
+        if not any(p.startswith("config:=") for p in params):
+            params = (named_config,) + params
         args = ["--ros-args"] + [a for p in params for a in ("-p", p)]
         rclpy.init(args=args, domain_id=domain_id)
         nodes.append(planner_node.RammpCuroboNode())
@@ -113,7 +125,7 @@ def test_the_models_temp_dir_goes_with_the_node(make_node):
     assert not Path(urdf_path).parent.exists()
 
 
-def test_main_exits_1_when_no_model_arrives(domain_id):
+def test_main_exits_1_when_no_model_arrives(domain_id, named_config):
     env = dict(os.environ, ROS_DOMAIN_ID=str(domain_id))
     t0 = time.monotonic()
     r = subprocess.run(
@@ -122,6 +134,8 @@ def test_main_exits_1_when_no_model_arrives(domain_id):
             "-c",
             "from rammp_curobo_ros.planner_node import main; main()",
             "--ros-args",
+            "-p",
+            named_config,
             "-p",
             "robot_description_timeout_s:=1",  # an INT on purpose
         ],
