@@ -9,8 +9,8 @@ what it computes: the robot's names, limits, composed world, FK, state checks
 and a few plans, floats at full precision. `compare` prints IDENTICAL (exit 0)
 or the first 20 differences as `case/field[index]: base -> new` (exit 1).
 
-It uses only the public planner API, so it runs unchanged on the code before
-and after the refactor; the two shims below absorb the one signature that
+It uses the planner's public API (plus its `_compose` and `_scene`, to record the
+composed world), so it runs unchanged on the code before and after the refactor; the two shims below absorb the one signature that
 changes (prepare_urdf) and are the only version-dependent lines. Needs a GPU.
 """
 
@@ -101,7 +101,10 @@ def _ser(x, seen=()):
     if isinstance(x, Path):
         return _ser(str(x), seen)
     if hasattr(x, "detach") and hasattr(x, "tolist"):  # torch tensor
-        return {"tensor": x.detach().cpu().tolist(), "dtype": str(x.dtype)}
+        t = x.detach().cpu()
+        if t.numel() > 1000:  # solver buffers inside MotionGen.__init__'s config: hash, exactly
+            return {"tensor_sha256": hashlib.sha256(t.contiguous().numpy().tobytes()).hexdigest(), "shape": list(t.shape), "dtype": str(t.dtype)}
+        return {"tensor": t.tolist(), "dtype": str(t.dtype)}
     if isinstance(x, (np.ndarray, np.generic)):
         return _plain(x)
     if isinstance(x, dict):
@@ -134,7 +137,7 @@ def _install_recorders():
     cfg_fn = MotionGenConfig.__dict__["load_from_robot_config"].__func__
     MotionGenConfig.load_from_robot_config = staticmethod(wrap(cfg_fn, "load_from_robot_config"))
     for n in dir(MotionGen):
-        if (n == "update_world" or n.startswith("plan")) and callable(getattr(MotionGen, n)):
+        if (n in ("update_world", "warmup", "__init__") or n.startswith("plan")) and callable(getattr(MotionGen, n)):
             setattr(MotionGen, n, wrap(MotionGen.__dict__.get(n) or getattr(MotionGen, n), n))
 
 
@@ -148,17 +151,47 @@ def _seeded(plan):
     return plan()
 
 
-def _result(r):
+def _result(r, lim):
     out = {"success": bool(r.success), "status": r.status, "error": r.error}
     t = r.joint_traj
     if t is not None:
+        pos = np.asarray(t.positions)
         out.update(
             joint_names=list(t.joint_names),
             positions=_plain(t.positions),
             velocities=_plain(t.velocities),
             dt=float(t.dt),
+            within_limits=bool(np.all(pos >= lim[0] - 1e-6) and np.all(pos <= lim[1] + 1e-6)),
+            max_step=float(np.abs(np.diff(pos, axis=0)).max()) if len(pos) > 1 else 0.0,
         )
     return out
+
+
+def _refusals(planner, lim, start, invalid):
+    """Deliberate bad calls: a refusal is behaviour too. Each is the plan's
+    outcome or the exception it raised."""
+    margin, clamp = planner.joint_limit_margin_rad, planner.limit_clamp_rad
+    good = np.array(start, dtype=float)
+    goal = good.copy()
+    goal[0] += 0.1
+
+    def with_joint(j, v):
+        q = good.copy()
+        q[j] = v
+        return q
+
+    calls = {
+        "start_inside_margin": (goal, with_joint(1, lim[1][1] - margin / 2)),
+        "start_beyond_limit": (goal, with_joint(1, lim[1][1] + 2 * clamp)),
+        "start_in_collision": (goal, invalid),
+        "goal_in_collision": (invalid, good),
+        "goal_nan": (with_joint(0, float("nan")), good),
+        "start_wrong_length": (goal, good[:-1]),
+    }
+    return {
+        k: _guard(lambda g=g, s=s: _result(_seeded(lambda: planner.plan_to_joints(g, s)), lim))
+        for k, (g, s) in calls.items()
+    }
 
 
 def _valid_states(planner, rng, lim, count, max_draws=2000):
@@ -219,14 +252,17 @@ def record_case(name):
     else:
         goals = _valid_states(planner, np.random.default_rng(3), pos, N_PLAN)
         rec["plan_to_joints"] = [
-            _guard(lambda g=g: _result(_seeded(lambda: planner.plan_to_joints(g, start)))) for g in goals
+            _guard(lambda g=g: _result(_seeded(lambda: planner.plan_to_joints(g, start)), pos)) for g in goals
         ]
         poses = [
             planner.fk(q) for q in _valid_states(planner, np.random.default_rng(4), pos, N_PLAN)
         ]
         rec["plan_to_pose"] = [
-            _guard(lambda p=p: _result(_seeded(lambda: planner.plan_to_pose(p[0], p[1], start)))) for p in poses
+            _guard(lambda p=p: _result(_seeded(lambda: planner.plan_to_pose(p[0], p[1], start)), pos)) for p in poses
         ]
+    invalid = next((q for q, c in zip(states, checks) if isinstance(c, list) and not c[0]), None)
+    if start is not None and invalid is not None:
+        rec["refusals"] = _refusals(planner, pos, start, invalid)
     if world:
         rec["update_world"] = _guard(lambda: (planner.update_world(world), "ok")[1])
         rec["world_summary_after_update"] = planner.world_summary()
@@ -244,8 +280,12 @@ def record(out):
     print("wrote", out)
 
 
-_PLAN = re.compile(r"(^|/)plan_to_(joints|pose)\[\d+\]$")
+_PLAN = re.compile(r"(^|/)(plan_to_(joints|pose)\[\d+\]|refusals/\w+)$")
 PLAN_ATOL = 1e-6
+# The largest per-step joint jump varies between runs of one commit by up to
+# 1.2e-3 rad (steps of ~0.025), as the trajectory's length does. 3e-3 passes that
+# and still fails a step several times larger, which a stale tail would be.
+MAX_STEP_ATOL = 3e-3
 
 
 def _plan_diffs(path, a, b):
@@ -255,13 +295,16 @@ def _plan_diffs(path, a, b):
             if a.get(k) != b.get(k) and k not in ("positions", "velocities", "dt"):
                 yield "%s/%s: %r -> %r" % (path, k, a.get(k), b.get(k))
         return
-    for k in ("success", "status", "error", "joint_names"):
+    for k in ("success", "status", "error", "joint_names", "dt", "within_limits"):
         if a.get(k) != b.get(k):
             yield "%s/%s: %r -> %r" % (path, k, a.get(k), b.get(k))
-    for name, i in (("first", 0), ("last", -1)):
-        pa, pb = a["positions"][i], b["positions"][i]
-        if len(pa) != len(pb) or any(abs(x - y) > PLAN_ATOL for x, y in zip(pa, pb)):
-            yield "%s/positions[%s]: %r -> %r" % (path, name, pa, pb)
+    if abs(a["max_step"] - b["max_step"]) > MAX_STEP_ATOL:
+        yield "%s/max_step: %r -> %r" % (path, a["max_step"], b["max_step"])
+    for field in ("positions", "velocities"):
+        for name, i in (("first", 0), ("last", -1)):
+            pa, pb = a[field][i], b[field][i]
+            if len(pa) != len(pb) or any(abs(x - y) > PLAN_ATOL for x, y in zip(pa, pb)):
+                yield "%s/%s[%s]: %r -> %r" % (path, field, name, pa, pb)
 
 
 def _diffs(path, a, b, atol):
