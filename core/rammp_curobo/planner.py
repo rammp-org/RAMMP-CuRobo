@@ -213,7 +213,7 @@ class CuRoboPlanner:
                 % (self._curobo_joint_names, self.joint_names)
             )
         self._fixed_spheres = self._joint_independent_spheres()
-        self._check_fixed_spheres(cuboids, sources)
+        self._check_fixed_spheres(cuboids, sources, self._scene)
         if warmup:
             if warm_first:
                 log.info(
@@ -266,10 +266,12 @@ class CuRoboPlanner:
         moved = np.linalg.norm(spheres[..., :3] - spheres[0, :, :3], axis=2).max(axis=0)
         return spheres[0, (moved <= 1e-6) & (spheres[0, :, 3] > 0)]
 
-    def _check_fixed_spheres(self, cuboids, sources):
+    def _check_fixed_spheres(self, cuboids, sources, scene):
         """Refuse a world in which a padded layer box reaches into a sphere
         that no joint moves: every state, the start of every plan, would be
-        in collision. Scene boxes are cuRobo's to judge, as in v1.0.0."""
+        in collision. Scene boxes are cuRobo's to judge, as in v1.0.0.
+        `scene` is the one `cuboids` were composed from, whose layers say
+        what padding they were generated for."""
         layered = {key: box for key, box in cuboids.items() if sources[key] != "scene"}
         hits = sphere_box_penetration(self._fixed_spheres, layered)
         if hits:
@@ -283,7 +285,7 @@ class CuRoboPlanner:
             # by itself, and restoring the padding would not help.
             claims = {
                 layer.padding_assumed
-                for layer in self._layers + list(self._scene.layers)
+                for layer in self._layers + list(scene.layers)
                 if layer.name in {sources[k] for k in hits}
                 and layer.padding_assumed is not None
             }
@@ -635,7 +637,7 @@ class CuRoboPlanner:
                 frame=self.base_frame,
             )
         cuboids, sources = self._compose(scene, ignore=ignore)
-        self._check_fixed_spheres(cuboids, sources)
+        self._check_fixed_spheres(cuboids, sources, scene)
         self._motion_gen.update_world(to_world_config(cuboids))
         # only now that cuRobo holds it: a refused world leaves the planner
         # describing the world cuRobo kept

@@ -2263,6 +2263,32 @@ def test_a_layer_box_in_the_arms_fixed_spheres_is_refused_and_the_world_kept(
     assert (planner.scene, planner.world_boxes) == before
 
 
+def test_a_pushed_layer_is_diagnosed_by_the_padding_it_states(
+    urdf_level, tmp_path, monkeypatch
+):
+    # A world pushed with a layer of its own, generated for no padding: its
+    # box clears the arm's top fixed sphere by 10 mm unpadded and reaches
+    # 10 mm into it at the planner's 0.02. The refusal blames the padding by
+    # the claim of the PUSHED layer, not of the scene the planner held before
+    stand_in = _curobo_stand_in(monkeypatch)
+    planner = CuRoboPlanner.from_config(MEBOT / "planner.yaml", urdf_path=urdf_level)
+    x, y, z, r = max(stand_in.fixed.tolist(), key=lambda s: s[2] + s[3])
+    (tmp_path / "block.yaml").write_text(
+        "layer: block\nmeta: {padding_assumed_m: 0.0}\nobstacles:\n"
+        "  - {name: above, position: [%r, %r, %r], dims: [0.05, 0.05, 0.05]}\n"
+        % (x, y, z + r + 0.010 + 0.025)
+    )
+    (tmp_path / "scene.yaml").write_text(
+        "base_frame: arm_mount\nobstacles: []\nlayers: [block.yaml]\n"
+    )
+    with pytest.raises(ValueError) as exc:
+        planner.update_world(tmp_path / "scene.yaml")
+    assert str(exc.value).endswith(
+        "the layers were generated for 0 m — regenerate them or restore "
+        "world_padding"
+    ), str(exc.value)
+
+
 def test_attribution_explains_an_answer_and_never_changes_or_hides_it(
     urdf_level, tmp_path, monkeypatch
 ):
