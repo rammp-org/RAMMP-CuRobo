@@ -19,47 +19,82 @@ Breaking: move a pin only together with kinova-gen3-ros2's `arm_` names and
 new kinova-gen3-ros2 refuses every pose plan from an older planner, and this
 planner exits without the new kinova-gen3-ros2's `arm_state_publisher`.
 
-**Deploying.** The image's default CMD loads `gen3_real.yaml`, whose world is
-`world_real_bench.yaml`: dojo's bench. On flatbot either move the pin together
-with the per-robot worlds, or choose `world_empty.yaml` for flatbot alone in the
-sheppy manifest (rammp-deployments `december_2026/sheppy-manifest.yaml`):
+### Robot data lives outside the image (breaking)
 
-```yaml
-- id: curobo_planner
-  kind: docker
-  ros_node_name: rammp_curobo          # key for the params file sheppy writes
-  container:
-    image: ghcr.io/rammp-org/rammp-curobo:<release with #38>
-    # ... (network, runtime, volumes as today)
-    # sheppy appends --ros-args --params-file only after a command; without
-    # one it replaces the image CMD and the container exits 2.
-    command:
-      - /opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node
-      - --ros-args
-      - -p
-      - config:=gen3_real.yaml
-  params:
-    world: world_real_bench.yaml       # dojo's bench; flatbot overrides
-```
+One image now serves any arm, base and site: the planner config, robot file,
+kinematics reference, world and layers come from the robot's own directory
+(rammp-deployments `config/robots/<robot>/curobo/`, mounted at `/config/robot`),
+and the image holds code plus one worked example. The contract is
+`docs/ROBOT_DATA.md`. Move the pin only together with rammp-deployments'
+robot directories and a `sheppy-manifest.yaml` whose every planner profile
+passes `config:=/config/robot/curobo/planner.yaml` (and `world: ""`); merge
+that first. See `docker/README.md` for the manifest.
 
-and in flatbot's profile `overrides: {planner: {world: world_empty.yaml}}` (sheppy
-applies overrides only to params the alternative declares, so the `params:` entry is
-required).
+**BREAKING**
 
-Why this and not a plain `-p world:=world_empty.yaml`: `params:` without a
-`command:` makes sheppy replace the image CMD with `--ros-args --params-file ...`
-alone, which `/entrypoint.sh` cannot exec, and the container exits 2; hard-coding the
-world in the shared manifest's `command:` drops dojo's bench, so dojo plans through
-real objects.
+- **Bare names no longer resolve to the packaged configs.** Write
+  `example:<name>` (e.g. `example:gen3.yaml`, `robot: example:robot_gen3_2f85.yaml`)
+  or give a path. This applies to the planner config (`from_config`, the
+  node's `config`), the robot, world and layer files it references,
+  `update_world` / `SetWorld` pushes, and the layer generator's
+  `keep_out.robot_config`. A bare name that matches an example fails and names
+  the `example:` spelling to use.
+- **`gen3_real.yaml` and `world_real_bench.yaml` are removed from the image.**
+  They were dojo's bench. Dojo's copy is `core/tests/data/dojo/` (this
+  checkout's fixture) and rammp-deployments `config/robots/dojo/curobo/`
+  (the one that runs). Anything launching `config:=gen3_real.yaml` or pushing
+  `world_real_bench.yaml` by name must use `/config/robot/curobo/planner.yaml`.
+- **Python API.** `prepare_urdf(xml)` is now `prepare_urdf(xml, spec)` with a
+  `RobotSpec` from `robot_config.load_robot_spec`. `load_scene(path, frame)`
+  and `scene_from_obstacles(entries, base_frame)` take a required frame (the
+  robot file's root link). `PLANNER_DEFAULTS` no longer has `joint_names`: the
+  planned joints are the robot file's `cspace.joint_names`. The URDF and Gen3
+  constants in `urdf_model.py` (`ROOT_LINK`, `EE_LINK`, `ARM_JOINTS`,
+  `GRIPPER_JOINTS`, `BASE_LINK`, `KINEMATICS_REFERENCE`) are gone.
+- **The robot file needs a `model_check` block** beside `robot_cfg`:
+  `arm_base_link` (where the kinematics reference starts) and
+  `kinematics_reference` (the JSON of the joints below it the spheres were
+  fitted on, resolved next to the robot file or via `example:`). A file
+  without it is refused, naming each missing field. A robot file for another
+  arm is now accepted: the URDF check runs against its own names.
+- **Construction-time refusals raise `RobotDataError`** (a `ValueError`;
+  `.problems` lists every problem found, in one pass) where a missing layer
+  used to raise `FileNotFoundError`. Catch `ValueError`, or `RobotDataError`
+  from `rammp_curobo.contract`.
+- **The node's `config` defaults to `""`, which is example mode.** The node
+  plans the image's example robot (Gen3 + 2F-85, level mount, kitchen world,
+  a shipped URDF) standalone, with no `arm_state_publisher`, and says so: a
+  startup banner, a WARN when a model is published (ignored), and an
+  `(example robot)` marker on every plan result's `message` and the `SetWorld`
+  reply. The Dockerfile CMD passes no config, so
+  `docker run ghcr.io/rammp-org/rammp-curobo:<tag>` plans out of the box; a
+  profile that leaves `config` out now gets the example, not the bench. The
+  planner config now loads before the model wait, so a missing
+  `/config/robot/curobo/planner.yaml` exits 1 at once (it no longer waits out a
+  late bind-mount).
+- **`make layers DATA=<inputs>` without `OUTDIR=` is refused** (it would
+  overwrite this checkout's fixtures). The generator takes its robot file
+  from next to its input.
+- **The image no longer contains `core/tests`, `scripts`, `sim` or `docs`**
+  (`COPY` takes code and the examples only; `make image-contents` asserts it).
+  `make verify` mounts the checkout's tests and runs them against the image's
+  package.
 
-The planner exits 1 when no model arrives within 30 s
+Added: `docs/ROBOT_DATA.md`; `scripts/behavior_snapshot.py`, which records
+what the planner computes and what it hands cuRobo and compares two records
+(`IDENTICAL`): a named config plans exactly as before this change.
+
+The version bump (to 2.0.0) happens at release.
+
+**Deploying.** The planner exits 1 when no model arrives within 30 s
 (`robot_description_timeout_s`; a slow first `arm_state_publisher` start does it), and
 sheppy does not restart it: after fixing `arm_state_publisher`, restart the planner
-(`sheppy restart planner`).
+(`sheppy restart planner`). The manifest and the per-robot `world` override are
+described in the section below and in `docker/README.md`.
 
 Obstacle layers, and the first of them: the MEBot wheelchair and the person in
 it (issue #19). The
-`rammp_curobo_interfaces` definitions are untouched, and a consumer on `gen3.yaml` or `gen3_real.yaml`, which list no
+`rammp_curobo_interfaces` definitions are untouched, and a consumer on `gen3.yaml` or dojo's config, which list no
 layers, gets the collision worlds it got before, box for box, except where
 Fixed says otherwise: a world 1.0.0 built wrong is refused, and a bare-string
 `ignore=` leaves out the prop it names.

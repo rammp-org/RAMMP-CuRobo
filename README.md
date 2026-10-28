@@ -17,8 +17,9 @@ says so in `header.frame_id`.
 
 ```
 core/                     Layer 1 — pip package `rammp-curobo`: pure-Python
-                          cuRobo wrapper, NO ROS imports (configs baked in;
-                          the robot model is a URDF path you pass)
+                          cuRobo wrapper, NO ROS imports (the shipped
+                          examples only; the robot model is a URDF path
+                          you pass)
 rammp_curobo_interfaces/  ROS 2 action/srv definitions (dependency-free)
 rammp_curobo_ros/         Layer 2 — plan-only planner node + tour_demo
                           (the showcase: 4 random points chain-planned
@@ -31,6 +32,7 @@ scripts/                  config baking (`make bake`, runs in the image);
 sim/                      mebot_sim: the planner on the MEBot in a MuJoCo
                           sim over ROS 2 (`make sim`, Jetson)
 docker/                   the planning service as a container (Jetson/JP6)
+docs/ROBOT_DATA.md        the robot-data contract: what a robot supplies
 docs/HARDWARE_BRINGUP.md  the real-arm runbook — READ BEFORE TOUCHING HARDWARE
 ```
 
@@ -148,6 +150,17 @@ See **INTEGRATION.md** for client code, and **docker/** to run the same thing as
 MEBot wheelchair, point `config:` at the chair's own files, which ship with
 that robot rather than in this image (see **Obstacle layers** below).
 
+**Robot data lives outside the image.** One planner serves any arm, base and
+site: the robot's directory (`planner.yaml`, robot file, world, layers) is
+what `config:` names, and **docs/ROBOT_DATA.md** is the contract for what it
+holds and what the planner checks at startup (every problem listed at once). The
+image ships one worked **example** (Gen3 + Robotiq 2F-85, kitchen world),
+reached only as `example:<name>`; a bare name never resolves to it. Started
+with no `config`, the node plans that example, standalone and without
+`arm_state_publisher`, and says so (startup banner, a WARN if a model is
+published, `(example robot)` on every result). That is for development and
+demos, never a robot.
+
 The node first waits for the model on `/arm/robot_description` (latched;
 `robot_description_timeout_s`, default 30 s), so `arm_state_publisher`
 must be up in the same ROS domain:
@@ -170,7 +183,8 @@ Once built it logs the model (`base arm_mount, ee arm_tool_frame, joints [arm_jo
   (`arm_robotiq_85_left_knuckle_joint`); cuRobo holds the five mimic joints
   with it. Their limits are filled in from that joint for cuRobo, since the
   URDF gives none (kinova-gen3-ros2#48 may add them upstream).
-- **Nothing in reach to model** (flatbot)? `world:=world_empty.yaml` plans
+- **Nothing in reach to model** (flatbot)? A robot whose `world:` is
+  `example:world_empty.yaml` (or its own `obstacles: []` file) plans
   against the arm alone. An empty world is accepted only at startup;
   `set_world` / `update_world` still refuse one.
 - **`HOLD_LEVEL` is level with `arm_mount`**, which is level with the chair,
@@ -231,8 +245,9 @@ obstacles.
   that scene: the next push replaces them with its own. Geometry that must
   never go away belongs in the planner config.
 
-A layer file listed by name is found next to the file that lists it or
-among the packaged configs, never in the current directory. Its boxes are
+A layer file listed by name is found next to the file that lists it (or by
+absolute path, or as `example:<name>`), never in the current directory and
+never from the image by bare name. Its boxes are
 named `<layer>/<box>` (`person/forearms_0`), padded by `world_padding` like every
 other box, and count against the same 60-box cache; a world that overflows
 it is refused, naming every source, and nothing is truncated.
@@ -355,6 +370,12 @@ writes the same bytes on amd64 and arm64.
 make layers    # regenerate the four files; fails on any diff
 ```
 
+`make layers OUTDIR=<robot>/curobo` also writes a robot's copy from the same
+inputs; `DATA=<robot>/<inputs>.yaml` takes another robot's inputs and is
+refused without `OUTDIR=` (it would overwrite this checkout's fixtures). The
+generator takes the robot file from next to its input; its
+`keep_out.robot_config` is a path or `example:<name>`, never a bare name.
+
 Never hand-edit a layer file: change the inputs, run `make layers` and
 commit what it writes. CI regenerates the files from the pinned URDF and
 fails on any difference.
@@ -441,25 +462,28 @@ that cuRobo honours them.
 
 ## Troubleshooting
 
-| symptom                                                            | cause / fix                                                                                                                                                                                       |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pip install -e` fails (`build_editable` hook / permission denied) | old pip + isolated build env; use `python3 -m pip install --user --no-build-isolation -e ./core`                                                                                                  |
-| pytest crashes collecting (`No module named '_pytest.scope'`)      | user-site anyio plugin vs system pytest; repo `pytest.ini` disables it (`-p no:anyio`) — run pytest from the repo root                                                                            |
-| first plan takes minutes                                           | one-time CUDA kernel compile (warmup); subsequent runs ~20 s init, ~0.2-2 s per plan                                                                                                              |
-| `plan_single_js` fails / `DT_EXCEPTION` on older Jetson wheels     | known torch-wheel cuSOLVER gap; `joint_space_method: auto` falls back to FK-pose planning automatically. Keep `enable_graph: false` on Jetson always                                              |
-| plan succeeds but joints differ from a joint goal                  | FK-pose fallback reached the POSE via another joint family — check `goal_mismatch_rad` before acting on it                                                                                        |
-| goal aborted: "start_joints is required"                           | `start_joints` is not optional — the planner has no view of any arm, so the caller must send the configuration to plan from                                                                       |
-| node exits 1: "no model on /arm/robot_description"                 | `arm_state_publisher` is not running in this ROS domain (or not discoverable) — start it, then the planner                                                                                        |
-| plan refused naming `arm_joint_4` from the park pose               | the park pose (-2.674) is outside the URDF's ±2.57 by more than the 0.05 clamp — move out of park first (kinova-gen3-ros2#49)                                                                     |
-| plans ignore a new mount                                           | the model is read once at startup — restart the planner after changing the robot's mount                                                                                                          |
-| node warns about SIM world without sim time                        | you're (probably) on the real arm with the kitchen world — relaunch with `config:=/config/robot/curobo/planner.yaml` (the robot's own config; measured!)                                                                               |
-| nodes can't see each other's topics                                | `ROS_LOCALHOST_ONLY=1` must be exported in EVERY shell (non-interactive shells skip `~/.zshrc` — export explicitly; RAMMP-Kinova's `tools/launch_stack.zsh` does)                                 |
-| both bringups fight / controllers flap                             | MuJoCo sim and kortex bringup both claim `/controller_manager` — run exactly one                                                                                                                  |
-| `update_world` seems ignored / obstacles missing                   | cuRobo v0.7.8: cylinders/spheres in a WorldConfig are silently dropped (cuboids only), and an empty world silently keeps the previous one — the library guards both, custom worlds go in as boxes |
-| `INVALID_START` on the chair config                                | the start is inside a layer; the error names the boxes and how deep. The bench retract is inside the person layer — plan from the arm's measured state                                            |
-| set_world refused: "empty apart from the configured layers"        | the pushed scene has no obstacles, objects or layers of its own (a world file cut short?); the planner config's layers alone are never taken as a world                                           |
-| `AttributeError: wp.torch` in mesh collision                       | newer warp needs explicit `import warp.torch` — the library does this; if embedding cuRobo yourself, copy that                                                                                    |
-| `ros2 topic echo` prints "A message was lost!!!"                   | benign QoS depth artifact of echo on a 500 Hz topic                                                                                                                                               |
+| symptom                                                                  | cause / fix                                                                                                                                                                                               |
+| ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pip install -e` fails (`build_editable` hook / permission denied)       | old pip + isolated build env; use `python3 -m pip install --user --no-build-isolation -e ./core`                                                                                                          |
+| pytest crashes collecting (`No module named '_pytest.scope'`)            | user-site anyio plugin vs system pytest; repo `pytest.ini` disables it (`-p no:anyio`) — run pytest from the repo root                                                                                    |
+| first plan takes minutes                                                 | one-time CUDA kernel compile (warmup); subsequent runs ~20 s init, ~0.2-2 s per plan                                                                                                                      |
+| `plan_single_js` fails / `DT_EXCEPTION` on older Jetson wheels           | known torch-wheel cuSOLVER gap; `joint_space_method: auto` falls back to FK-pose planning automatically. Keep `enable_graph: false` on Jetson always                                                      |
+| plan succeeds but joints differ from a joint goal                        | FK-pose fallback reached the POSE via another joint family — check `goal_mismatch_rad` before acting on it                                                                                                |
+| goal aborted: "start_joints is required"                                 | `start_joints` is not optional — the planner has no view of any arm, so the caller must send the configuration to plan from                                                                               |
+| node exits 1: "no model on /arm/robot_description"                       | `arm_state_publisher` is not running in this ROS domain (or not discoverable) — start it, then the planner                                                                                                |
+| node exits 1 at once, "robot data in ...: N problems"                    | the robot directory is missing or wrong (an unmounted `/config/robot`, a missing file, a world in the wrong frame, a model that is not the robot file's): each problem is listed — see docs/ROBOT_DATA.md |
+| banner "NO CONFIG GIVEN ... EXAMPLE robot", `(example robot)` in results | the node was started without `config`: it is planning the image's example, not your robot — pass `config:=<robot dir>/planner.yaml`                                                                       |
+| `config 'gen3.yaml' not found ... write example:gen3.yaml`               | bare names no longer resolve to the image's files — write `example:gen3.yaml`, or give a path                                                                                                             |
+| plan refused naming `arm_joint_4` from the park pose                     | the park pose (-2.674) is outside the URDF's ±2.57 by more than the 0.05 clamp — move out of park first (kinova-gen3-ros2#49)                                                                             |
+| plans ignore a new mount                                                 | the model is read once at startup — restart the planner after changing the robot's mount                                                                                                                  |
+| node warns about SIM world without sim time                              | you're (probably) on the real arm with the kitchen world — relaunch with `config:=/config/robot/curobo/planner.yaml` (the robot's own config; measured!)                                                  |
+| nodes can't see each other's topics                                      | `ROS_LOCALHOST_ONLY=1` must be exported in EVERY shell (non-interactive shells skip `~/.zshrc` — export explicitly; RAMMP-Kinova's `tools/launch_stack.zsh` does)                                         |
+| both bringups fight / controllers flap                                   | MuJoCo sim and kortex bringup both claim `/controller_manager` — run exactly one                                                                                                                          |
+| `update_world` seems ignored / obstacles missing                         | cuRobo v0.7.8: cylinders/spheres in a WorldConfig are silently dropped (cuboids only), and an empty world silently keeps the previous one — the library guards both, custom worlds go in as boxes         |
+| `INVALID_START` on the chair config                                      | the start is inside a layer; the error names the boxes and how deep. The bench retract is inside the person layer — plan from the arm's measured state                                                    |
+| set_world refused: "empty apart from the configured layers"              | the pushed scene has no obstacles, objects or layers of its own (a world file cut short?); the planner config's layers alone are never taken as a world                                                   |
+| `AttributeError: wp.torch` in mesh collision                             | newer warp needs explicit `import warp.torch` — the library does this; if embedding cuRobo yourself, copy that                                                                                            |
+| `ros2 topic echo` prints "A message was lost!!!"                         | benign QoS depth artifact of echo on a 500 Hz topic                                                                                                                                                       |
 
 ## Integrating from another RAMMP module
 

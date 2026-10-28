@@ -39,7 +39,7 @@ there.
 the arm is bolted nearly flush to a caster-mounted table, e-stop clamped
 at the front edge.)
 
-Edit `core/rammp_curobo/configs/world_real_bench.yaml` (or a copy):
+Edit the bench's `world.yaml` (rammp-deployments `config/robots/dojo/curobo/`; this checkout's fixture copy is `core/tests/data/dojo/world.yaml`):
 measure in `arm_mount`, the root of the arm's URDF (origin at the arm's
 base, +x forward, +z up when the chair is level; on dojo's level mount it is
 the arm's base) and set at minimum the real table top height/extents plus anything within reach.
@@ -96,8 +96,13 @@ ros2 launch kinova_gen3_description description.launch.py \
 
 # terminal 3 — the planner:
 source ~/RAMMP-CuRobo/install/setup.zsh    # on top of the two above
-ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml
+ros2 launch rammp_curobo_ros planner.launch.py \
+    config:=<rammp-deployments>/config/robots/dojo/curobo/planner.yaml
 ```
+
+(In the planner container that directory is `/config/robot/curobo/`. With no
+`config` the node plans the example robot, not the bench: it says so in its
+banner. Use the bench's config on hardware.)
 
 Without `arm_state_publisher` the node waits `robot_description_timeout_s`
 (default 30 s), logs a FATAL naming `arm_state_publisher` and exits 1
@@ -135,7 +140,7 @@ holds) on a trivial move before anything larger.
 
 The planning-side rules still apply throughout:
 
-- Keep `world_real_bench.yaml` matching reality (step 1) — obstacles are
+- Keep dojo's `world.yaml` matching reality (step 1) — obstacles are
   measured and edited by hand, or pushed live from another module via
   `/rammp_curobo/set_world`. A plan is only as safe as the world it dodged.
 - Cartesian goals only AFTER the world file has been validated against

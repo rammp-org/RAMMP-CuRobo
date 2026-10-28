@@ -1,5 +1,6 @@
-# Swap the planner's collision world: a world YAML path, or the bare name
-# of a packaged world (world_sim_kitchen.yaml, world_real_bench.yaml).
+# Swap the planner's collision world: a world YAML path (absolute, or next to
+# the planner's config), or `example:<name>` for a world shipped in the image
+# (example:world_sim_kitchen.yaml). A bare name of a packaged world is refused.
 string world
 ---
 bool success

@@ -68,12 +68,12 @@ else running, for development and demos.
 A robot supplies a **robot directory**, conventionally
 `config/robots/<robot>/curobo/`, mounted at `/config/robot/curobo/`:
 
-| File | Says | Required |
-| --- | --- | --- |
-| `planner.yaml` | names the robot file and the start-up world; lists the always-on layers; optional planner settings | yes |
-| robot file (any name, e.g. `robot.yaml`) | cuRobo's robot config: root link, tool link, planned joints, collision spheres, self-collision pairs and buffers, locked joints, IK seed (`retract_config`), plus the kinematics reference the spheres were fitted on | yes |
-| start-up world (e.g. `world.yaml`) | `base_frame` equal to the robot file's root link; the scene the planner starts with; replaced by the first `set_world` push | yes |
-| layer files | always-on obstacles (chair, person), with `meta.padding_assumed_m` | only if listed |
+| File                                     | Says                                                                                                                                                                                                                  | Required       |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
+| `planner.yaml`                           | names the robot file and the start-up world; lists the always-on layers; optional planner settings                                                                                                                    | yes            |
+| robot file (any name, e.g. `robot.yaml`) | cuRobo's robot config: root link, tool link, planned joints, collision spheres, self-collision pairs and buffers, locked joints, IK seed (`retract_config`), plus the kinematics reference the spheres were fitted on | yes            |
+| start-up world (e.g. `world.yaml`)       | `base_frame` equal to the robot file's root link; the scene the planner starts with; replaced by the first `set_world` push                                                                                           | yes            |
+| layer files                              | always-on obstacles (chair, person), with `meta.padding_assumed_m`                                                                                                                                                    | only if listed |
 
 The arm's URDF still arrives on `/arm/robot_description` from
 `arm_state_publisher` (rendered from the robot's `mount.yaml`) — except in

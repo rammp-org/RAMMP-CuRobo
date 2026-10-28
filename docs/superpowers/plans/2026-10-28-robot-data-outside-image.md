@@ -27,10 +27,10 @@
 ## Review Focus
 
 1. **Empty `/config/robot`** (Docker started the planner before `set_robot.py`): a `config` path that does not exist is a FATAL naming that path — never a fall-through to example mode. Test in Task 4.
-2. **An old deployment config saying `robot: robot_gen3_2f85.yaml`** with no copy next to it: the error names the directory searched and suggests `example:robot_gen3_2f85.yaml`. Test in Task 1.
-3. **A robot file copied before this change** (no `model_check` block): the startup error names the missing block, in the same message as every other problem found. Test in Task 3.
-4. **The tilted mount:** `arm_tilt30.urdf` still passes the kinematics check against the robot file (the mount joint may differ; joints below the arm's base may not). Test in Task 2.
-5. **A malformed `example:` reference** (`example:../gen3.yaml`, `example:nope.yaml`): refused, listing the examples that exist. Test in Task 1.
+1. **An old deployment config saying `robot: robot_gen3_2f85.yaml`** with no copy next to it: the error names the directory searched and suggests `example:robot_gen3_2f85.yaml`. Test in Task 1.
+1. **A robot file copied before this change** (no `model_check` block): the startup error names the missing block, in the same message as every other problem found. Test in Task 3.
+1. **The tilted mount:** `arm_tilt30.urdf` still passes the kinematics check against the robot file (the mount joint may differ; joints below the arm's base may not). Test in Task 2.
+1. **A malformed `example:` reference** (`example:../gen3.yaml`, `example:nope.yaml`): refused, listing the examples that exist. Test in Task 1.
 
 ## Order and branches
 
@@ -38,36 +38,46 @@
 - **rammp-deployments**: branch `feature/curobo-robot-dirs` from `dev`. Tasks 9–10, one PR. It MUST merge before the RAMMP-CuRobo PR: today's nightly reads it unchanged (a local `robot.yaml` resolves next to the config; cuRobo ignores the extra top-level `model_check` key; layers are just boxes), and the RAMMP-CuRobo PR's nightly refuses `config: gen3_real.yaml`, which is what dojo runs until Task 10 lands.
 - Task 9 runs the generator from the RAMMP-CuRobo branch (Task 6) before that branch merges; that is fine, the generator is deterministic.
 
----
+______________________________________________________________________
 
 ### Task 0: A behaviour snapshot, recorded before anything changes
 
 **Files:**
+
 - Create: `scripts/behavior_snapshot.py`
 - Test: run it twice at this commit on abra; the two records compare `IDENTICAL`
 
 **Interfaces:**
+
 - Produces: `python3 scripts/behavior_snapshot.py record OUT.json` and `python3 scripts/behavior_snapshot.py compare BASE.json NEW.json [--atol X]` (exit 0 and print `IDENTICAL`, or exit 1 and print the first 20 differences as `case/field[index]: base -> new`). Run with `PYTHONPATH=<repo>/core` on abra (GPU).
 
 It must run unchanged on the code before AND after every task, so it uses only the public planner API plus two shims:
+
 - **Cases** (each config is the first of its candidate paths that exists, repo-relative): `kitchen` = `core/rammp_curobo/configs/gen3.yaml` with `core/tests/data/arm_level.urdf`; `bench` = `core/rammp_curobo/configs/gen3_real.yaml` | `core/tests/data/dojo/planner.yaml` with `arm_level.urdf`; `mebot` = `core/tests/data/mebot/planner.yaml` with `arm_tilt30.urdf`. Configs are passed as absolute paths.
+
 - **URDF shim:** if `prepare_urdf` takes one parameter, call `prepare_urdf(xml)`; if two, `prepare_urdf(xml, load_robot_spec(<the config's robot file>))`. Write it with `write_urdf`.
+
 - **Per case, record:** `joint_names`, `base_frame`, `ee_link`, `retract_pose`, `joint_limits()`, `world_summary()`, the composed boxes (name, pose, dims, from the planner's own composition of its start-up scene, sorted by name), `fk` of 50 states (`numpy.random.default_rng(1)`, uniform within the limits), `check_state_valid` of 200 states (`rng(2)`), 8 `plan_to_joints` between valid states (`rng(3)`) and 8 `plan_to_pose` to FK poses of valid states (`rng(4)`), each from the first valid state: success, status, error, trajectory joint names, positions, velocities, dt. Then `update_world(<absolute path of the case's start-up world>)` and `world_summary()` again.
+
 - Floats are stored at full precision. `compare` is exact by default; `--atol` exists only if two baseline records turn out not to be bit-identical, and the implementer reports which.
 
 - [ ] **Step 1: Write the script.**
+
 - [ ] **Step 2: Run** `hil run snapshot` twice (the task records to `/tmp/rdo_snapshot.json`; pull it back as `<sdd workspace>/baseline.json` and `baseline2.json`), then `compare baseline.json baseline2.json` — Expected: `IDENTICAL` (or the report states the smallest `--atol` that makes it so, and why).
+
 - [ ] **Step 3: Commit** `test: a behaviour snapshot of the planner, to compare before and after`
 
 ### Task 1: Explicit `example:` resolution, no packaged fallback
 
 **Files:**
+
 - Modify: `core/rammp_curobo/config.py:18,67-98` (`resolve_config`, new constants)
 - Modify: `core/rammp_curobo/robot_config.py:46` (it calls `resolve_config(path)` again; pass the already-resolved path through)
 - Modify (mechanical): `core/tests/test_offline.py`, `test_layers.py`, `test_smoke.py`, `test_planner_cpu.py`, `test_model_parity.py`, `test_layergen.py`, `rammp_curobo_ros/test/test_robot_description.py`, `test_node_wiring.py`, `sim/mebot_sim/mebot_sim/stack.py`, `sim/mebot_sim/test/test_stack.py`, `scripts/bake_robot_config.py`, `core/rammp_curobo/configs/gen3.yaml` comments
 - Test: `core/tests/test_offline.py`
 
 **Interfaces:**
+
 - Produces: `EXAMPLE_PREFIX = "example:"`; `EXAMPLE_DIR = PACKAGED_CONFIG_DIR` (same directory, new name for its role); `resolve_config(name_or_path, relative_to=None, search_cwd=True) -> Path` with the new rule; `is_example(path: Path) -> bool` (true iff the resolved path is inside `EXAMPLE_DIR`). Every later task resolves files only through `resolve_config`.
 
 Rule: `example:<name>` → `EXAMPLE_DIR / <name>`, where `<name>` is a plain file name (no `/`, no `..`), must exist, else `FileNotFoundError` listing `sorted(EXAMPLE_DIR)` yaml/json/urdf names. Otherwise: absolute → as is; relative → `relative_to`, then cwd (if `search_cwd`). `PACKAGED_CONFIG_DIR` is never a candidate. A relative name not found raises `FileNotFoundError` naming every location tried, and, when `EXAMPLE_DIR / name` exists, ends with `; to use the image's copy, write example:<name>`. A config inside `EXAMPLE_DIR` resolves its own bare references next to itself, so `example:gen3.yaml` naming `robot_gen3_2f85.yaml` and `world_sim_kitchen.yaml` works unchanged.
@@ -105,6 +115,7 @@ def test_example_config_resolves_its_own_references():
 ### Task 2: Robot names come from the robot file
 
 **Files:**
+
 - Modify: `core/rammp_curobo/configs/robot_gen3_2f85.yaml` (add top-level `model_check`), `scripts/bake_robot_config.py` (writes it)
 - Modify: `core/rammp_curobo/robot_config.py` (add `RobotSpec`, `load_robot_spec`)
 - Modify: `core/rammp_curobo/urdf_model.py:41-53,60-98` (delete `ROOT_LINK`, `EE_LINK`, `ARM_JOINTS`, `GRIPPER_JOINTS`, `BASE_LINK`, `KINEMATICS_REFERENCE`; `prepare_urdf(xml, spec)`; `kinematic_reference(root, base_link)`)
@@ -113,6 +124,7 @@ def test_example_config_resolves_its_own_references():
 - Test: `core/tests/test_offline.py`, `core/tests/data/two_link/` (new fixture: a 2-joint URDF and its robot file)
 
 **Interfaces:**
+
 - Consumes: Task 1's `resolve_config`.
 - Produces:
   - `RobotSpec` (frozen dataclass): `root_link: str` (= `kinematics.base_link`), `ee_link: str`, `joint_names: tuple[str, ...]` (= `cspace.joint_names`), `locked_joints: tuple[str, ...]` (= keys of `lock_joints`), `arm_base_link: str`, `kinematics_reference: Path`, `path: Path`.
@@ -151,7 +163,8 @@ def test_gen3_urdf_refused_against_another_arms_spec():
         prepare_urdf((DATA / "arm_level.urdf").read_text(), load_robot_spec(DATA / "two_link" / "robot.yaml"))
 ```
 
-  Keep every existing `prepare_urdf` refusal test, now passing `gen3_spec()` (a conftest helper returning the example spec).
+Keep every existing `prepare_urdf` refusal test, now passing `gen3_spec()` (a conftest helper returning the example spec).
+
 - [ ] **Step 2: Run** `PYTHONPATH=core python3 -m pytest core/tests/test_offline.py -q -k "spec or non_gen3 or either_mount"` — Expected: FAIL (`load_robot_spec` undefined).
 - [ ] **Step 3: Implement** `RobotSpec`/`load_robot_spec`, the `prepare_urdf` signature, the planner's joint-name default, and the `model_check` block; build the `two_link` fixture (URDF root `base`, joints `j1`,`j2`, tool `tool`; its `arm_kinematics.json` written by `kinematic_reference`).
 - [ ] **Step 4: Run** the core and ROS suites — Expected: all pass. On abra: `make bake` leaves no diff (the bake script now emits `model_check`), and `test_model_parity.py` passes.
@@ -160,12 +173,15 @@ def test_gen3_urdf_refused_against_another_arms_spec():
 ### Task 3: One startup check that lists every problem
 
 **Files:**
+
 - Create: `core/rammp_curobo/contract.py`
 - Modify: `core/rammp_curobo/planner.py:100-147` (call the check before `load_robot_config`), `rammp_curobo_ros/rammp_curobo_ros/planner_node.py:183-197` (call it instead of bare `prepare_urdf`; FATAL + exit 1 on failure)
 - Test: `core/tests/test_contract.py`
 
 **Interfaces:**
+
 - Consumes: Tasks 1–2.
+
 - Produces: `class RobotDataError(ValueError)` with `.problems: list[str]`; `str()` is `"robot data in <config_dir>: N problems:\n  - …"`. `check_robot_dir(cfg: dict, cfg_dir: Path, urdf_xml: str) -> str` returns the sanitised URDF or raises `RobotDataError` with ALL of: robot file missing/unparseable/missing a field (incl. `model_check`); kinematics reference missing; world missing, unparseable, or `base_frame` ≠ `spec.root_link`; a listed layer missing or refused by `load_layers` (padding shortfall included); every `prepare_urdf` refusal. Pure Python; imports no cuRobo. The planner constructor calls it with `Path(urdf_path).read_text()`; the node calls it on the model text and writes the returned XML.
 
 - [ ] **Step 1: Write the failing tests** in `core/tests/test_contract.py`:
@@ -198,32 +214,45 @@ def test_the_example_passes():
 ### Task 4: Example mode in the node
 
 **Files:**
+
 - Create: `core/rammp_curobo/configs/arm_level.urdf` (copy of `core/tests/data/arm_level.urdf`)
 - Modify: `core/pyproject.toml:27` (package data adds `"configs/*.urdf"`)
 - Modify: `rammp_curobo_ros/rammp_curobo_ros/planner_node.py` (`config` default `""`; example branch; banner; topic WARN; markers), `rammp_curobo_ros/launch/planner.launch.py:31` (default `""`)
 - Test: `rammp_curobo_ros/test/test_node_wiring.py` (or a new `test_example_mode.py` in the same style)
 
 **Interfaces:**
+
 - Consumes: Tasks 1–3.
 - Produces: `EXAMPLE_CONFIG = "example:gen3.yaml"`, `EXAMPLE_URDF = "example:arm_level.urdf"`, `EXAMPLE_MARKER = "(example robot)"` in `planner_node.py`; `node.example_mode: bool`.
 
 Behaviour (exact copy):
+
 - `config == ""` → example mode: no wait on `/arm/robot_description`; the model is `EXAMPLE_URDF`. Startup WARN, before anything else: `"=== NO CONFIG GIVEN: running the EXAMPLE robot from the image (Gen3 + 2F-85, level mount, world_sim_kitchen). Not your robot: pass config:=/config/robot/curobo/planner.yaml. ==="`
+
 - Example mode keeps a subscription on `/arm/robot_description`; the first model received logs WARN once: `"a robot model is being published on /arm/robot_description, and this planner is IGNORING it: no config was given, so it plans the example robot."`
+
 - Every PlanToPose / PlanToJoints result `message` and every SetWorld reply ends with `" " + EXAMPLE_MARKER` in example mode.
+
 - In every mode, one startup INFO names where each piece came from: `robot data: config <path>, robot file <path>, world <path>, layers [<path>, …], model <topic|example>`, each path that `is_example` marks followed by `(example, image)`. A pushed world in `update_world` resolves by the same Task 1 rule (it already goes through `resolve_config` with `relative_to=config_dir`); the SetWorld reply names its path the same way.
+
 - `config` non-empty and not resolvable → FATAL naming the path, exit 1 — never example mode.
+
 - Named config: unchanged path (wait for the topic model; `EXAMPLE_URDF` never read).
 
 - [ ] **Step 1: Write the failing tests:** example mode builds with no publisher on the topic and logs the banner; a latched model in example mode produces the WARN once; results and SetWorld replies carry the marker; `config:=/nonexistent/planner.yaml` exits 1 with that path in the FATAL and no banner.
+
 - [ ] **Step 2: Run** `python3 -m pytest rammp_curobo_ros/test -q -p no:anyio -k example` — Expected: FAIL.
+
 - [ ] **Step 3: Implement.**
+
 - [ ] **Step 4: Run** the ROS suite — Expected: all pass. On abra: `docker run --rm --runtime nvidia --network host -e ROS_LOCALHOST_ONLY=1 -e ROS_DOMAIN_ID=88 <image>` with no args reaches "rammp_curobo ready" and `ros2 run rammp_curobo_ros tour_demo` (same domain) completes.
+
 - [ ] **Step 5: Commit** `feat(node): no config runs the example robot standalone, and says so everywhere`
 
 ### Task 5: The bench leaves the image
 
 **Files:**
+
 - Delete: `core/rammp_curobo/configs/gen3_real.yaml`, `core/rammp_curobo/configs/world_real_bench.yaml`
 - Create: `core/tests/data/dojo/planner.yaml`, `core/tests/data/dojo/world.yaml` (fixture copies; `robot: example:robot_gen3_2f85.yaml`; the bench's planner settings and boxes verbatim)
 - Modify: tests that used them (`test_offline.py:135-136`, `test_layers.py:763,1266`, `core/tests/data/curobo_at_limit.json` source note stays), `planner_node.py` sim-world tripwire text (no `world_real_bench.yaml` hint: say "pass your robot's config"), README:139, `rammp_curobo_ros/launch/planner.launch.py:10`
@@ -238,6 +267,7 @@ Behaviour (exact copy):
 ### Task 6: The generator reads the robot file next to its input
 
 **Files:**
+
 - Modify: `scripts/generate_layers.py:458` (`keep_out.robot_config` resolved with `resolve_config(ref, relative_to=<--data file's dir>, search_cwd=False)`), its generated-file header (name the `--data` file actually used, relative to the repo when inside it)
 - Modify: `scripts/mebot_layers.yaml` (`keep_out.robot_config: example:robot_gen3_2f85.yaml`), `core/tests/data/mebot/planner.yaml` (`robot: example:robot_gen3_2f85.yaml`)
 - Modify: `Makefile:93-100` (`DATA ?= scripts/mebot_layers.yaml`, passed as `--data`; the diff-assert covers platform, seat, person, floor)
@@ -254,6 +284,7 @@ Behaviour (exact copy):
 ### Task 7: The image holds code and examples only
 
 **Files:**
+
 - Modify: `docker/Dockerfile:96-103` (copy `core/pyproject.toml`, `core/rammp_curobo/`, `rammp_curobo_interfaces/`, `rammp_curobo_ros/` only; no `COPY .`)
 - Modify: `Makefile:51-53` (`verify` bind-mounts the checkout read-only, e.g. `-v $(CURDIR):/src:ro`, and runs `python3 -m pytest /src/core/tests -q -p no:cacheprovider`); new target `image-contents` asserting `/opt/rammp_curobo_src` has no `core/tests`, `scripts`, `sim`, `docs`
 - Test: `make verify`, `make image-contents`
@@ -268,33 +299,47 @@ Behaviour (exact copy):
 ### Task 8: The contract, written down
 
 **Files:**
+
 - Create: `docs/ROBOT_DATA.md` — the contract: the robot directory table and the resolution rule from the spec, every robot-file field `load_robot_spec` and `check_robot_dir` require (with the example's values), `example:`, example mode and its three signals, and "swapping an arm/base/site" as a deployments checklist.
+
 - Modify: `CLAUDE.md` (replace the "chair is NOT package data" invariant with the general rule; robot names from the robot file; example mode; the bench is dojo's), `INTEGRATION.md` (`from_config("example:gen3.yaml")`, robot directories), `README.md`, `docker/README.md`, `CHANGELOG.md` `[Unreleased]` **BREAKING** (bare packaged names refused; `gen3_real.yaml`/`world_real_bench.yaml` removed; `prepare_urdf` signature; `config` default `""`)
+
 - Test: `mdformat --check` via pre-commit
 
 - [ ] **Step 1: Write** the docs. **Step 2: Run** `pre-commit run --all-files` — Expected: pass. **Step 3: Commit** `docs: the robot-data contract`
+
 - [ ] **Step 4: Open the RAMMP-CuRobo PR (draft)** against `dev`, linking the spec and noting it must merge after the deployments PR (Tasks 9–10). Ask the user before marking ready.
 
 ### Task 9 (rammp-deployments): flatbot's complete robot directory
 
 **Files** (in `december_2026/config/robots/flatbot/curobo/`):
+
 - Create: `robot.yaml` (copy of the example `robot_gen3_2f85.yaml` with `model_check`), `arm_kinematics.json` (copy), `mebot_layers.yaml` (copy of RAMMP-CuRobo's, `keep_out.robot_config: robot.yaml`, `outputs` unchanged — `--outdir` keeps only file names), `layer_mebot_seat.yaml`, `layer_mebot_person.yaml` (generated)
+
 - Modify: `planner.yaml` (`robot: robot.yaml`; `layers: [layer_mebot_platform.yaml, layer_mebot_seat.yaml, layer_mebot_person.yaml]`; comments: these are flatbot's unmeasured best guesses from RAMMP-CuRobo #46, and the rest pose sits 25 mm inside `person/torso`, so plans from rest are refused), `layer_mebot_platform.yaml`, `layer_mebot_floor.yaml` (regenerated), `world.yaml` unchanged
+
 - Modify: `profiles/flatbot.yaml` override comment ("no occupant for now" goes)
 
 - [ ] **Step 1: Generate** from the RAMMP-CuRobo branch: `PYTHONPATH=$PWD/core make layers DATA=<deployments>/…/flatbot/curobo/mebot_layers.yaml OUTDIR=<deployments>/…/flatbot/curobo` — Expected: four layer files written; the in-repo diff assert still passes.
+
 - [ ] **Step 2: Verify with today's nightly** on abra (GPU, no arm): build `CuRoboPlanner.from_config("/cfg/planner.yaml", urdf_path=<arm_tilt30.urdf>)` inside `ghcr.io/rammp-org/rammp-curobo:nightly` with the directory mounted at `/cfg` — Expected: world summary `30 boxes: scene 0 | config layers: platform 16, seat 5, person 8 | scene layers: floor 1`. Repeat with the RAMMP-CuRobo branch image — Expected: same summary, no `RobotDataError`.
+
 - [ ] **Step 3: Commit** `flatbot: its own robot file and chair measurements; seat and person layers`
 
 ### Task 10 (rammp-deployments): dojo's robot directory; the manifest stops defaulting to the image
 
 **Files:**
+
 - Create: `december_2026/config/robots/dojo/curobo/planner.yaml` (RAMMP-CuRobo's `core/tests/data/dojo/planner.yaml` with `robot: robot.yaml`), `world.yaml` (the bench), `robot.yaml`, `arm_kinematics.json`
+
 - Modify: `december_2026/sheppy-manifest.yaml` `curobo_planner_nightly.params` → `config: /config/robot/curobo/planner.yaml`, `world: ""` (comment: every robot that runs the nightly planner carries `curobo/`). Leave the `curobo_planner` (1.1.0) release entry alone: that image still ships the bench and predates the rule.
+
 - Modify: `profiles/flatbot.yaml` — its `config`/`world` overrides now equal the default; keep them (explicit is fine) or drop them, but say which in the PR.
 
 - [ ] **Step 1: Verify** on abra with both images, as Task 9 Step 2, using `arm_level.urdf` — Expected: summary shows the bench's pedestal and table, no layers.
+
 - [ ] **Step 2: Commit** `dojo: its own planner directory; the nightly planner reads /config/robot/curobo`
+
 - [ ] **Step 3: Open the deployments PR (draft)** against `dev` — the user may have to open it themselves (an earlier attempt was blocked). It merges FIRST.
 
 ## After both merge (human, not an agent)
