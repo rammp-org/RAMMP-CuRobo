@@ -454,8 +454,8 @@ def load_scene(path, frame):
     an empty world must say `obstacles: []`.
 
     `base_frame` is required and must be `frame`, the frame the planner
-    plans in (arm_mount): the numbers are applied in that frame whatever
-    the file says, so a world authored in another frame (the arm's tilted
+    plans in (the robot file's root link): the numbers are applied in that
+    frame whatever the file says, so a world authored in another frame (the arm's tilted
     base) would put every box in the wrong place, silently. The layers the
     file lists are in that frame too.
     """

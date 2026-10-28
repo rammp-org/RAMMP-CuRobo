@@ -18,14 +18,10 @@ from pathlib import Path
 
 import pytest
 
-from rammp_curobo.config import resolve_config
-from rammp_curobo.robot_config import load_robot_spec
-from rammp_curobo.scene import load_scene as _load_scene
-from rammp_curobo.scene import scene_from_obstacles as _scene_from_obstacles
+from core_test_helpers import gen3_spec
 from rammp_curobo.urdf_model import prepare_urdf, write_urdf
 
 DATA = Path(__file__).parent / "data"
-FRAME = "arm_mount"  # the example Gen3's planning frame
 GPU = os.environ.get("RAMMP_CUROBO_GPU") == "1"
 
 
@@ -61,19 +57,6 @@ def pytest_runtest_makereport(item, call):
 @pytest.hookimpl(hookwrapper=True)
 def pytest_make_collect_report(collector):
     _no_gpu_skip((yield))
-
-
-def gen3_spec():
-    """The example Gen3 robot file's names: what prepare_urdf checks a model against."""
-    return load_robot_spec(resolve_config("example:robot_gen3_2f85.yaml"))
-
-
-def load_scene(path):
-    return _load_scene(path, FRAME)
-
-
-def scene_from_obstacles(entries):
-    return _scene_from_obstacles(entries, FRAME)
 
 
 def _written(tmp_path_factory, name):

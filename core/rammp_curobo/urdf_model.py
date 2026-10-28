@@ -73,10 +73,19 @@ def prepare_urdf(xml, spec):
     missing = [j for j in spec.joint_names + spec.locked_joints if j not in joints]
     if missing:
         raise ValueError("robot model is missing joints %s" % missing)
+    if spec.arm_base_link not in links:
+        raise ValueError(
+            "robot model has no %r link (model_check.arm_base_link of %s)"
+            % (spec.arm_base_link, spec.path)
+        )
+    ref = json.loads(spec.kinematics_reference.read_text())
+    if not ref:
+        raise ValueError(
+            "kinematics reference %s lists no joints; nothing would be checked"
+            % spec.kinematics_reference
+        )
     check_kinematics(
-        kinematic_reference(root, spec.arm_base_link),
-        json.loads(spec.kinematics_reference.read_text()),
-        spec.arm_base_link,
+        kinematic_reference(root, spec.arm_base_link), ref, spec.arm_base_link
     )
 
     for link in root.findall("link"):
@@ -155,7 +164,10 @@ def check_kinematics(live, ref, base_link):
                 "the reference the spheres were baked on (max %g mm / %g deg)"
                 % (name, 1e3 * moved_m, turned, axis, 1e3 * ORIGIN_TOL_M, ANGLE_TOL_DEG)
             )
-        if got["limit"] != want["limit"]:
+        # a mimic's limit is filled by _fill_mimic_limits, so a model that has
+        # been through prepare_urdf once has one where the reference has none
+        filled = want["mimic"] is not None and want["limit"] is None
+        if got["limit"] != want["limit"] and not filled:
             log.warning(
                 "robot model joint %r limit %s differs from the reference's %s; "
                 "planning with the model's",

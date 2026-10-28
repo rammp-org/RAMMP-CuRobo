@@ -36,7 +36,9 @@ from pathlib import Path
 import numpy as np
 
 from rammp_curobo import CuRoboPlanner
+from rammp_curobo.config import load_planner_config, resolve_config
 from rammp_curobo.geometry import euler_deg_to_quat_xyzw
+from rammp_curobo.robot_config import load_robot_spec
 from rammp_curobo.urdf_model import prepare_urdf, write_urdf
 
 
@@ -103,8 +105,10 @@ def main():
         ap.error("--quat/--rpy-deg only apply to --pos goals")
 
     print("Initializing planner (GPU init + warmup — first run takes a while)...")
+    cfg, cfg_dir = load_planner_config(args.config)
+    spec = load_robot_spec(resolve_config(cfg["robot"], relative_to=cfg_dir))
     urdf_path = write_urdf(
-        prepare_urdf(Path(args.urdf).read_text()), tempfile.mkdtemp()
+        prepare_urdf(Path(args.urdf).read_text(), spec), tempfile.mkdtemp()
     )
     planner = CuRoboPlanner.from_config(args.config, urdf_path=urdf_path)
 

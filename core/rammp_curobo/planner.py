@@ -121,8 +121,9 @@ class CuRoboPlanner:
         cspace = self._robot_cfg["kinematics"]["cspace"]
         # The controller's joint order: the config's, which must name the
         # robot file's joints, or the robot file's own order when it names none.
-        self.joint_names = list(config.get("joint_names") or cspace["joint_names"])
-        if set(self.joint_names) != set(cspace["joint_names"]):
+        names = config.get("joint_names")
+        self.joint_names = list(cspace["joint_names"] if names is None else names)
+        if sorted(self.joint_names) != sorted(cspace["joint_names"]):
             raise ValueError(
                 "planner config joint_names %s are not the robot file's joints %s"
                 % (self.joint_names, list(cspace["joint_names"]))

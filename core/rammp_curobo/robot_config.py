@@ -59,6 +59,11 @@ def load_robot_spec(path):
         "model_check.arm_base_link": check.get("arm_base_link"),
         "model_check.kinematics_reference": check.get("kinematics_reference"),
     }
+    names = values["robot_cfg.kinematics.cspace.joint_names"]
+    if names is not None and not isinstance(names, list):
+        raise ValueError(
+            "robot file %s: cspace.joint_names must be a list, got %r" % (path, names)
+        )
     missing = [k for k, v in values.items() if not v]
     if missing:
         raise ValueError(

@@ -96,6 +96,12 @@ def test_a_config_naming_other_joints_than_the_robot_files_is_refused(
     cfg["joint_names"] = cfg["joint_names"][:-1] + ["j7"]
     with pytest.raises(ValueError, match="not the robot file's joints"):
         CuRoboPlanner(cfg, config_dir=cfg_dir, urdf_path=urdf_level)
+    cfg["joint_names"] = ["arm_joint_1"] * 7  # duplicates: same set, not the same joints
+    with pytest.raises(ValueError, match="not the robot file's joints"):
+        CuRoboPlanner(cfg, config_dir=cfg_dir, urdf_path=urdf_level)
+    cfg["joint_names"] = []  # explicit, so not the robot file's order
+    with pytest.raises(ValueError, match="not the robot file's joints"):
+        CuRoboPlanner(cfg, config_dir=cfg_dir, urdf_path=urdf_level)
     # the same joints in another order are the config's to choose
     cfg["joint_names"] = ["arm_joint_%d" % i for i in range(7, 0, -1)]
     assert CuRoboPlanner(cfg, config_dir=cfg_dir, urdf_path=urdf_level).joint_names == (

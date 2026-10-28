@@ -45,7 +45,7 @@ from rammp_curobo.urdf_model import _fill_mimic_limits, prepare_urdf, write_urdf
 from rammp_curobo.validate import start_state_matches, validate_trajectory
 from rammp_curobo.world import make_world_config, world_cuboids
 
-from conftest import gen3_spec, load_scene, scene_from_obstacles
+from core_test_helpers import gen3_spec, load_scene, scene_from_obstacles
 
 DATA = Path(__file__).parent / "data"
 ARM_JOINTS = tuple("arm_joint_%d" % i for i in range(1, 8))
@@ -1181,13 +1181,46 @@ def test_a_non_gen3_arm_passes_with_its_own_robot_file():
     assert "<visual" not in out and "<collision" not in out
 
 
-def test_prepare_urdf_is_idempotent():
+def test_an_arm_base_link_the_model_lacks_is_refused(tmp_path):
+    robot = tmp_path / "robot.yaml"
+    robot.write_text(
+        (DATA / "two_link" / "robot.yaml")
+        .read_text()
+        .replace("link0", "no_such_link")
+    )
+    (tmp_path / "arm_kinematics.json").write_text("{}")
+    with pytest.raises(ValueError, match="no 'no_such_link' link"):
+        prepare_urdf(read("two_link/two_link.urdf"), load_robot_spec(robot))
+
+
+def test_an_empty_kinematics_reference_is_refused(tmp_path):
+    robot = tmp_path / "robot.yaml"
+    robot.write_text((DATA / "two_link" / "robot.yaml").read_text())
+    (tmp_path / "arm_kinematics.json").write_text("{}")
+    with pytest.raises(ValueError, match="lists no joints"):
+        prepare_urdf(read("two_link/two_link.urdf"), load_robot_spec(robot))
+
+
+def test_a_string_for_joint_names_is_refused(tmp_path):
+    robot = tmp_path / "robot.yaml"
+    robot.write_text(
+        (DATA / "two_link" / "robot.yaml")
+        .read_text()
+        .replace("[j1, j2]", "j1")
+    )
+    with pytest.raises(ValueError, match="must be a list"):
+        load_robot_spec(robot)
+
+
+def test_prepare_urdf_is_idempotent(caplog):
     for xml, spec in [
         (read("arm_level.urdf"), gen3_spec()),
         ((DATA / "two_link" / "two_link.urdf").read_text(), load_robot_spec(DATA / "two_link" / "robot.yaml")),
     ]:
         once = prepare_urdf(xml, spec)
-        assert prepare_urdf(once, spec) == once
+        with caplog.at_level("WARNING", logger="rammp_curobo"):
+            assert prepare_urdf(once, spec) == once
+        assert caplog.text == ""
 
 
 def test_a_reference_next_to_the_robot_file_is_resolved_there(tmp_path):

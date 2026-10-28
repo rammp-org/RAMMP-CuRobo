@@ -16,7 +16,7 @@ import pytest
 import yaml
 
 import rammp_curobo
-from conftest import load_scene, scene_from_obstacles
+from core_test_helpers import load_scene, scene_from_obstacles
 from rammp_curobo.config import PACKAGED_CONFIG_DIR, load_planner_config, resolve_config
 from rammp_curobo.geometry import euler_deg_to_quat_xyzw
 from rammp_curobo.planner import CuRoboPlanner
