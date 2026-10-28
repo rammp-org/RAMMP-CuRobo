@@ -138,3 +138,56 @@ def test_a_planner_config_that_is_not_a_mapping_or_yaml_is_a_value_error(
     (tmp_path / "planner.yaml").write_text(text)
     with pytest.raises(ValueError, match="planner.yaml"):
         load_planner_config(tmp_path / "planner.yaml")
+
+
+def _cwd_with_another_robots_files(tmp_path, monkeypatch):
+    other = tmp_path / "cwd"
+    other.mkdir()
+    shutil.copy(EXAMPLE_DIR / "robot_gen3_2f85.yaml", other / "robot.yaml")
+    shutil.copy(EXAMPLE_DIR / "arm_kinematics.json", other / "arm_kinematics.json")
+    shutil.copy(EXAMPLE_DIR / "world_empty.yaml", other / "world.yaml")
+    monkeypatch.chdir(other)
+
+
+def test_a_robot_dir_never_borrows_the_robot_or_world_from_the_cwd(
+    tmp_path, monkeypatch
+):
+    robot = tmp_path / "robot"
+    robot.mkdir()
+    (robot / "planner.yaml").write_text("robot: robot.yaml\nworld: world.yaml\n")
+    _cwd_with_another_robots_files(tmp_path, monkeypatch)
+    with pytest.raises(RobotDataError) as e:
+        _check(robot)
+    assert len(e.value.problems) == 2 and str(robot / "robot.yaml") in str(e.value)
+    assert str(robot / "world.yaml") in str(e.value)
+
+
+def test_a_robot_file_missing_the_seed_or_the_spheres_is_listed(tmp_path):
+    d = _dir(tmp_path)
+    data = yaml.safe_load((d / "robot.yaml").read_text())
+    del data["robot_cfg"]["kinematics"]["cspace"]["retract_config"]
+    del data["robot_cfg"]["kinematics"]["collision_spheres"]
+    (d / "robot.yaml").write_text(yaml.safe_dump(data))
+    with pytest.raises(RobotDataError) as e:
+        _check(d)
+    assert len(e.value.problems) == 1
+    assert "retract_config" in str(e.value) and "collision_spheres" in str(e.value)
+
+
+def test_joint_names_that_are_not_the_robot_files_are_listed(tmp_path):
+    d = _dir(tmp_path)
+    cfg, cdir = load_planner_config(d / "planner.yaml")
+    cfg["joint_names"] = ["arm_joint_%d" % i for i in range(1, 7)] + ["j7"]
+    with pytest.raises(RobotDataError) as e:
+        check_robot_dir(cfg, cdir, URDF)
+    assert len(e.value.problems) == 1
+    assert "not the robot file's joints" in str(e.value)
+    # the same joints in another order are the config's to choose
+    cfg["joint_names"] = ["arm_joint_%d" % i for i in range(7, 0, -1)]
+    assert "<ros2_control" not in check_robot_dir(cfg, cdir, URDF)
+
+
+def test_the_examples_urdf_is_the_fixtures_copy():
+    assert (EXAMPLE_DIR / "arm_level.urdf").read_bytes() == (
+        DATA / "arm_level.urdf"
+    ).read_bytes()

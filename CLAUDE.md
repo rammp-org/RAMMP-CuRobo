@@ -215,7 +215,9 @@ plus the gripper services (2026-08-24, issue #6).
   and expects no diff. The spheres were audited on NVIDIA's model and are
   MOVED onto the upstream links through FK of both models, never re-tuned;
   `test_model_parity.py` pins every sphere and `arm_tool_frame` to NVIDIA's
-  within 1 mm (and 0.1°).
+  within 1 mm (and 0.1°). A robot's OWN copy of the robot file (the
+  rammp-deployments ones) does not follow a re-bake of the example: re-copy
+  it, deliberately, when the new spheres or seed are wanted.
 - The URDF is sanitised before cuRobo reads it (`urdf_model.prepare_urdf(xml, spec)`):
   `<visual>`, `<collision>` and `<ros2_control>` are stripped (the mesh
   paths point at packages this image lacks; the spheres are the collision
@@ -250,6 +252,9 @@ plus the gripper services (2026-08-24, issue #6).
 - Test fixtures `core/tests/data/arm_level.urdf` / `arm_tilt30.urdf` are
   rendered by kinova-gen3-ros2's `kinova_gen3_render`; how is in
   `core/tests/data/README.md`. Re-render, don't hand-edit.
+  `core/rammp_curobo/configs/arm_level.urdf` is the example robot's copy of
+  `arm_level.urdf` (the node's model in example mode); re-render both from
+  the same model, `test_the_examples_urdf_is_the_fixtures_copy` pins them equal.
 - retract_config must stay in the bent-elbow family (arm_joint_3 ≈ π) — the
   stock retract seeds the opposite family and every crossing plan winds.
   It is the IK SEED, read back as `planner.retract_pose`. The planner has

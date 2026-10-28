@@ -47,6 +47,33 @@ def _root_link(robot_path):
         return None
 
 
+def _check_robot_file_fields(cfg, robot_path, spec):
+    """What CuRoboPlanner reads from the robot file beyond RobotSpec: the IK
+    seed, the collision spheres, and the config's joint_names against the
+    file's joints. Each failure here would otherwise raise at construction."""
+    with open(robot_path, "r", encoding="utf-8") as f:
+        kin = yaml.safe_load(f)["robot_cfg"]["kinematics"]
+    missing = [
+        k
+        for k, v in (
+            ("cspace.retract_config", kin["cspace"].get("retract_config")),
+            ("collision_spheres", kin.get("collision_spheres")),
+        )
+        if not v
+    ]
+    if missing:
+        raise ValueError(
+            "robot file %s is missing kinematics.%s"
+            % (robot_path, ", kinematics.".join(missing))
+        )
+    names = cfg.get("joint_names")
+    if names is not None and sorted(names) != sorted(spec.joint_names):
+        raise ValueError(
+            "planner config joint_names %s are not the robot file's joints %s"
+            % (list(names), list(spec.joint_names))
+        )
+
+
 def check_robot_dir(cfg, cfg_dir, urdf_xml):
     """Planner config `cfg` (from `cfg_dir`) and the model text `urdf_xml` ->
     the sanitised URDF text, or RobotDataError listing every problem."""
@@ -61,11 +88,17 @@ def check_robot_dir(cfg, cfg_dir, urdf_xml):
             problems.append(str(exc))
             return None
 
-    robot_path = attempt(lambda: resolve_config(cfg["robot"], relative_to=cfg_dir))
+    robot_path = attempt(
+        lambda: resolve_config(cfg["robot"], relative_to=cfg_dir, search_cwd=False)
+    )
     spec = attempt(lambda: load_robot_spec(robot_path)) if robot_path else None
+    if spec:
+        attempt(lambda: _check_robot_file_fields(cfg, robot_path, spec))
     frame = spec.root_link if spec else (robot_path and _root_link(robot_path))
 
-    world_path = attempt(lambda: resolve_config(cfg["world"], relative_to=cfg_dir))
+    world_path = attempt(
+        lambda: resolve_config(cfg["world"], relative_to=cfg_dir, search_cwd=False)
+    )
     scene = (
         attempt(lambda: load_scene(world_path, frame)) if world_path and frame else None
     )

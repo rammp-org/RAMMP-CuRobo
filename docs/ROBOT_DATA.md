@@ -46,6 +46,8 @@ the image's stale geometry.
 
 Robots should carry their own copy of the robot file (a new image then can
 never change their spheres or IK seed); `example:` is allowed and visible.
+A copied robot file does not follow a re-bake of the example: when a new image
+re-bakes the example's spheres or seed, re-copy the file deliberately.
 
 ## `planner.yaml`
 

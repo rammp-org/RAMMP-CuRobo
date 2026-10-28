@@ -1309,6 +1309,19 @@ def main(argv=None):
         " ${XDG_CACHE_HOME:-~/.cache}/rammp_curobo/cad)",
     )
     args = parser.parse_args(argv)
+    if (
+        Path(args.data).resolve() != Path(DATA).resolve()
+        and not args.outdir
+        and not args.check
+    ):
+        # the in-repo fixtures are this checkout's; another robot's inputs
+        # would overwrite them (the Makefile refuses the same)
+        print(
+            "generate_layers: --data is another robot's inputs: give --outdir"
+            " too, or this checkout's fixtures would be overwritten",
+            file=sys.stderr,
+        )
+        return 1
     try:
         data = load_data(args.data)
         urdf, origin = fetch_pinned(

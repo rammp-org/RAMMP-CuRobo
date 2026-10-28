@@ -118,8 +118,18 @@ def test_results_and_set_world_replies_carry_the_marker(make_node):
         raise ValueError("refused")
 
     node.planner.update_world = refuse
-    bad = node._set_world_cb(SetWorld.Request(world="x"), SetWorld.Response())
+    bad = node._set_world_cb(
+        SetWorld.Request(world="example:world_empty.yaml"), SetWorld.Response()
+    )
     assert not bad.success and bad.message == "refused " + EXAMPLE_MARKER
+
+
+def test_set_world_never_reads_the_cwd(make_node, tmp_path, monkeypatch):
+    node = make_node()
+    (tmp_path / "stray.yaml").write_text("base_frame: arm_mount\nobstacles: []\n")
+    monkeypatch.chdir(tmp_path)
+    bad = node._set_world_cb(SetWorld.Request(world="stray.yaml"), SetWorld.Response())
+    assert not bad.success and "stray.yaml" in bad.message
 
 
 def test_a_named_config_has_no_marker_and_no_banner(make_node, tmp_path, capfd):

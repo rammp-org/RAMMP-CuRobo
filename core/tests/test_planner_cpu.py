@@ -606,3 +606,32 @@ def test_a_leg_beyond_the_limits_is_refused_by_the_final_check(blend_planner):
     blend_planner.lim["acceleration"] = np.full(7, 5.0)
     res = blend_planner.blend_legs(legs, [0.0])
     assert res.status == "LIBRARY_VALIDATION_FAILED"
+
+
+def test_a_robot_dir_never_borrows_data_from_the_cwd(
+    cpu_planner, monkeypatch, tmp_path, urdf_level
+):
+    from rammp_curobo import planner as planner_mod
+    from rammp_curobo.config import EXAMPLE_DIR
+
+    robot, cwd = tmp_path / "robot", tmp_path / "cwd"
+    robot.mkdir()
+    cwd.mkdir()
+    (robot / "planner.yaml").write_text("robot: robot.yaml\nworld: world.yaml\n")
+    for src, dst in (
+        ("robot_gen3_2f85.yaml", "robot.yaml"),
+        ("arm_kinematics.json", "arm_kinematics.json"),
+        ("world_empty.yaml", "world.yaml"),
+    ):
+        (cwd / dst).write_text((EXAMPLE_DIR / src).read_text())
+    monkeypatch.chdir(cwd)
+    cfg, cfg_dir = planner_mod.load_planner_config(robot / "planner.yaml")
+    # with and without the model check: both name the robot dir
+    with pytest.raises(ValueError, match=str(robot)):
+        CuRoboPlanner(cfg, config_dir=cfg_dir, urdf_path=urdf_level)
+    with pytest.raises(FileNotFoundError, match=str(robot)):
+        CuRoboPlanner(cfg, config_dir=cfg_dir)
+    # a pushed world path is next to the config, not in the cwd
+    (cwd / "pushed.yaml").write_text("base_frame: arm_mount\nobstacles: []\n")
+    with pytest.raises(FileNotFoundError, match="pushed.yaml"):
+        cpu_planner.update_world("pushed.yaml")

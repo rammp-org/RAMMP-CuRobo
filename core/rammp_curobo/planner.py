@@ -110,8 +110,12 @@ class CuRoboPlanner:
             # one error listing every problem, before any file is loaded for
             # real; a model checked already (the node) checks again, silently
             check_robot_dir(config, config_dir, Path(urdf_path).read_text())
-        robot_path = resolve_config(config["robot"], relative_to=config_dir)
-        world_path = resolve_config(config["world"], relative_to=config_dir)
+        robot_path = resolve_config(
+            config["robot"], relative_to=config_dir, search_cwd=False
+        )
+        world_path = resolve_config(
+            config["world"], relative_to=config_dir, search_cwd=False
+        )
         # The arm's model: the URDF from /arm/robot_description, as a file.
         self._robot_cfg = load_robot_config(robot_path, urdf_path=urdf_path)
         # The frame every Cartesian input and trajectory is in. cuRobo calls the
@@ -863,7 +867,7 @@ class CuRoboPlanner:
             scene = scene_from_obstacles(world, base_frame=self.base_frame)
         else:
             scene = load_scene(
-                resolve_config(world, relative_to=self._config_dir),
+                resolve_config(world, relative_to=self._config_dir, search_cwd=False),
                 frame=self.base_frame,
             )
         cuboids, sources = self._compose(scene, ignore=ignore)

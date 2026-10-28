@@ -187,7 +187,9 @@ def arm_spec():
     from rammp_curobo.robot_config import load_robot_spec
 
     cfg, where = load_planner_config(CONTROL_CONFIG)
-    return load_robot_spec(resolve_config(cfg["robot"], relative_to=where))
+    return load_robot_spec(
+        resolve_config(cfg["robot"], relative_to=where, search_cwd=False)
+    )
 
 
 def config(name):
@@ -234,7 +236,9 @@ def chair_layers():
     from rammp_curobo.scene import load_layers, load_scene
 
     cfg, where = load_planner_config(chair_config())
-    world = load_scene(resolve_config(cfg["world"], relative_to=where), ROOT_FRAME)
+    world = load_scene(
+        resolve_config(cfg["world"], relative_to=where, search_cwd=False), ROOT_FRAME
+    )
     layers = load_layers(cfg["layers"], relative_to=where, listed_in=CHAIR_CONFIG)
     return layers, world
 

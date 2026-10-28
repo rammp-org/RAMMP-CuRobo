@@ -120,8 +120,8 @@ def robot_data_summary(config, cfg, cfg_dir, model_source):
     ]
     return "robot data: config %s, robot file %s, world %s, layers [%s], model %s" % (
         _where(resolve_config(config)),
-        _where(resolve_config(cfg["robot"], relative_to=cfg_dir)),
-        _where(resolve_config(cfg["world"], relative_to=cfg_dir)),
+        _where(resolve_config(cfg["robot"], relative_to=cfg_dir, search_cwd=False)),
+        _where(resolve_config(cfg["world"], relative_to=cfg_dir, search_cwd=False)),
         ", ".join(layers),
         model_source,
     )
@@ -556,12 +556,15 @@ class RammpCuroboNode(Node):
     def _set_world_cb(self, request, response):
         with self._plan_lock:
             try:
-                self.planner.update_world(request.world)
+                # resolved as update_world does: next to the config, or example:
+                path = resolve_config(
+                    request.world,
+                    relative_to=self.planner._config_dir,
+                    search_cwd=False,
+                )
+                self.planner.update_world(path)
                 response.success = True
                 # the layers the config adds to every world are in the reply
-                path = resolve_config(
-                    request.world, relative_to=self.planner._config_dir
-                )
                 response.message = self._tag(
                     "world set to %s%s (%s)"
                     % (

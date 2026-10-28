@@ -1804,6 +1804,8 @@ def test_cli_writes_only_after_every_gate_and_check_prints_a_diff(
         data["platform"]["max_boxes"] = max_boxes
         data["outputs"] = {layer: "%s/%s" % (into, names[layer]) for layer in names}
         (tmp_path / "data.yaml").write_text(yaml.safe_dump(data))
+        # this throwaway checkout's own inputs, so --data is its default
+        monkeypatch.setattr(gen, "DATA", tmp_path / "data.yaml")
         argv = ["--data", str(tmp_path / "data.yaml"), "--clone", str(clone)]
         argv += ["--cache", str(tmp_path / cache), *flags]
         return gen.main(argv), capsys.readouterr()
@@ -2185,6 +2187,8 @@ def test_outdir_writes_the_layer_set_beside_the_robot_that_uses_it(
             layer: "core/tests/data/layers/%s" % name for layer, name in names.items()
         }
         (tmp_path / "data.yaml").write_text(yaml.safe_dump(data))
+        # this throwaway checkout's own inputs, so --data is its default
+        monkeypatch.setattr(gen, "DATA", tmp_path / "data.yaml")
         argv = ["--data", str(tmp_path / "data.yaml"), "--clone", str(clone)]
         argv += ["--cache", str(tmp_path / "cache"), *flags]
         status = gen.main(argv)
@@ -2213,3 +2217,11 @@ def test_outdir_writes_the_layer_set_beside_the_robot_that_uses_it(
     assert run("--check", "--outdir", str(robot)) == 0
     (robot / names["floor"]).write_bytes(b"layer: tampered\n")
     assert run("--check", "--outdir", str(robot)) == 1
+
+
+def test_another_robots_data_needs_an_outdir_unless_checking(tmp_path, capsys):
+    other = tmp_path / "other.yaml"
+    other.write_text("{}")
+    assert gen.main(["--data", str(other)]) == 1
+    err = capsys.readouterr().err
+    assert "--outdir" in err and "overwritten" in err
