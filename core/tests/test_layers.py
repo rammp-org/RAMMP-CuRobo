@@ -16,6 +16,7 @@ import pytest
 import yaml
 
 import rammp_curobo
+from conftest import load_scene, scene_from_obstacles
 from rammp_curobo.config import PACKAGED_CONFIG_DIR, load_planner_config, resolve_config
 from rammp_curobo.geometry import euler_deg_to_quat_xyzw
 from rammp_curobo.planner import CuRoboPlanner
@@ -26,8 +27,6 @@ from rammp_curobo.scene import (
     SceneObject,
     load_layer,
     load_layers,
-    load_scene,
-    scene_from_obstacles,
 )
 from rammp_curobo.types import PlanResult
 from rammp_curobo.world import (
@@ -1134,7 +1133,7 @@ for path in (kitchen, layer):
     except UnicodeDecodeError:
         continue
     sys.exit("premise broken: this locale reads %s as it is" % path)
-print(len(load_scene(kitchen).obstacles), load_layer(layer).name)
+print(len(load_scene(kitchen, 'arm_mount').obstacles), load_layer(layer).name)
 """
     child = _in_a_c_locale(code, kitchen, layer)
     assert child.returncode == 0, child.stderr
@@ -1171,7 +1170,7 @@ for path in sys.argv[2:]:
     robot = resolve_config(cfg["robot"], relative_to=folder)
     premise(robot)
     ee_link = load_robot_config(robot, urdf_path=sys.argv[1])["kinematics"]["ee_link"]
-    scene = load_scene(resolve_config(cfg["world"], relative_to=folder))
+    scene = load_scene(resolve_config(cfg["world"], relative_to=folder), 'arm_mount')
     layers = load_layers(cfg["layers"], relative_to=folder, listed_in=path)
     names = [layer.name for layer in layers + scene.layers]
     print(Path(path).name, robot.name, ee_link, len(scene.obstacles), names)

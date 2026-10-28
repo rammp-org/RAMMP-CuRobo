@@ -161,3 +161,4 @@ robot_cfg:
       retract_config: [0.0, 0.262, 3.142, -2.269, 0.0, 0.96, 1.571]
       max_acceleration: 25.0
       max_jerk: 500.0
+model_check: {arm_base_link: arm_base_link, kinematics_reference: arm_kinematics.json}

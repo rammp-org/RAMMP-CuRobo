@@ -28,7 +28,6 @@ import yaml
 
 from rammp_curobo.config import resolve_config
 from rammp_curobo.geometry import euler_deg_to_quat_xyzw
-from rammp_curobo.urdf_model import ROOT_LINK
 
 
 class Obstacle:
@@ -449,7 +448,7 @@ SCENE_KEYS = ("base_frame", "obstacles", "objects", "targets", "layers")
 LIST_KEYS = ("obstacles", "objects", "targets")
 
 
-def load_scene(path, frame=ROOT_LINK):
+def load_scene(path, frame):
     """Parse a world YAML. Refuses a mis-keyed file: a typo'd or missing
     `obstacles` would otherwise load as an empty world without a word, so
     an empty world must say `obstacles: []`.
@@ -502,7 +501,7 @@ def load_scene(path, frame=ROOT_LINK):
     )
 
 
-def scene_from_obstacles(entries, base_frame=ROOT_LINK):
+def scene_from_obstacles(entries, base_frame):
     """Build a Scene from plain dicts (the `update_world(obstacles)` path).
 
     Each entry follows the YAML object schema: name + position required,

@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<robot name="two_link">
+  <link name="base"/>
+  <link name="link0"/>
+  <link name="link1">
+    <visual><geometry><box size="0.1 0.1 0.1"/></geometry></visual>
+    <collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision>
+  </link>
+  <link name="link2"/>
+  <link name="tool"/>
+  <joint name="mount" type="fixed">
+    <parent link="base"/>
+    <child link="link0"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/>
+  </joint>
+  <joint name="j1" type="revolute">
+    <parent link="link0"/>
+    <child link="link1"/>
+    <origin xyz="0 0 0.2" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.0" upper="3.0" effort="10" velocity="2.0"/>
+  </joint>
+  <joint name="j2" type="revolute">
+    <parent link="link1"/>
+    <child link="link2"/>
+    <origin xyz="0.3 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.0" upper="2.0" effort="10" velocity="2.0"/>
+  </joint>
+  <joint name="tool_joint" type="fixed">
+    <parent link="link2"/>
+    <child link="tool"/>
+    <origin xyz="0.2 0 0" rpy="0 0 0"/>
+  </joint>
+</robot>

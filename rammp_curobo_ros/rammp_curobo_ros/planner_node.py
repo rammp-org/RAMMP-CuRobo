@@ -44,7 +44,8 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
 from rammp_curobo import PoseConstraint, ViaPoint
-from rammp_curobo.config import load_planner_config
+from rammp_curobo.config import load_planner_config, resolve_config
+from rammp_curobo.robot_config import load_robot_spec
 from rammp_curobo.urdf_model import prepare_urdf, write_urdf
 from rammp_curobo_interfaces.action import Blend, PlanToJoints, PlanToPose
 from rammp_curobo_interfaces.srv import SetWorld
@@ -230,8 +231,12 @@ class RammpCuroboNode(Node):
 
         # The model first: no planner and no servers until a valid one is in.
         model = self._wait_for_model(timeout_s)
+        planner_cfg = planner_config(self.config, self.world)
+        spec = load_robot_spec(
+            resolve_config(planner_cfg[0]["robot"], relative_to=planner_cfg[1])
+        )
         try:
-            xml = prepare_urdf(model)
+            xml = prepare_urdf(model, spec)
         except ValueError as exc:
             self.get_logger().fatal("model on %s: %s" % (ROBOT_DESCRIPTION_TOPIC, exc))
             raise SystemExit(1)
@@ -245,9 +250,7 @@ class RammpCuroboNode(Node):
         self.get_logger().info("Loading cuRobo planner (%s)..." % self.config)
         from rammp_curobo import CuRoboPlanner
 
-        self.planner = CuRoboPlanner(
-            *planner_config(self.config, self.world), urdf_path=urdf_path
-        )
+        self.planner = CuRoboPlanner(*planner_cfg, urdf_path=urdf_path)
         self.get_logger().info(
             "model from %s: base %s, ee %s, joints [%s]"
             % (

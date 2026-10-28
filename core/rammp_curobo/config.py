@@ -24,15 +24,6 @@ EXAMPLE_DIR = PACKAGED_CONFIG_DIR  # the image's examples, reached only by examp
 # of them can be overridden from the planner YAML. See configs/gen3.yaml for
 # what each knob does.
 PLANNER_DEFAULTS = {
-    "joint_names": [
-        "arm_joint_1",
-        "arm_joint_2",
-        "arm_joint_3",
-        "arm_joint_4",
-        "arm_joint_5",
-        "arm_joint_6",
-        "arm_joint_7",
-    ],
     "layers": [],
     "planner": {
         "interpolation_dt": 0.02,

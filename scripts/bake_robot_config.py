@@ -52,15 +52,8 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from rammp_curobo.config import PLANNER_DEFAULTS
 from rammp_curobo.robot_config import URDF_SENTINEL
-from rammp_curobo.urdf_model import (
-    ARM_JOINTS,
-    EE_LINK,
-    KINEMATICS_REFERENCE,
-    ROOT_LINK,
-    kinematic_reference,
-)
+from rammp_curobo.urdf_model import kinematic_reference
 
 REPO = Path(__file__).resolve().parent.parent
 OUT = REPO / "core" / "rammp_curobo" / "configs" / "robot_gen3_2f85.yaml"
@@ -73,7 +66,13 @@ MOVES = REPO / "core" / "tests" / "data" / "robot_gen3_2f85_moves.yaml"
 # bundled Gen3 retract sits in the OPPOSITE elbow family, which makes every
 # crossing plan wind; joint_3 must stay near +pi.
 RETRACT_POSE = [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]
-JOINT_NAMES = list(PLANNER_DEFAULTS["joint_names"])
+
+# The Gen3's names: the robot file this script writes is the one place they live.
+ROOT_LINK = "arm_mount"
+EE_LINK = "arm_tool_frame"
+BASE_LINK = "arm_base_link"
+JOINT_NAMES = ["arm_joint_%d" % i for i in range(1, 8)]
+KINEMATICS_REFERENCE = OUT.parent / "arm_kinematics.json"
 
 # NVIDIA link -> the upstream link its spheres move onto. The arm links keep
 # their frames and gain the prefix; NVIDIA's rigid 2F-85 links land on the
@@ -245,10 +244,15 @@ def build_robot_config(nv_cfg, moves):
     # their <mimic>.
     kin["lock_joints"] = {"arm_robotiq_85_left_knuckle_joint": 0.0}
     assert cspace["joint_names"] == ["joint_%d" % i for i in range(1, 8)]
-    assert JOINT_NAMES == list(ARM_JOINTS)
     cspace["joint_names"] = JOINT_NAMES
     cspace["retract_config"] = [float(v) for v in RETRACT_POSE]
     kin["cspace"] = cspace
+    # Beside robot_cfg, so cuRobo never sees it: what prepare_urdf checks a
+    # model against (the joints below arm_base_link, as the spheres were baked).
+    cfg["model_check"] = {
+        "arm_base_link": BASE_LINK,
+        "kinematics_reference": KINEMATICS_REFERENCE.name,
+    }
     return cfg
 
 
@@ -325,7 +329,7 @@ def main():
     cfg = build_robot_config(cfg, moves)
     # What the spheres were moved onto: prepare_urdf refuses a model whose
     # joints below arm_base_link differ from this.
-    ref = kinematic_reference(ET.parse(args.urdf).getroot())
+    ref = kinematic_reference(ET.parse(args.urdf).getroot(), BASE_LINK)
     KINEMATICS_REFERENCE.write_text(  # one joint per line
         "{\n"
         + ",\n".join(" %s: %s" % (json.dumps(n), json.dumps(j)) for n, j in ref.items())

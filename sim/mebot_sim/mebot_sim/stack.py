@@ -42,6 +42,8 @@ CHAIR = "/rammp_curobo"
 CONTROL = "/rammp_curobo_control"
 CHAIR_CONFIG = "planner.yaml"
 CONTROL_CONFIG = "example:gen3.yaml"
+# The frame the worlds and layers are written in: the arm model's root link.
+ROOT_FRAME = "arm_mount"
 # The chair planner's start-up world (the floor, under its config layers);
 # pushing it again puts the planner back in it.
 CHAIR_WORLD = "world.yaml"
@@ -177,6 +179,17 @@ def arm_model():
     return path.read_text(encoding="utf-8")
 
 
+def arm_spec():
+    """The names the arm's model is checked against: those of the robot file
+    the control planner config lists (the Gen3's, in this checkout's examples)."""
+    core()
+    from rammp_curobo.config import load_planner_config, resolve_config
+    from rammp_curobo.robot_config import load_robot_spec
+
+    cfg, where = load_planner_config(CONTROL_CONFIG)
+    return load_robot_spec(resolve_config(cfg["robot"], relative_to=where))
+
+
 def config(name):
     """The path of one of this package's config files, in the checkout: the
     package runs from it in any case."""
@@ -221,7 +234,7 @@ def chair_layers():
     from rammp_curobo.scene import load_layers, load_scene
 
     cfg, where = load_planner_config(chair_config())
-    world = load_scene(resolve_config(cfg["world"], relative_to=where))
+    world = load_scene(resolve_config(cfg["world"], relative_to=where), ROOT_FRAME)
     layers = load_layers(cfg["layers"], relative_to=where, listed_in=CHAIR_CONFIG)
     return layers, world
 

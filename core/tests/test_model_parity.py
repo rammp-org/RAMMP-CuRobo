@@ -25,9 +25,17 @@ if not torch.cuda.is_available():
 
 from rammp_curobo import CuRoboPlanner  # noqa: E402
 from rammp_curobo.robot_config import load_robot_config  # noqa: E402
-from rammp_curobo.urdf_model import ARM_JOINTS, GRIPPER_JOINTS  # noqa: E402
 
 DATA = Path(__file__).parent / "data"
+ARM_JOINTS = tuple("arm_joint_%d" % i for i in range(1, 8))
+GRIPPER_JOINTS = (
+    "arm_robotiq_85_left_knuckle_joint",
+    "arm_robotiq_85_right_knuckle_joint",
+    "arm_robotiq_85_left_inner_knuckle_joint",
+    "arm_robotiq_85_right_inner_knuckle_joint",
+    "arm_robotiq_85_left_finger_tip_joint",
+    "arm_robotiq_85_right_finger_tip_joint",
+)
 BAKE = Path(__file__).resolve().parents[2] / "scripts" / "bake_robot_config.py"
 _spec = importlib.util.spec_from_file_location("bake_robot_config", BAKE)
 _bake = importlib.util.module_from_spec(_spec)

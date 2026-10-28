@@ -16,6 +16,7 @@ resolved by cuRobo against its own content directory — spheres referenced
 as a `spheres/*.yml` string are inlined the way cuRobo's own loader would.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -23,6 +24,59 @@ import yaml
 from rammp_curobo.config import resolve_config
 
 URDF_SENTINEL = "from_robot_description"
+
+
+@dataclass(frozen=True)
+class RobotSpec:
+    """The names a robot file gives its arm: what `prepare_urdf` checks a
+    model against. Everything here is read from the file; none is a default."""
+
+    root_link: str  # kinematics.base_link: the frame plans are in
+    ee_link: str
+    joint_names: tuple  # cspace.joint_names, in the file's order
+    locked_joints: tuple  # the keys of lock_joints
+    arm_base_link: str  # model_check.arm_base_link: where the reference starts
+    kinematics_reference: Path  # model_check.kinematics_reference, resolved
+    path: Path  # the robot file
+
+
+def load_robot_spec(path):
+    """Robot file -> RobotSpec, or ValueError naming the file and each field
+    it lacks. `model_check` sits beside `robot_cfg`, which is all cuRobo reads;
+    its `kinematics_reference` resolves next to the file, or via `example:`."""
+    path = Path(path)
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    data = data if isinstance(data, dict) else {}
+    kin = (data.get("robot_cfg") or {}).get("kinematics") or {}
+    check = data.get("model_check") or {}
+    values = {
+        "robot_cfg.kinematics.base_link": kin.get("base_link"),
+        "robot_cfg.kinematics.ee_link": kin.get("ee_link"),
+        "robot_cfg.kinematics.cspace.joint_names": (kin.get("cspace") or {}).get(
+            "joint_names"
+        ),
+        "model_check.arm_base_link": check.get("arm_base_link"),
+        "model_check.kinematics_reference": check.get("kinematics_reference"),
+    }
+    missing = [k for k, v in values.items() if not v]
+    if missing:
+        raise ValueError(
+            "robot file %s is missing %s" % (path, ", ".join(missing))
+        )
+    return RobotSpec(
+        root_link=str(values["robot_cfg.kinematics.base_link"]),
+        ee_link=str(values["robot_cfg.kinematics.ee_link"]),
+        joint_names=tuple(values["robot_cfg.kinematics.cspace.joint_names"]),
+        locked_joints=tuple(kin.get("lock_joints") or {}),
+        arm_base_link=str(values["model_check.arm_base_link"]),
+        kinematics_reference=resolve_config(
+            values["model_check.kinematics_reference"],
+            relative_to=path.parent,
+            search_cwd=False,
+        ),
+        path=path,
+    )
 
 
 def load_robot_config(path, urdf_path=None):

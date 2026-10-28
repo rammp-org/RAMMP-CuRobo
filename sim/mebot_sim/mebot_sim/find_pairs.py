@@ -207,7 +207,9 @@ class Planner:
 
         # the model the planner nodes are given on /arm/robot_description
         self._model_dir = tempfile.TemporaryDirectory()
-        urdf = write_urdf(prepare_urdf(stack.arm_model()), self._model_dir.name)
+        urdf = write_urdf(
+            prepare_urdf(stack.arm_model(), stack.arm_spec()), self._model_dir.name
+        )
         self.planner = CuRoboPlanner.from_config(stack.CONTROL_CONFIG, urdf_path=urdf)
         self.limits = self.planner.joint_limits()["position"]
         self.activation = self.planner.collision_activation_distance

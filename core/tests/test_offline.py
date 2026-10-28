@@ -39,19 +39,16 @@ from rammp_curobo.geometry import (
     xyzw_to_wxyz,
 )
 from rammp_curobo.retime import scale_trajectory
-from rammp_curobo.robot_config import load_robot_config
-from rammp_curobo.scene import load_scene, scene_from_obstacles
+from rammp_curobo.robot_config import load_robot_config, load_robot_spec
 from rammp_curobo.types import Trajectory
-from rammp_curobo.urdf_model import (
-    ARM_JOINTS,
-    _fill_mimic_limits,
-    prepare_urdf,
-    write_urdf,
-)
+from rammp_curobo.urdf_model import _fill_mimic_limits, prepare_urdf, write_urdf
 from rammp_curobo.validate import start_state_matches, validate_trajectory
 from rammp_curobo.world import make_world_config, world_cuboids
 
+from conftest import gen3_spec, load_scene, scene_from_obstacles
+
 DATA = Path(__file__).parent / "data"
+ARM_JOINTS = tuple("arm_joint_%d" % i for i in range(1, 8))
 BAKE = Path(__file__).resolve().parents[2] / "scripts" / "bake_robot_config.py"
 _spec = importlib.util.spec_from_file_location("bake_robot_config", BAKE)
 _bake = importlib.util.module_from_spec(_spec)
@@ -221,7 +218,7 @@ def test_gen3_yaml_matches_planner_defaults():
     cfg, _ = load_planner_config("example:gen3.yaml")
     for section in ("planner", "tool"):
         assert cfg[section] == PLANNER_DEFAULTS[section], section
-    assert cfg["joint_names"] == PLANNER_DEFAULTS["joint_names"]
+    assert "joint_names" not in PLANNER_DEFAULTS  # the robot file names the joints
     assert cfg["joint_names"] == ["arm_joint_%d" % i for i in range(1, 8)]
     assert cfg["layers"] == PLANNER_DEFAULTS["layers"]
     # merged, a line deleted from the file reads as its default: `layers` is
@@ -1054,7 +1051,7 @@ def test_only_continuous_joints_are_shifted():
 
 
 def test_meshes_are_stripped_and_missing_files_load():
-    xml = prepare_urdf(read("arm_level.urdf"))
+    xml = prepare_urdf(read("arm_level.urdf"), gen3_spec())
     root = ET.fromstring(xml)
     assert not root.findall(".//visual") and not root.findall(".//collision")
     assert not root.findall("ros2_control")
@@ -1065,13 +1062,13 @@ def test_ros2_control_is_stripped():
     xml = read("arm_level.urdf").replace(
         "</robot>", "<ros2_control name='x' type='system'/></robot>"
     )
-    assert not ET.fromstring(prepare_urdf(xml)).findall("ros2_control")
+    assert not ET.fromstring(prepare_urdf(xml, gen3_spec())).findall("ros2_control")
 
 
 def test_mimic_joints_get_their_leaders_limit_scaled():
     # cuRobo v0.7.8 dereferences <limit> on every moving joint; the 2F-85's
     # mimic joints carry none in the published model.
-    root = ET.fromstring(prepare_urdf(read("arm_level.urdf")))
+    root = ET.fromstring(prepare_urdf(read("arm_level.urdf"), gen3_spec()))
     lead = root.find("joint[@name='arm_robotiq_85_left_knuckle_joint']/limit")
     assert (lead.get("lower"), lead.get("upper")) == ("0.0", "0.8")
     for name, lo, hi in [
@@ -1123,7 +1120,7 @@ def test_limitless_joint_that_mimics_nothing_is_refused():
         '<limit effort="39" velocity="1.3963" /></joint>', "</joint>", 1
     )
     with pytest.raises(ValueError, match="arm_joint_1"):
-        prepare_urdf(xml)
+        prepare_urdf(xml, gen3_spec())
 
 
 def test_foreign_model_is_refused_by_name():
@@ -1152,12 +1149,81 @@ def test_foreign_model_is_refused_by_name():
         ("<robot", "parse"),
     ]:
         with pytest.raises(ValueError, match=why):
-            prepare_urdf(broken)
+            prepare_urdf(broken, gen3_spec())
+
+
+def test_spec_reads_the_names_from_the_robot_file():
+    spec = load_robot_spec(resolve_config("example:robot_gen3_2f85.yaml"))
+    assert spec.root_link == "arm_mount" and spec.ee_link == "arm_tool_frame"
+    assert spec.joint_names == tuple("arm_joint_%d" % i for i in range(1, 8))
+    assert spec.locked_joints == ("arm_robotiq_85_left_knuckle_joint",)
+    assert spec.arm_base_link == "arm_base_link"
+    assert spec.kinematics_reference == EXAMPLE_DIR / "arm_kinematics.json"
+
+
+def test_a_robot_file_missing_fields_is_refused_naming_each(tmp_path):
+    robot = tmp_path / "robot.yaml"
+    robot.write_text("robot_cfg:\n  kinematics:\n    base_link: root\n")
+    with pytest.raises(ValueError) as e:
+        load_robot_spec(robot)
+    for field in ("ee_link", "joint_names", "model_check.arm_base_link", "kinematics_reference"):
+        assert field in str(e.value)
+    assert str(robot) in str(e.value)
+    assert "kinematics.base_link" not in str(e.value)  # present, so not named
+
+
+def test_a_non_gen3_arm_passes_with_its_own_robot_file():
+    d = DATA / "two_link"
+    spec = load_robot_spec(d / "robot.yaml")
+    assert spec.root_link == "base" and spec.joint_names == ("j1", "j2")
+    assert spec.locked_joints == ()
+    out = prepare_urdf((d / "two_link.urdf").read_text(), spec)
+    assert "<visual" not in out and "<collision" not in out
+
+
+def test_prepare_urdf_is_idempotent():
+    for xml, spec in [
+        (read("arm_level.urdf"), gen3_spec()),
+        ((DATA / "two_link" / "two_link.urdf").read_text(), load_robot_spec(DATA / "two_link" / "robot.yaml")),
+    ]:
+        once = prepare_urdf(xml, spec)
+        assert prepare_urdf(once, spec) == once
+
+
+def test_a_reference_next_to_the_robot_file_is_resolved_there(tmp_path):
+    robot = tmp_path / "robot.yaml"
+    robot.write_text(
+        (DATA / "two_link" / "robot.yaml")
+        .read_text()
+        .replace("arm_kinematics.json", "example:arm_kinematics.json")
+    )
+    assert load_robot_spec(robot).kinematics_reference == EXAMPLE_DIR / "arm_kinematics.json"
+    robot.write_text(
+        (DATA / "two_link" / "robot.yaml").read_text()
+    )
+    with pytest.raises(FileNotFoundError, match="arm_kinematics.json"):
+        load_robot_spec(robot)  # not copied here
+
+
+@pytest.mark.parametrize("urdf", ["arm_level.urdf", "arm_tilt30.urdf"])
+def test_gen3_models_pass_on_either_mount(urdf):
+    prepare_urdf(read(urdf), gen3_spec())
+
+
+def test_gen3_urdf_refused_against_another_arms_spec():
+    spec = load_robot_spec(DATA / "two_link" / "robot.yaml")
+    with pytest.raises(ValueError, match="root link"):
+        prepare_urdf(read("arm_level.urdf"), spec)
+
+
+def test_another_arms_urdf_refused_against_the_gen3_spec():
+    with pytest.raises(ValueError, match="root link"):
+        prepare_urdf((DATA / "two_link" / "two_link.urdf").read_text(), gen3_spec())
 
 
 def test_the_tilted_mount_matches_the_kinematic_reference():
     # arm_base_joint is the mount: it may differ, nothing below it may
-    prepare_urdf(read("arm_tilt30.urdf"))
+    prepare_urdf(read("arm_tilt30.urdf"), gen3_spec())
 
 
 def test_kinematic_drift_is_refused_by_name():
@@ -1202,7 +1268,7 @@ def test_kinematic_drift_is_refused_by_name():
     ]:
         assert broken != read("arm_level.urdf")
         with pytest.raises(ValueError, match=why):
-            prepare_urdf(broken)
+            prepare_urdf(broken, gen3_spec())
 
 
 def test_kinematic_reference_limit_differences_are_logged_not_refused(caplog):
@@ -1210,7 +1276,7 @@ def test_kinematic_reference_limit_differences_are_logged_not_refused(caplog):
         'lower="-2.57" upper="2.57"', 'lower="-2.6" upper="2.6"'
     )
     with caplog.at_level("WARNING", logger="rammp_curobo"):
-        prepare_urdf(xml)
+        prepare_urdf(xml, gen3_spec())
     assert "'arm_joint_4' limit" in caplog.text
 
 

@@ -41,7 +41,6 @@ from rammp_curobo.resample import resample_quintic
 from rammp_curobo.robot_config import load_robot_config
 from rammp_curobo.scene import Scene, load_layers, load_scene, scene_from_obstacles
 from rammp_curobo.types import PlanResult, Trajectory
-from rammp_curobo.urdf_model import ROOT_LINK
 from rammp_curobo.validate import validate_trajectory
 from rammp_curobo.world import (
     compose_cuboids,
@@ -78,7 +77,6 @@ class CuRoboPlanner:
         self._cfg = config
         self._config_dir = config_dir
         p = config["planner"]
-        self.joint_names = list(config["joint_names"])
         self.interpolation_dt = float(p["interpolation_dt"])
         self.max_attempts = int(p["max_attempts"])
         self.finetune_attempts = int(p["finetune_attempts"])
@@ -111,22 +109,24 @@ class CuRoboPlanner:
         # The arm's model: the URDF from /arm/robot_description, as a file.
         self._robot_cfg = load_robot_config(robot_path, urdf_path=urdf_path)
         # The frame every Cartesian input and trajectory is in. cuRobo calls the
-        # root of the chain it plans in "base_link"; for us that is arm_mount,
-        # the gravity-aligned root, NOT the arm's own arm_base_link. A robot
-        # YAML naming another root would plan (and stamp) in that frame, which
-        # kinova-gen3-ros2 refuses only at execution: refuse it here instead.
+        # root of the chain it plans in "base_link"; it is the robot file's root
+        # link (the Gen3's is arm_mount, the gravity-aligned root, NOT the arm's
+        # own arm_base_link). prepare_urdf checks the model has that root.
         self.base_frame = str(self._robot_cfg["kinematics"]["base_link"])
-        if self.base_frame != ROOT_LINK:
-            raise ValueError(
-                "robot config %s: kinematics.base_link is %r, expected %r (the "
-                "URDF's root)" % (robot_path, self.base_frame, ROOT_LINK)
-            )
         # The link plan_to_pose goals and fk() poses are for (arm_tool_frame).
         self.ee_link = str(self._robot_cfg["kinematics"]["ee_link"])
         # The IK seed / null-space reference, in controller order. A planner
         # fact (it fixes the elbow family), NOT a statement about where the
         # arm belongs — this planner has no such opinion (issue #6).
         cspace = self._robot_cfg["kinematics"]["cspace"]
+        # The controller's joint order: the config's, which must name the
+        # robot file's joints, or the robot file's own order when it names none.
+        self.joint_names = list(config.get("joint_names") or cspace["joint_names"])
+        if set(self.joint_names) != set(cspace["joint_names"]):
+            raise ValueError(
+                "planner config joint_names %s are not the robot file's joints %s"
+                % (self.joint_names, list(cspace["joint_names"]))
+            )
         by_name = dict(zip(cspace["joint_names"], cspace["retract_config"]))
         self.retract_pose = [float(by_name[n]) for n in self.joint_names]
         # cuRobo plans (IK, trajopt, the constraint re-check) inside limits

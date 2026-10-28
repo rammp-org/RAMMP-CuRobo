@@ -34,7 +34,7 @@ class _FakePlanner:
         _FakePlanner.made.append((cfg, cfg_dir, urdf_path))
         self.base_frame = "arm_mount"
         self.ee_link = "arm_tool_frame"
-        self.joint_names = list(cfg["joint_names"])
+        self.joint_names = list(cfg.get("joint_names", []))
         self.world_name = cfg["world"]
 
     def world_summary(self):
