@@ -21,6 +21,8 @@
 - Every existing CLAUDE.md invariant stays true: the URDF-vs-spheres check (now for any arm), the fixed-sphere guard, padding certification, trimmed plans, `check_start_joints`.
 - Worktree tests and `make layers` need `PYTHONPATH=<worktree>/core`.
 - Breaking change: CHANGELOG `[Unreleased]` gets a **BREAKING** section; the version bump to 2.0.0 happens at release, not in this branch.
+- **No behaviour change for a named config (the user's requirement).** For the same config contents and the same URDF, every plan, collision check, FK result, joint limit, IK seed and composed world is identical before and after this branch. `scripts/behavior_snapshot.py` (Task 0) proves it: its baseline is recorded at Task 0's commit, and `compare` against that baseline must print `IDENTICAL` after Tasks 2, 3, 5, 6, 7 and at the end. The only allowed differences are the ones this plan names: refusals of bare packaged names, the example-mode signals, and startup log lines.
+- GPU / ROS work runs on abra (Jetson, no arm involved) through the hardware-loop wrapper `/tmp/claude-1000/-home-swapnil-orca-workspaces-RAMMP-CuRobo-feature-19-platform-layers/e818df50-4725-400f-a8ad-f5f0eeecef25/scratchpad/hil` and this worktree's `.hil.yml` (tasks `core`, `ros`, `layers`, `sim-test`, `sim`, `build`, `verify`, `snapshot`). Never edit `~/RAMMP-CuRobo` on abra.
 
 ## Review Focus
 
@@ -37,6 +39,25 @@
 - Task 9 runs the generator from the RAMMP-CuRobo branch (Task 6) before that branch merges; that is fine, the generator is deterministic.
 
 ---
+
+### Task 0: A behaviour snapshot, recorded before anything changes
+
+**Files:**
+- Create: `scripts/behavior_snapshot.py`
+- Test: run it twice at this commit on abra; the two records compare `IDENTICAL`
+
+**Interfaces:**
+- Produces: `python3 scripts/behavior_snapshot.py record OUT.json` and `python3 scripts/behavior_snapshot.py compare BASE.json NEW.json [--atol X]` (exit 0 and print `IDENTICAL`, or exit 1 and print the first 20 differences as `case/field[index]: base -> new`). Run with `PYTHONPATH=<repo>/core` on abra (GPU).
+
+It must run unchanged on the code before AND after every task, so it uses only the public planner API plus two shims:
+- **Cases** (each config is the first of its candidate paths that exists, repo-relative): `kitchen` = `core/rammp_curobo/configs/gen3.yaml` with `core/tests/data/arm_level.urdf`; `bench` = `core/rammp_curobo/configs/gen3_real.yaml` | `core/tests/data/dojo/planner.yaml` with `arm_level.urdf`; `mebot` = `core/tests/data/mebot/planner.yaml` with `arm_tilt30.urdf`. Configs are passed as absolute paths.
+- **URDF shim:** if `prepare_urdf` takes one parameter, call `prepare_urdf(xml)`; if two, `prepare_urdf(xml, load_robot_spec(<the config's robot file>))`. Write it with `write_urdf`.
+- **Per case, record:** `joint_names`, `base_frame`, `ee_link`, `retract_pose`, `joint_limits()`, `world_summary()`, the composed boxes (name, pose, dims, from the planner's own composition of its start-up scene, sorted by name), `fk` of 50 states (`numpy.random.default_rng(1)`, uniform within the limits), `check_state_valid` of 200 states (`rng(2)`), 8 `plan_to_joints` between valid states (`rng(3)`) and 8 `plan_to_pose` to FK poses of valid states (`rng(4)`), each from the first valid state: success, status, error, trajectory joint names, positions, velocities, dt. Then `update_world(<absolute path of the case's start-up world>)` and `world_summary()` again.
+- Floats are stored at full precision. `compare` is exact by default; `--atol` exists only if two baseline records turn out not to be bit-identical, and the implementer reports which.
+
+- [ ] **Step 1: Write the script.**
+- [ ] **Step 2: Run** `hil run snapshot` twice (the task records to `/tmp/rdo_snapshot.json`; pull it back as `<sdd workspace>/baseline.json` and `baseline2.json`), then `compare baseline.json baseline2.json` — Expected: `IDENTICAL` (or the report states the smallest `--atol` that makes it so, and why).
+- [ ] **Step 3: Commit** `test: a behaviour snapshot of the planner, to compare before and after`
 
 ### Task 1: Explicit `example:` resolution, no packaged fallback
 
