@@ -405,10 +405,10 @@ def load_layers(refs, relative_to, listed_in):
     """Load the layer files a scene or a planner config lists, in order.
 
     A ref is an absolute path, a path relative to `relative_to` (the
-    directory of the listing file) or the name of a packaged layer. It is
-    never looked up in the current directory: the planner can be started
-    from anywhere, and a file there that shares a packaged layer's name
-    must not replace that layer. For a listing file opened through a
+    directory of the listing file) or `example:<name>` for a layer shipped in
+    the image. It is never looked up in the current directory: the planner
+    can be started from anywhere, and a file there that shares an
+    example layer's name must not replace that layer. For a listing file opened through a
     symlink, `relative_to` is the link's directory, not its target's: an
     install made of links (colcon's --symlink-install) then finds the
     layers a copying install would. A file listed twice loads once; two

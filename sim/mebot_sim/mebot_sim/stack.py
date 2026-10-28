@@ -41,7 +41,7 @@ ARM_MODEL_TOPIC = "/arm/robot_description"
 CHAIR = "/rammp_curobo"
 CONTROL = "/rammp_curobo_control"
 CHAIR_CONFIG = "planner.yaml"
-CONTROL_CONFIG = "gen3.yaml"
+CONTROL_CONFIG = "example:gen3.yaml"
 # The chair planner's start-up world (the floor, under its config layers);
 # pushing it again puts the planner back in it.
 CHAIR_WORLD = "world.yaml"

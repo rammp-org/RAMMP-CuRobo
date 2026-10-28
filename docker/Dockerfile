@@ -136,4 +136,4 @@ ENTRYPOINT ["/entrypoint.sh"]
 # (killed after 10 s). The node name (rammp_curobo) and use_sim_time=false are
 # the node's own defaults, as in planner.launch.py, which stays for interactive use.
 CMD ["/opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node", \
-     "--ros-args", "-p", "config:=gen3_real.yaml"]
+     "--ros-args", "-p", "config:=example:gen3_real.yaml"]

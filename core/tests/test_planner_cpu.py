@@ -53,7 +53,7 @@ def _urdf_limits():
 @pytest.fixture
 def cpu_planner(monkeypatch, urdf_level):
     monkeypatch.setattr(CuRoboPlanner, "_init_curobo", lambda self, warmup: None)
-    p = CuRoboPlanner.from_config("gen3.yaml", urdf_path=urdf_level)
+    p = CuRoboPlanner.from_config("example:gen3.yaml", urdf_path=urdf_level)
     lo, hi = _urdf_limits()
     monkeypatch.setattr(
         p,
@@ -97,7 +97,7 @@ def test_a_robot_config_rooted_elsewhere_is_refused(monkeypatch, urdf_level):
     with pytest.raises(
         ValueError, match="base_link is .arm_base_link., expected .arm_mount."
     ):
-        CuRoboPlanner.from_config("gen3.yaml", urdf_path=urdf_level)
+        CuRoboPlanner.from_config("example:gen3.yaml", urdf_path=urdf_level)
 
 
 def test_park_pose_is_refused_by_name_and_a_near_miss_clamped(cpu_planner):
@@ -136,7 +136,7 @@ def test_a_negative_joint_limit_margin_is_refused(monkeypatch, urdf_level):
     from rammp_curobo.config import load_planner_config
 
     monkeypatch.setattr(CuRoboPlanner, "_init_curobo", lambda self, warmup: None)
-    cfg, cfg_dir = load_planner_config("gen3.yaml")
+    cfg, cfg_dir = load_planner_config("example:gen3.yaml")
     cfg["planner"]["joint_limit_margin_rad"] = -0.01
     with pytest.raises(ValueError, match="joint_limit_margin_rad"):
         CuRoboPlanner(cfg, config_dir=cfg_dir, urdf_path=urdf_level)
@@ -161,7 +161,7 @@ def test_update_world_refuses_before_reaching_curobo(
     with pytest.raises(ValueError, match="empty"):
         cpu_planner.update_world([])
     with pytest.raises(ValueError, match="empty"):
-        cpu_planner.update_world("world_empty.yaml")
+        cpu_planner.update_world("example:world_empty.yaml")
     wrong = tmp_path / "world_base_link.yaml"
     wrong.write_text(
         "base_frame: base_link\nobstacles:\n"

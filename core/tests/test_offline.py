@@ -16,7 +16,13 @@ import numpy as np
 import pytest
 import yaml
 
-from rammp_curobo.config import PACKAGED_CONFIG_DIR, load_planner_config, resolve_config
+from rammp_curobo.config import (
+    EXAMPLE_DIR,
+    PACKAGED_CONFIG_DIR,
+    is_example,
+    load_planner_config,
+    resolve_config,
+)
 from rammp_curobo.constraints import (
     HOLD_FIXED,
     HOLD_LEVEL,
@@ -56,6 +62,33 @@ LINK_MAP = _bake.LINK_MAP
 
 def read(name):
     return (DATA / name).read_text()
+
+
+def test_example_prefix_resolves_into_the_image():
+    assert resolve_config("example:gen3.yaml") == EXAMPLE_DIR / "gen3.yaml"
+    assert is_example(resolve_config("example:robot_gen3_2f85.yaml"))
+
+
+def test_bare_name_never_falls_back_to_the_image(tmp_path):
+    with pytest.raises(FileNotFoundError) as e:
+        resolve_config("robot_gen3_2f85.yaml", relative_to=tmp_path, search_cwd=False)
+    assert str(tmp_path) in str(e.value)
+    assert "example:robot_gen3_2f85.yaml" in str(e.value)
+
+
+@pytest.mark.parametrize(
+    "ref", ["example:../gen3.yaml", "example:sub/gen3.yaml", "example:nope.yaml"]
+)
+def test_bad_example_reference_lists_the_examples(ref):
+    with pytest.raises(FileNotFoundError) as e:
+        resolve_config(ref)
+    assert "gen3.yaml" in str(e.value) and "robot_gen3_2f85.yaml" in str(e.value)
+
+
+def test_example_config_resolves_its_own_references():
+    cfg, cfg_dir = load_planner_config("example:gen3.yaml")
+    want = EXAMPLE_DIR / "robot_gen3_2f85.yaml"
+    assert resolve_config(cfg["robot"], relative_to=cfg_dir) == want
 
 
 def load_yaml_robot(name_or_path):
@@ -167,7 +200,7 @@ def test_the_chair_is_not_packaged_and_resolves_to_no_stale_copy():
 
 
 def test_planner_config_loads_and_merges():
-    cfg, cfg_dir = load_planner_config("gen3.yaml")
+    cfg, cfg_dir = load_planner_config("example:gen3.yaml")
     assert cfg["robot"] == "robot_gen3_2f85.yaml"
     assert cfg["joint_names"] == ["arm_joint_%d" % i for i in range(1, 8)]
     assert cfg["planner"]["enable_graph"] is False
@@ -183,7 +216,7 @@ def test_gen3_yaml_matches_planner_defaults():
     # and the YAML is a bug in whichever was edited alone.
     from rammp_curobo.config import PLANNER_DEFAULTS
 
-    cfg, _ = load_planner_config("gen3.yaml")
+    cfg, _ = load_planner_config("example:gen3.yaml")
     for section in ("planner", "tool"):
         assert cfg[section] == PLANNER_DEFAULTS[section], section
     assert cfg["joint_names"] == PLANNER_DEFAULTS["joint_names"]
@@ -196,7 +229,7 @@ def test_gen3_yaml_matches_planner_defaults():
 
 
 def test_baked_robot_config_is_the_upstream_model():
-    kin = load_yaml_robot("robot_gen3_2f85.yaml")["kinematics"]
+    kin = load_yaml_robot("example:robot_gen3_2f85.yaml")["kinematics"]
     old = load_yaml_robot(DATA / "robot_gen3_2f85_nvidia.yaml")["kinematics"]
     assert kin["base_link"] == "arm_mount" and kin["ee_link"] == "arm_tool_frame"
     assert kin["urdf_path"] == "from_robot_description" and kin["mesh_link_names"] == []
@@ -233,7 +266,7 @@ def test_bake_rebuilds_the_committed_robot_config():
     moves.update(yaml.safe_load((DATA / "robot_gen3_2f85_moves.yaml").read_text()))
     assert set(moves) == set(LINK_MAP)
     got = _bake.build_robot_config(nv_cfg, moves)["robot_cfg"]["kinematics"]
-    want = load_yaml_robot("robot_gen3_2f85.yaml")["kinematics"]
+    want = load_yaml_robot("example:robot_gen3_2f85.yaml")["kinematics"]
     spheres = (got.pop("collision_spheres"), want.pop("collision_spheres"))
     assert got == want  # names, lock_joints, self_collision maps, cspace
     assert list(spheres[0]) == list(spheres[1])
@@ -245,7 +278,7 @@ def test_bake_rebuilds_the_committed_robot_config():
 
 
 def test_sim_kitchen_scene_parses():
-    scene = load_scene(resolve_config("world_sim_kitchen.yaml"))
+    scene = load_scene(resolve_config("example:world_sim_kitchen.yaml"))
     assert scene.base_frame == "arm_mount"
     names = {o.name for o in scene.obstacles}
     assert {"table", "pedestal", "back_wall"} <= names
@@ -256,7 +289,7 @@ def test_sim_kitchen_scene_parses():
 
 
 def test_world_cuboids_padding_and_ignore():
-    scene = load_scene(resolve_config("world_sim_kitchen.yaml"))
+    scene = load_scene(resolve_config("example:world_sim_kitchen.yaml"))
     boxes = world_cuboids(
         scene, padding=0.02, ignore={"bottle"}, no_pad_names={"pedestal"}
     )
@@ -281,7 +314,7 @@ def test_empty_world_only_when_allowed(monkeypatch):
     for name in ("curobo", "curobo.geom"):
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
     monkeypatch.setitem(sys.modules, "curobo.geom.types", geom)
-    scene = load_scene(resolve_config("world_empty.yaml"))
+    scene = load_scene(resolve_config("example:world_empty.yaml"))
     assert scene.base_frame == "arm_mount"
     assert make_world_config(scene, allow_empty=True).cuboid == []
     with pytest.raises(ValueError, match="empty"):
@@ -332,8 +365,8 @@ def test_load_scene_refuses_mis_keyed_world(tmp_path, text, match):
 
 def test_packaged_worlds_load():
     for name in ("world_sim_kitchen.yaml", "world_real_bench.yaml", "world_empty.yaml"):
-        load_scene(resolve_config(name))
-    assert load_scene(resolve_config("world_empty.yaml")).obstacles == []
+        load_scene(resolve_config("example:" + name))
+    assert load_scene(resolve_config("example:world_empty.yaml")).obstacles == []
 
 
 def test_scene_from_obstacle_dicts():
@@ -437,7 +470,7 @@ def test_yaw_about_world_z_keeps_attitude_level():
 
 
 def test_real_arm_config_loads():
-    cfg, cfg_dir = load_planner_config("gen3_real.yaml")
+    cfg, cfg_dir = load_planner_config("example:gen3_real.yaml")
     assert cfg["world"] == "world_real_bench.yaml"
     assert cfg["robot"] == "robot_gen3_2f85.yaml"
     # inherits the same planner defaults gen3.yaml declares explicitly
@@ -469,7 +502,7 @@ def test_legacy_execution_block_is_dropped_with_a_warning(tmp_path, caplog):
     # the packaged config carries no such block, so it must load silently
     caplog.clear()
     with caplog.at_level("WARNING", logger="rammp_curobo"):
-        load_planner_config("gen3.yaml")
+        load_planner_config("example:gen3.yaml")
     assert not [r for r in caplog.records if r.name == "rammp_curobo"]
 
 
@@ -1181,13 +1214,13 @@ def test_kinematic_reference_limit_differences_are_logged_not_refused(caplog):
 
 def test_robot_config_takes_the_urdf_path(tmp_path, monkeypatch):
     p = write_urdf(read("arm_level.urdf"), tmp_path)
-    kin = load_robot_config("robot_gen3_2f85.yaml", urdf_path=p)["kinematics"]
+    kin = load_robot_config("example:robot_gen3_2f85.yaml", urdf_path=p)["kinematics"]
     assert kin["urdf_path"] == str(p) and kin["asset_root_path"] == str(tmp_path)
     monkeypatch.chdir(tmp_path)
-    kin = load_robot_config("robot_gen3_2f85.yaml", urdf_path=p.name)["kinematics"]
+    kin = load_robot_config("example:robot_gen3_2f85.yaml", urdf_path=p.name)["kinematics"]
     assert Path(kin["urdf_path"]).is_absolute() and kin["urdf_path"] == str(p)
 
 
 def test_robot_config_without_a_urdf_is_refused():
     with pytest.raises(ValueError, match="/arm/robot_description"):
-        load_robot_config("robot_gen3_2f85.yaml")
+        load_robot_config("example:robot_gen3_2f85.yaml")

@@ -33,7 +33,7 @@ def load_robot_config(path, urdf_path=None):
     elbow family — cuRobo's BUNDLED Gen3 retract lives in the OPPOSITE
     family, and seeding there makes every crossing plan a huge, winding,
     wrist-twisting reconfiguration (RAMMP-Kinova field lesson). Load a
-    stock config by bare name and you inherit that bad seed; bake instead.
+    stock config via example: and you inherit that bad seed; bake instead.
 
     Nothing here rewrites the seed at load time. The planner holds no pose
     of its own to rewrite it with — where the arm belongs is the arm

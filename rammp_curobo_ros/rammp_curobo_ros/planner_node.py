@@ -189,7 +189,7 @@ class RammpCuroboNode(Node):
         super().__init__("rammp_curobo")
         self._cb = ReentrantCallbackGroup()
 
-        self.config = self.declare_parameter("config", "gen3.yaml").value
+        self.config = self.declare_parameter("config", "example:gen3.yaml").value
         self.world = self.declare_parameter("world", "").value
         # dynamic_typing: `-p robot_description_timeout_s:=3` is an INTEGER,
         # which a DOUBLE-typed declaration refuses with a traceback.

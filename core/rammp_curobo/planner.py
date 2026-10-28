@@ -2,7 +2,9 @@
 
     from rammp_curobo import CuRoboPlanner
 
-    planner = CuRoboPlanner.from_config('gen3.yaml', urdf_path='robot_description.urdf')
+    planner = CuRoboPlanner.from_config(
+        'example:gen3.yaml', urdf_path='robot_description.urdf'
+    )
     res = planner.plan_to_pose([0.45, 0.0, 0.35], [1, 0, 0, 0], q_now, quat_order='wxyz')
     res = planner.plan_to_joints(q_goal, q_now)
     planner.update_world([{'name': 'box', 'position': [0.5, 0, 0], 'dims': [0.1, 0.1, 0.1]}])
@@ -154,8 +156,8 @@ class CuRoboPlanner:
 
     @classmethod
     def from_config(cls, name_or_path, *, urdf_path=None):
-        """Build from a planner YAML (packaged name like 'gen3.yaml' or a
-        filesystem path). See configs/gen3.yaml for the schema. urdf_path is
+        """Build from a planner YAML ('example:gen3.yaml' for the image's
+        copy, or a filesystem path). See configs/gen3.yaml for the schema. urdf_path is
         the arm's model as a file (urdf_model.write_urdf)."""
         cfg, cfg_dir = load_planner_config(name_or_path)
         return cls(cfg, config_dir=cfg_dir, urdf_path=urdf_path)

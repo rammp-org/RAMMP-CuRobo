@@ -345,25 +345,26 @@ def test_resolve_config_searches_cwd_unless_told_not_to(tmp_path, monkeypatch):
     (beside / "near.yaml").write_text("")
     monkeypatch.chdir(cwd)
 
-    # the v1.0.0 order is still the default: beside the referencing file,
-    # then CWD, then the package
+    # beside the referencing file, then CWD; never the image by bare name
     assert resolve_config("near.yaml", relative_to=beside) == beside / "near.yaml"
     assert resolve_config("stray.yaml") == cwd / "stray.yaml"
     assert resolve_config("sub/stray.yaml") == cwd / "sub" / "stray.yaml"
     assert resolve_config("gen3.yaml") == cwd / "gen3.yaml"
 
+    # example: is the image's copy whatever sits in the CWD
     packaged = PACKAGED_CONFIG_DIR / "gen3.yaml"
-    assert resolve_config("gen3.yaml", search_cwd=False) == packaged
+    assert resolve_config("example:gen3.yaml") == packaged
+    with pytest.raises(FileNotFoundError):
+        resolve_config("gen3.yaml", search_cwd=False)
     near = resolve_config("near.yaml", relative_to=beside, search_cwd=False)
     assert near == beside / "near.yaml"
     # a directory part does not turn a reference into a CWD lookup
     for ref in ("stray.yaml", "sub/stray.yaml"):
         with pytest.raises(FileNotFoundError) as exc:
             resolve_config(ref, relative_to=beside, search_cwd=False)
-        assert str(exc.value) == "config '%s' not found; tried: %s, %s" % (
+        assert str(exc.value) == "config '%s' not found; tried: %s" % (
             ref,
             beside / ref,
-            PACKAGED_CONFIG_DIR / ref,
         )
 
 
@@ -770,7 +771,7 @@ def test_scene_layers_resolve_next_to_the_scene_and_never_from_cwd(
     for folder in (scenes, cwd, packaged, far, links):
         folder.mkdir()
     monkeypatch.chdir(cwd)
-    monkeypatch.setattr("rammp_curobo.config.PACKAGED_CONFIG_DIR", packaged)
+    monkeypatch.setattr("rammp_curobo.config.EXAMPLE_DIR", packaged)
     _layer(scenes / "near.yaml", "beside")
     _layer(cwd / "near.yaml", "stray")
     _layer(packaged / "near.yaml", "shipped")
@@ -784,7 +785,7 @@ def test_scene_layers_resolve_next_to_the_scene_and_never_from_cwd(
         _scene(
             scenes / "scene.yaml",
             "near.yaml",
-            "shipped.yaml",
+            "example:shipped.yaml",
             far / "elsewhere.yaml",
             "whole.yaml",
         )
@@ -820,8 +821,8 @@ def test_scene_layers_resolve_next_to_the_scene_and_never_from_cwd(
     with pytest.raises(FileNotFoundError) as exc:
         load_scene(scene)
     assert str(exc.value) == (
-        "layer 'only_in_cwd.yaml' listed in %s not found; tried: %s, %s"
-        % (scene, scenes / "only_in_cwd.yaml", packaged / "only_in_cwd.yaml")
+        "layer 'only_in_cwd.yaml' listed in %s not found; tried: %s"
+        % (scene, scenes / "only_in_cwd.yaml")
     )
 
     # a scene named by a relative path still gives its layers absolute paths
@@ -849,8 +850,8 @@ def test_missing_layer_is_named_with_every_path_tried(
     with pytest.raises(FileNotFoundError) as exc:
         load_scene(scene)
     assert str(exc.value) == (
-        "layer 'gone.yaml' listed in %s not found; tried: %s, %s"
-        % (scene, tmp_path / "gone.yaml", PACKAGED_CONFIG_DIR / "gone.yaml")
+        "layer 'gone.yaml' listed in %s not found; tried: %s"
+        % (scene, tmp_path / "gone.yaml")
     )
 
     # an absolute path is the only place to look
@@ -870,15 +871,15 @@ def test_missing_layer_is_named_with_every_path_tried(
     # world is not packaged any more (issue #19), and naming it here would
     # fail on the world before any layer was looked for
     config.write_text(
-        "robot: robot_gen3_2f85.yaml\n"
-        "world: world_sim_kitchen.yaml\n"
+        "robot: example:robot_gen3_2f85.yaml\n"
+        "world: example:world_sim_kitchen.yaml\n"
         "layers: [gone.yaml]\n"
     )
     with pytest.raises(FileNotFoundError) as exc:
         CuRoboPlanner.from_config(config, urdf_path=urdf_level)
     assert str(exc.value) == (
-        "layer 'gone.yaml' listed in planner config in %s not found; tried: %s, %s"
-        % (tmp_path, tmp_path / "gone.yaml", PACKAGED_CONFIG_DIR / "gone.yaml")
+        "layer 'gone.yaml' listed in planner config in %s not found; tried: %s"
+        % (tmp_path, tmp_path / "gone.yaml")
     )
     assert inits == []
 
@@ -1263,7 +1264,7 @@ def test_layer_boxes_are_namespaced_padded_and_attributed(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "config", ["gen3.yaml", "gen3_real.yaml"], ids=["kitchen", "bench"]
+    "config", ["example:gen3.yaml", "example:gen3_real.yaml"], ids=["kitchen", "bench"]
 )
 def test_layer_free_worlds_compose_exactly_as_v100(config):
     cfg, cfg_dir = load_planner_config(config)
@@ -2027,7 +2028,7 @@ def test_config_layers_reach_every_world_input(urdf_level, tmp_path, monkeypatch
     # push takes: a name, a path, a Scene and a list
     kitchen = PACKAGED_CONFIG_DIR / "world_sim_kitchen.yaml"
     scene = load_scene(kitchen)
-    for world in ("world_sim_kitchen.yaml", kitchen, scene):
+    for world in ("example:world_sim_kitchen.yaml", kitchen, scene):
         planner.update_world(world)
         assert installed() == {"scene": 26, "platform": 16, "seat": 5, "person": 8}
     # the scene the planner says it holds is the one pushed last
@@ -2285,7 +2286,7 @@ def test_a_layer_box_in_the_arms_fixed_spheres_is_refused_and_the_world_kept(
     planner._motion_gen.update_world = out_of_memory
     before = (planner.scene, planner.world_boxes)
     with pytest.raises(RuntimeError, match="out of memory"):
-        planner.update_world("world_sim_kitchen.yaml")
+        planner.update_world("example:world_sim_kitchen.yaml")
     assert (planner.scene, planner.world_boxes) == before
 
 

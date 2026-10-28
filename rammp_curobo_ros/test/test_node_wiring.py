@@ -70,9 +70,9 @@ def test_bad_model_exits_1_before_any_planner(make_node):
 
 
 def test_the_sanitised_model_and_the_world_param_reach_the_planner(make_node):
-    node = make_node(FIXTURE.read_text(), "world:=world_empty.yaml")
+    node = make_node(FIXTURE.read_text(), "world:=example:world_empty.yaml")
     ((cfg, _cfg_dir, urdf_path),) = _FakePlanner.made
-    assert cfg["world"] == "world_empty.yaml"
+    assert cfg["world"] == "example:world_empty.yaml"
     text = Path(urdf_path).read_text()
     assert "<robot" in text
     assert "<visual" not in text and "<ros2_control" not in text

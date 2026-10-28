@@ -38,11 +38,11 @@ def test_message_header_carries_the_planning_frame():
 
 
 def test_world_parameter_is_applied_before_construction():
-    cfg, cfg_dir = planner_config("gen3.yaml", "world_empty.yaml")
-    assert cfg["world"] == "world_empty.yaml"
+    cfg, cfg_dir = planner_config("example:gen3.yaml", "example:world_empty.yaml")
+    assert cfg["world"] == "example:world_empty.yaml"
     assert (cfg_dir / "gen3.yaml").is_file()
 
 
 def test_empty_world_parameter_keeps_the_configs_world():
-    cfg, _ = planner_config("gen3.yaml", "")
-    assert cfg["world"] == load_planner_config("gen3.yaml")[0]["world"]
+    cfg, _ = planner_config("example:gen3.yaml", "")
+    assert cfg["world"] == load_planner_config("example:gen3.yaml")[0]["world"]

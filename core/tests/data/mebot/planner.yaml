@@ -37,6 +37,6 @@
 # (config.PLANNER_DEFAULTS), world_padding 0.02 among them: the layers were
 # generated for that padding, so changing it means regenerating them.
 
-robot: robot_gen3_2f85.yaml
+robot: example:robot_gen3_2f85.yaml
 world: world.yaml
 layers: [layer_mebot_platform.yaml, layer_mebot_seat.yaml, layer_mebot_person.yaml]

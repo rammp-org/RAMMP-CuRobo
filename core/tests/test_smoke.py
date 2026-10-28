@@ -50,7 +50,7 @@ SEAT = str(MEBOT / "layer_mebot_seat.yaml")
 
 @pytest.fixture(scope="session")
 def planner(urdf_level):
-    gen3 = CuRoboPlanner.from_config("gen3.yaml", urdf_path=urdf_level)
+    gen3 = CuRoboPlanner.from_config("example:gen3.yaml", urdf_path=urdf_level)
     # read back as construction loaded it: the tests before the read-back
     # test push worlds on this planner and put the kitchen back through
     # update_world
@@ -64,7 +64,7 @@ def tilted_planner(urdf_tilt30):
     layers of its own: the chair's layers are pushed onto it as scene
     layers, which unlike the chair config's can be left out. Built only
     when a test asks for it."""
-    return CuRoboPlanner.from_config("gen3.yaml", urdf_path=urdf_tilt30)
+    return CuRoboPlanner.from_config("example:gen3.yaml", urdf_path=urdf_tilt30)
 
 
 @pytest.fixture(scope="session")
@@ -199,7 +199,7 @@ def test_update_world_guards_and_round_trip(planner, start):
         res = planner.plan_to_pose(pos, quat, start)
         assert res.success, res.error
     finally:
-        planner.update_world("world_sim_kitchen.yaml")
+        planner.update_world("example:world_sim_kitchen.yaml")
     pos, quat = planner.fk(planner.retract_pose)
     res = planner.plan_to_pose(pos, quat, start)
     assert res.success, res.error
@@ -208,8 +208,9 @@ def test_update_world_guards_and_round_trip(planner, start):
 def test_empty_world_constructs_and_plans(urdf_level, tmp_path):
     # Allowed at construction only (flatbot has no table); update_world
     # still refuses an empty world, since cuRobo would keep the old one.
-    cfg = yaml.safe_load(resolve_config("gen3.yaml").read_text())
-    cfg["world"] = "world_empty.yaml"
+    cfg = yaml.safe_load(resolve_config("example:gen3.yaml").read_text())
+    cfg["robot"] = "example:" + cfg["robot"]  # the copy sits in tmp_path
+    cfg["world"] = "example:world_empty.yaml"
     path = tmp_path / "gen3_empty.yaml"
     path.write_text(yaml.safe_dump(cfg))
     empty = CuRoboPlanner.from_config(str(path), urdf_path=urdf_level)
@@ -229,7 +230,7 @@ def test_empty_world_constructs_and_plans(urdf_level, tmp_path):
     assert not empty.check_state_valid(empty.retract_pose)[0]
     res = empty.plan_to_joints(q_goal, list(empty.retract_pose))
     assert not res.success and "WORLD_COLLISION" in str(res.status), res.status
-    empty.update_world("world_sim_kitchen.yaml")
+    empty.update_world("example:world_sim_kitchen.yaml")
     assert empty.check_state_valid(empty.retract_pose)[0]
     res = empty.plan_to_joints(q_goal, list(empty.retract_pose))
     assert res.success, res.error
@@ -273,7 +274,7 @@ def test_a_goal_on_a_joint_limit_is_not_planned_to_it(planner):
     )
     lo, hi = planner.joint_limits()["position"]
     try:
-        planner.update_world("world_real_bench.yaml")  # where it was captured
+        planner.update_world("example:world_real_bench.yaml")  # where it was captured
         for _ in range(8):  # cuRobo hit the limit on ~1 in 7 of these
             res = planner.plan_to_pose(*goal, start)
             assert res.status != "LIBRARY_VALIDATION_FAILED", res.error
@@ -281,7 +282,7 @@ def test_a_goal_on_a_joint_limit_is_not_planned_to_it(planner):
                 q = res.joint_traj.positions
                 assert np.minimum(q - lo, hi - q).min() > 0.1 - 1e-3
     finally:
-        planner.update_world("world_sim_kitchen.yaml")
+        planner.update_world("example:world_sim_kitchen.yaml")
 
 
 def test_joint_goal_normalized_to_start_branch(planner):
@@ -524,7 +525,7 @@ def test_box_on_the_path_forces_a_detour_and_absent_goes_straight(planner, tmp_p
         world = _scene(tmp_path / "box.yaml", obstacles=[FAR, box])
         _assert_blocked(planner, world, start, goal, free)
     finally:
-        planner.update_world("world_sim_kitchen.yaml")
+        planner.update_world("example:world_sim_kitchen.yaml")
 
 
 def test_rotated_box_is_read_as_oriented(planner, tmp_path):
@@ -567,7 +568,7 @@ def test_rotated_box_is_read_as_oriented(planner, tmp_path):
         planner.update_world(_scene(tmp_path / "aligned.yaml", obstacles=[box]))
         assert not planner.check_state_valid(start)[0]
     finally:
-        planner.update_world("world_sim_kitchen.yaml")
+        planner.update_world("example:world_sim_kitchen.yaml")
 
 
 def test_a_layer_box_on_the_path_is_honoured_and_ignore_removes_it(planner, tmp_path):
@@ -595,7 +596,7 @@ def test_a_layer_box_on_the_path_is_honoured_and_ignore_removes_it(planner, tmp_
         assert res.success, res.error
         assert _dev(_path(res, start), start, goal) < 0.05
     finally:
-        planner.update_world("world_sim_kitchen.yaml")
+        planner.update_world("example:world_sim_kitchen.yaml")
 
 
 def _platform_pair(planner, with_platform, without):
@@ -658,7 +659,7 @@ def test_platform_layer_pair(tilted_planner, tmp_path):
         planner.update_world(with_platform)
         around = planner.plan_to_joints(goal, start, method="js")
     finally:
-        planner.update_world("world_sim_kitchen.yaml")
+        planner.update_world("example:world_sim_kitchen.yaml")
     assert straight.success, straight.error
     assert _dev(_path(straight, start), start, goal) < 0.05
     assert not around.success or _dev(_path(around, start), start, goal) > 0.10, (
@@ -732,12 +733,12 @@ def test_world_read_back_matches_composition(planner, chair_planner, tmp_path):
         planner.update_world(mixed)
         _check_read_back(planner)
     finally:
-        planner.update_world("world_sim_kitchen.yaml")
+        planner.update_world("example:world_sim_kitchen.yaml")
     _check_read_back(planner)
     # the chair given the kitchen with its layers, 50 boxes, and then its own
     # world again, 25: the 25 slots in between are disabled again
     try:
-        chair_planner.update_world("world_sim_kitchen.yaml")
+        chair_planner.update_world("example:world_sim_kitchen.yaml")
         _check_read_back(chair_planner)
     finally:
         chair_planner.update_world(MEBOT / "world.yaml")
@@ -784,7 +785,7 @@ def person_state(tilted_planner, chair_planner, tmp_path_factory):
         planner.update_world(empty)
         free = _feasible(planner, states)
     finally:
-        planner.update_world("world_sim_kitchen.yaml")
+        planner.update_world("example:world_sim_kitchen.yaml")
     blocked = free & ~_feasible(chair_planner, states)
     chair = _cuboids(chair_planner)
     layer = {box["name"]: box["layer"] for box in chair_planner.world_boxes}
@@ -828,7 +829,7 @@ def platform_state(tilted_planner, chair_planner, tmp_path_factory):
         planner.update_world(with_platform)
         blocked = free & ~_feasible(planner, states)
     finally:
-        planner.update_world("world_sim_kitchen.yaml")
+        planner.update_world("example:world_sim_kitchen.yaml")
     chair = _cuboids(chair_planner)
     layer = {box["name"]: box["layer"] for box in chair_planner.world_boxes}
     candidates = states[blocked]
