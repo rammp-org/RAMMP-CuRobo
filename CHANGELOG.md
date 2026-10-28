@@ -67,9 +67,13 @@ that first. See `docker/README.md` for the manifest.
   a shipped URDF) standalone, with no `arm_state_publisher`, and says so: a
   startup banner, a WARN when a model is published (ignored), and an
   `(example robot)` marker on every plan result's `message` and the `SetWorld`
-  reply. The Dockerfile CMD passes no config, so
-  `docker run ghcr.io/rammp-org/rammp-curobo:<tag>` plans out of the box; a
-  profile that leaves `config` out now gets the example, not the bench. The
+  reply. The Dockerfile CMD passes
+  `config:=/config/robot/curobo/planner.yaml` (it used to pass no config), so a
+  bare `docker run ghcr.io/rammp-org/rammp-curobo:<tag>` without the robot
+  directory exits 1 naming that file, and `docker run <image> example` runs the
+  example robot (the entrypoint's one verb; further arguments go to the node).
+  A profile that gives its own `command` and leaves `config` out gets the
+  example, not the bench. The
   planner config now loads before the model wait, so a missing
   `/config/robot/curobo/planner.yaml` exits 1 at once (it no longer waits out a
   late bind-mount).

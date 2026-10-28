@@ -22,7 +22,7 @@ SIM_OVERLAY ?= ~/rammp_deps_ws/install/setup.bash
 # view's default port is taken.
 SIM_ARGS ?=
 
-.PHONY: lint test colcon build verify image-contents run shell bake layers sim-build sim-test sim
+.PHONY: lint test colcon build verify image-contents image-default run shell bake layers sim-build sim-test sim
 
 lint:                      ## pre-commit run --all-files
 	pre-commit run --all-files
@@ -57,9 +57,30 @@ image-contents:            ## Assert the image carries no tests, scripts, sim or
 	docker run --rm $(IMAGE) sh -c 'cd /opt/rammp_curobo_src && ! ls -d core/tests scripts sim docs 2>/dev/null | grep .' \
 	  || { echo "image has repo content beyond code"; exit 1; }
 
-run:                       ## Run the planner node from the image
+# The entrypoint's `example` verb needs the image's ROS install, so this is its
+# test. Domain 88, never 0. The image's default with nothing mounted must exit
+# non-zero naming the config it wanted and never run example mode; with
+# `example` it must print the banner (stopped once seen: a long-running node).
+IMAGE_DOCKER_RUN = docker run --rm --runtime nvidia --network host \
+  -e ROS_LOCALHOST_ONLY=1 -e ROS_DOMAIN_ID=88
+image-default:             ## Assert the image's default fails without /config/robot and `example` runs the example (needs a GPU)
+	@out=$$(timeout 120 $(IMAGE_DOCKER_RUN) $(IMAGE) 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ] || [ $$rc -eq 124 ]; then echo "default did not fail (rc=$$rc)"; exit 1; fi; \
+	echo "$$out" | grep -q /config/robot/curobo/planner.yaml || { echo "default output does not name planner.yaml"; echo "$$out" | tail -5; exit 1; }; \
+	if echo "$$out" | grep -q EXAMPLE; then echo "default ran example mode"; exit 1; fi; \
+	echo "default: exit $$rc, names planner.yaml, no example mode"
+	@name=rammp-curobo-image-default-$$$$; \
+	docker run -d --name $$name --runtime nvidia --network host -e ROS_LOCALHOST_ONLY=1 -e ROS_DOMAIN_ID=88 $(IMAGE) example >/dev/null; \
+	ok=; for i in $$(seq 60); do \
+	  if docker logs $$name 2>&1 | grep -q 'NO CONFIG GIVEN'; then ok=1; break; fi; \
+	  [ "$$(docker inspect -f '{{.State.Running}}' $$name)" = true ] || break; sleep 2; done; \
+	docker logs $$name 2>&1 | tail -3; docker rm -f $$name >/dev/null; \
+	[ -n "$$ok" ] || { echo "example did not print the banner"; exit 1; }; \
+	echo "example: banner seen"
+
+run:                       ## Run the example robot from the image (standalone, no robot directory)
 	docker run --rm -it --runtime nvidia --network host --ipc host \
-	  -e ROS_LOCALHOST_ONLY=1 -v rammp-curobo-cache:/root/.cache $(IMAGE)
+	  -e ROS_LOCALHOST_ONLY=1 -v rammp-curobo-cache:/root/.cache $(IMAGE) example
 
 shell:                     ## Interactive shell in the image
 	docker run --rm -it --runtime nvidia --network host --ipc host $(IMAGE) bash

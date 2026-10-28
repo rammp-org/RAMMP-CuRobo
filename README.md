@@ -157,7 +157,8 @@ what `config:` names, and **docs/ROBOT_DATA.md** is the contract for what it
 holds and what the planner checks at startup (every problem listed at once). The
 image ships one worked **example** (Gen3 + Robotiq 2F-85, kitchen world),
 reached only as `example:<name>`; a bare name never resolves to it. Started
-with no `config`, the node plans that example, standalone and without
+with no `config` (`docker run <image> example`, or `ros2 run` from a checkout),
+the node plans that example, standalone and without
 `arm_state_publisher`, and says so (startup banner, a WARN if a model is
 published, `(example robot)` on every result). That is for development and
 demos, never a robot.
@@ -473,7 +474,7 @@ that cuRobo honours them.
 | goal aborted: "start_joints is required"                                                         | `start_joints` is not optional — the planner has no view of any arm, so the caller must send the configuration to plan from                                                                                                                              |
 | node exits 1: "no model on /arm/robot_description"                                               | `arm_state_publisher` is not running in this ROS domain (or not discoverable) — start it, then the planner                                                                                                                                               |
 | node exits 1: "robot data or the model on /arm/robot_description: robot data in ..., N problems" | the robot directory or the arm's model is wrong (a missing file, a world in the wrong frame, a model that is not the robot file's); each problem is listed, once the model has arrived. A missing `planner.yaml` exits 1 at once. See docs/ROBOT_DATA.md |
-| banner "NO CONFIG GIVEN ... EXAMPLE robot", `(example robot)` in results                         | the node was started without `config`: it is planning the image's example, not your robot — pass `config:=<robot dir>/planner.yaml`                                                                                                                      |
+| banner "NO CONFIG GIVEN ... EXAMPLE robot", `(example robot)` in results                         | the node was started without `config` (`example`, or a profile's own command): it is planning the image's example, not your robot — pass `config:=<robot dir>/planner.yaml`                                                                              |
 | `config 'gen3.yaml' not found ... write example:gen3.yaml`                                       | bare names no longer resolve to the image's files — write `example:gen3.yaml`, or give a path                                                                                                                                                            |
 | plan refused naming `arm_joint_4` from the park pose                                             | the park pose (-2.674) is outside the URDF's ±2.57 by more than the 0.05 clamp — move out of park first (kinova-gen3-ros2#49)                                                                                                                            |
 | plans ignore a new mount                                                                         | the model is read once at startup — restart the planner after changing the robot's mount                                                                                                                                                                 |

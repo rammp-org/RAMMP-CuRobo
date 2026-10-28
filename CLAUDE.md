@@ -112,8 +112,11 @@ plus the gripper services (2026-08-24, issue #6).
   is listed only once the model has arrived (FATAL "robot data or the model
   on /arm/robot_description: ..."). `planner.yaml` may still carry an optional
   `joint_names` (the robot file's joints, reordered; anything else refused).
-- EXAMPLE MODE: node `config` defaults to `""` and the Dockerfile CMD passes
-  none. The node then plans `example:gen3.yaml` on the shipped
+- EXAMPLE MODE: node `config` defaults to `""` (so does `planner.launch.py`).
+  The Dockerfile CMD passes `config:=/config/robot/curobo/planner.yaml`: a bare
+  `docker run` without the robot directory exits 1, never plans the example
+  beside a real arm. Example mode in the image is the entrypoint's `example`
+  verb (`docker run <image> example`; `make image-default` tests both). The node then plans `example:gen3.yaml` on the shipped
   `example:arm_level.urdf`, standalone, and must never pass for a robot: a
   startup banner, a WARN if a model is published (ignored), and an
   `(example robot)` marker on every plan result's `message` and the SetWorld

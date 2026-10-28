@@ -73,6 +73,7 @@ docker build -f docker/Dockerfile -t rammp-curobo:jp6 .
 docker run --rm -it --runtime nvidia --network host --ipc host \
     -e ROS_LOCALHOST_ONLY=1 \
     -v rammp-curobo-cache:/root/.cache \
+    -v ./config/robots/current:/config/robot:ro \
     rammp-curobo:jp6
 ```
 
@@ -81,13 +82,19 @@ docker run --rm -it --runtime nvidia --network host --ipc host \
   (this lab's standard).
 - The cache volume keeps compiled CUDA kernels — without it every cold
   container pays the minutes-long first-plan warmup again.
-- **No arguments = the example robot.** The image's CMD passes no `config`,
-  so the node plans the shipped example (Gen3 + 2F-85, level mount, kitchen
-  world, a shipped URDF) standalone: no `arm_state_publisher`, no deployment
-  checkout, no robot. It says so in a startup banner, a WARN if a model is
-  published (which it then ignores), and an `(example robot)` marker on every
-  plan result and `SetWorld` reply. To plan a real robot name its config (next
-  bullets).
+- **No arguments = the robot's config.** The image's CMD passes
+  `config:=/config/robot/curobo/planner.yaml`, so mount the robot directory at
+  `/config/robot`. Without it the node exits 1 at once with a FATAL naming
+  that file: a bare `docker run` never quietly plans the example robot next to
+  a real arm.
+- **`example` = the example robot.** `docker run ... rammp-curobo:jp6 example`
+  runs the node with no `config`: the shipped example (Gen3 + 2F-85, level
+  mount, kitchen world, a shipped URDF) standalone, with no
+  `arm_state_publisher`, deployment checkout or robot. It says so in a startup
+  banner, a WARN if a model is published (which it then ignores), and an
+  `(example robot)` marker on every plan result and `SetWorld` reply. Further
+  arguments go to the node (`example --ros-args -p robot_description_timeout_s:=5`).
+  `make image-default` checks both behaviours.
 - **The model.** With a `config`, the node waits up to `robot_description_timeout_s`
   (default 30 s) for `arm_state_publisher` on `/arm/robot_description`
   (`ros2 launch kinova_gen3_description description.launch.py mount_file:=<robot>/mount.yaml`),
@@ -107,7 +114,7 @@ docker run --rm -it --runtime nvidia --network host --ipc host \
   /arm/robot_description: robot data in <dir>: N problems ..."); without
   `arm_state_publisher` the "no model" FATAL comes first.
   `check_robot_dir(cfg, cfg_dir, urdf_xml)` runs the same check offline.
-- A robot, a different world or parameters: replace the CMD with the node and
+- A different world or parameters: replace the CMD with the node and
   your own `-p` args, e.g. `... rammp-curobo:jp6 /opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node --ros-args -p config:=/config/robot/curobo/planner.yaml`
   with the robot's directory mounted (next bullet). A reference in a
   config to a shipped file is written `example:<name>` (for instance

@@ -115,12 +115,16 @@ planner config and a URDF file's text.
 
 ## Example mode
 
-With no `config` (the node's default, `""`; the Docker CMD passes none), the
-planner runs the shipped example: the Gen3 + 2F-85 robot file
+With no `config` (the node's default, `""`), the planner runs the shipped example: the Gen3 + 2F-85 robot file
 (`example:robot_gen3_2f85.yaml`), the default planner settings, the kitchen
 world and a shipped level-mount Gen3 URDF (`example:arm_level.urdf`), so it
 plans standalone with no `arm_state_publisher`, deployment checkout or robot.
 Once a `config` is named the example URDF is never used.
+
+The image's default command names `config:=/config/robot/curobo/planner.yaml`,
+so a bare `docker run <image>` with no robot directory exits 1 naming that
+file. Example mode in the image is one explicit word: `docker run <image> example` (further arguments go to the node). `ros2 run` and `ros2 launch`
+from a checkout are example mode with no arguments.
 
 It cannot be mistaken for the real thing. Three signals:
 
