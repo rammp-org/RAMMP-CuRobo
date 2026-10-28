@@ -49,18 +49,19 @@ never change their spheres or IK seed); `example:` is allowed and visible.
 
 ## `planner.yaml`
 
-| Key       | Required | Notes                                                                         |
-| --------- | -------- | ----------------------------------------------------------------------------- |
-| `robot`   | yes      | the robot file                                                                |
-| `world`   | yes      | the start-up world; an empty one (`obstacles: []`) is accepted here only      |
-| `layers`  | no       | obstacle layer files composed into every world, pushes included; default `[]` |
-| `planner` | no       | tuning knobs; each defaults field by field from `config.PLANNER_DEFAULTS`     |
-| `tool`    | no       | tool corrections (`spin_deg`, `tip_offset_m`); default 0.0                    |
+| Key           | Required | Notes                                                                                                                                                                               |
+| ------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `robot`       | yes      | the robot file                                                                                                                                                                      |
+| `world`       | yes      | the start-up world; an empty one (`obstacles: []`) is accepted here only                                                                                                            |
+| `layers`      | no       | obstacle layer files composed into every world, pushes included; default `[]`                                                                                                       |
+| `planner`     | no       | tuning knobs; each defaults field by field from `config.PLANNER_DEFAULTS`                                                                                                           |
+| `joint_names` | no       | the same joints as the robot file's `cspace.joint_names`, in the order plans are returned; default the robot file's order. Any other set is refused ("not the robot file's joints") |
+| `tool`        | no       | tool corrections (`spin_deg`, `tip_offset_m`); default 0.0                                                                                                                          |
 
 Robot data (robot file, world) is whole or refused: it is never merged field
-by field with the example's. Only the planner settings default. There is no
-`joint_names` key: the planned joints are the robot file's
-`cspace.joint_names`.
+by field with the example's. Only the planner settings default. The planned
+joints are always the robot file's `cspace.joint_names`; `joint_names` here
+only reorders them.
 
 ## The robot file
 
@@ -97,11 +98,18 @@ configured (or an invalid box, a duplicate name, a world over the box cache),
 a URDF missing the root or tool link or a joint the robot file names, a URDF
 whose joints below `arm_base_link` drift from the kinematics reference (1 mm,
 0.1 deg, structure, joint set), a moving joint with no `<limit>` that follows
-no other. The node logs it FATAL and exits 1.
+no other. The node logs it FATAL ("robot data or the model on /arm/robot_description:
+robot data in <dir>: N problems ...") and exits 1.
 
-The planner config is read **before** the node waits for a model, so a
-missing `/config/robot/curobo/planner.yaml` exits 1 at once; the node no
-longer waits out a late bind-mount.
+The check needs the URDF, so it runs once the model has arrived. Only a
+missing or unparseable `planner.yaml` fails at once: the planner config is read
+**before** the node waits for a model, so an unmounted
+`/config/robot/curobo/planner.yaml` exits 1 immediately (the node no longer
+waits out a late bind-mount). Every other problem is reported after the model
+arrives; without `arm_state_publisher` the "no model" FATAL comes first. To
+check a directory offline, run
+`check_robot_dir(cfg, cfg_dir, urdf_xml)` (`rammp_curobo.contract`) on the
+planner config and a URDF file's text.
 
 ## Example mode
 
@@ -114,7 +122,7 @@ Once a `config` is named the example URDF is never used.
 
 It cannot be mistaken for the real thing. Three signals:
 
-1. a startup banner: no config given, the example robot from the image is
+1. a startup banner, logged at WARN: no config given, the example robot from the image is
    running;
 1. a WARN if a model is (or later becomes) latched on `/arm/robot_description`:
    a robot is being published and this planner is ignoring it;
@@ -141,5 +149,6 @@ A rammp-deployments commit; the image does not change.
   and overrides the `world` parameter to `""` (a non-empty `world` replaces
   the config's), and the planner is restarted when the robot's mount
   changes.
-- Check before deploying: start the planner against the directory; a bad
-  one exits 1 with every problem in the one FATAL.
+- Check before deploying: run `check_robot_dir` on the directory and the
+  arm's URDF offline, or start the planner with `arm_state_publisher` up; a
+  bad directory exits 1 with every problem in the one FATAL.

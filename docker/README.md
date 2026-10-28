@@ -9,7 +9,8 @@ the cuRobo install again:
 in:  /rammp_curobo/plan_to_pose   (geometry_msgs/Pose + start_joints)
      /rammp_curobo/plan_to_joints (7 joint angles    + start_joints)
 out: trajectory_msgs/JointTrajectory — full cuRobo time-parameterization,
-     joint_names arm_joint_1..7, header.frame_id "arm_mount"
+     joint_names (the robot file's), header.frame_id its root
+     link ("arm_mount" for the Gen3 and every RAMMP robot)
 needs: /arm/robot_description (std_msgs/String, latched) from arm_state_publisher
 ```
 
@@ -97,10 +98,15 @@ docker run --rm -it --runtime nvidia --network host --ipc host \
   `ros2 launch`, so the container's exit code is the node's: no model in
   time is a FATAL naming `arm_state_publisher` and a **non-zero exit (1)**,
   which a restart policy or supervisor sees; `docker stop` exits 0 promptly.
-  The planner config loads before the wait, so a missing or bad robot
-  directory (an unmounted `/config/robot`, a missing file, a world in the
-  wrong frame) exits 1 at once, with every problem listed, rather than after
-  a wait for a bind-mount that may come late.
+  The planner config loads before the wait, so a missing or unparseable
+  `planner.yaml` (an unmounted `/config/robot`) exits 1 at once, rather than
+  after a wait for a bind-mount that may come late. The rest of the robot
+  data (a missing file, a world in the wrong frame, a model that is not the
+  robot file's) is checked against the URDF, so it is reported only once the
+  model has arrived, in one FATAL ("robot data or the model on
+  /arm/robot_description: robot data in <dir>: N problems ..."); without
+  `arm_state_publisher` the "no model" FATAL comes first.
+  `check_robot_dir(cfg, cfg_dir, urdf_xml)` runs the same check offline.
 - A robot, a different world or parameters: replace the CMD with the node and
   your own `-p` args, e.g. `... rammp-curobo:jp6 /opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node --ros-args -p config:=/config/robot/curobo/planner.yaml`
   with the robot's directory mounted (next bullet). A reference in a

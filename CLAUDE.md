@@ -25,7 +25,8 @@ mount changes. Planning is in the model's root (the robot file's
 `base_link`; `arm_mount` for the Gen3: level with the chair, not with
 gravity), with the robot file's `ee_link` and `cspace.joint_names` (the Gen3's:
 `arm_tool_frame`, `arm_joint_1..7`); every returned trajectory is
-stamped `header.frame_id: arm_mount`, joint plans included
+stamped `header.frame_id` = the robot file's root link (`arm_mount` for the
+Gen3 example and every RAMMP robot), joint plans included
 (kinova-gen3-ros2's `GoToEEPose` refuses any pose plan not stamped
 `arm_mount` (#47), on every mount).
 
@@ -107,7 +108,10 @@ plus the gripper services (2026-08-24, issue #6).
   `.problems` has every problem) — construction-time faults, a missing layer
   included, are this, not FileNotFoundError. The node loads the planner config
   BEFORE it waits for a model, so a missing `/config/robot/curobo/planner.yaml`
-  exits 1 at once.
+  exits 1 at once; `check_robot_dir` needs the URDF, so every other problem
+  is listed only once the model has arrived (FATAL "robot data or the model
+  on /arm/robot_description: ..."). `planner.yaml` may still carry an optional
+  `joint_names` (the robot file's joints, reordered; anything else refused).
 - EXAMPLE MODE: node `config` defaults to `""` and the Dockerfile CMD passes
   none. The node then plans `example:gen3.yaml` on the shipped
   `example:arm_level.urdf`, standalone, and must never pass for a robot: a

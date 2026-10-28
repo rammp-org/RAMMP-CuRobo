@@ -48,7 +48,8 @@ that first. See `docker/README.md` for the manifest.
   `RobotSpec` from `robot_config.load_robot_spec`. `load_scene(path, frame)`
   and `scene_from_obstacles(entries, base_frame)` take a required frame (the
   robot file's root link). `PLANNER_DEFAULTS` no longer has `joint_names`: the
-  planned joints are the robot file's `cspace.joint_names`. The URDF and Gen3
+  planned joints are the robot file's `cspace.joint_names` (an optional
+  `joint_names` in `planner.yaml` may reorder them, nothing else). The URDF and Gen3
   constants in `urdf_model.py` (`ROOT_LINK`, `EE_LINK`, `ARM_JOINTS`,
   `GRIPPER_JOINTS`, `BASE_LINK`, `KINEMATICS_REFERENCE`) are gone.
 - **The robot file needs a `model_check` block** beside `robot_cfg`:
