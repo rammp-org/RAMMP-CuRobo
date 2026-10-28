@@ -232,7 +232,7 @@ obstacles.
 
 A layer file listed by name is found next to the file that lists it or
 among the packaged configs, never in the current directory. Its boxes are
-named `<layer>/<box>` (`person/lap`), padded by `world_padding` like every
+named `<layer>/<box>` (`person/forearms_0`), padded by `world_padding` like every
 other box, and count against the same 60-box cache; a world that overflows
 it is refused, naming every source, and nothing is truncated.
 `planner.world_summary()` says where a world's boxes come from and
@@ -259,14 +259,16 @@ If you override the `world` parameter in a manifest, a chair robot must set it
 to `""`: a non-empty `world` replaces whatever the planner config names.
 
 `planner.yaml` is the Gen3 on the MEBot, its base at the RAMMS model
-pose mirrored to the chair's left, (0.505, 0.265, 0.376) m in the MEBot's
-frame, and tilted 30° forward on it as flatbot's `mount.yaml` says —
-the position unverified on the real chair. It starts in a world of 26 boxes:
+pose mirrored to the chair's left and moved out to just outside the seat,
+(0.505, 0.36, 0.376) m in the MEBot's frame, and tilted 30° forward on it
+as flatbot's `mount.yaml` says — the position a best guess, unmeasured on
+the real chair. It starts in a world of 30 boxes:
 
 | Layer      | File                        | Boxes | In the world as                |
 | ---------- | --------------------------- | ----- | ------------------------------ |
 | `platform` | `layer_mebot_platform.yaml` | 16    | a config layer, not excludable |
-| `person`   | `layer_mebot_person.yaml`   | 9     | a config layer, excludable     |
+| `seat`     | `layer_mebot_seat.yaml`     | 5     | a config layer, not excludable |
+| `person`   | `layer_mebot_person.yaml`   | 8     | a config layer, excludable     |
 | `floor`    | `layer_mebot_floor.yaml`    | 1     | a scene layer of `world.yaml`  |
 
 Each layer records the `world_padding` it was generated for, and the planner
@@ -277,45 +279,50 @@ merges were only made where the padded box still cleared the arm's spheres, so
 the set is certified for one padding and no other. More is allowed.
 
 The platform is the drive base alone, with every joint at zero, and its
-coverage numbers below are for that pose. Nothing models the rest of
-the chair: its seat, backrest, armrests and footplate, or the plate the arm
-is mounted on. Over the seat and at the backrest the person layer is the
-only geometry.
+coverage numbers below are for that pose. The seat is its base, its
+backrest and the armrest on the joystick's side, from the bounding boxes
+of the RAMMS seat asset's collision hulls, mirrored with the mount: best
+guesses, unmeasured. Nothing models the footplate, the joystick, the
+brackets on the arm's side or the plate the arm is mounted on.
 
-The person layer leaves a gap of its own: the column carved around the
-arm's base, ±0.105 m about the arm's axis in x and y and from z -0.040 to
-0.409 m (`arm_mount`), which no person box enters, since a padded box there
-would put every start state in collision. The arm's base and shoulder fill
-the middle of it; nearly two thirds of what the carve takes out of the
-person lies beside them, where the arm can move. So a part of the occupant
-beside the mount, the right hip, elbow or forearm, is not kept from the arm.
+The person and the seat leave a gap: the column carved around the arm's
+base, which no box of theirs enters, since a padded box there would put
+every start state in collision. For the person it is x -0.073 to 0.250,
+y ±0.105 and z -0.049 to 0.366 m (`arm_mount`), 5 mm clear of the arm's
+fixed spheres. The seat is carved 35 mm clear (x -0.103 to 0.280, y ±0.135,
+z -0.079 to 0.396 m): it surrounds the arm's base, and inside the planner's
+`collision_activation_distance` (0.03 m) those spheres carry a collision
+cost no joint can lower, under which cuRobo returns `DT_EXCEPTION` on
+nearly every plan. The arm's base and shoulder fill the middle of the
+column; the rest of it is beside them, where the arm can move. With the
+arm's base 0.36 m out, the person's column takes less than a litre out of
+the person: a sliver of the left upper arm beside the mount.
 
 The node logs the world's summary at start-up and in its ready line, and
 returns it with every world SetWorld takes — the visible proof that the
 chair config is active:
 
 ```text
-Collision world: 26 boxes: scene 0 | config layers: platform 16, person 9 | scene layers: floor 1
+Collision world: 30 boxes: scene 0 | config layers: platform 16, seat 5, person 8 | scene layers: floor 1
 ```
 
 The floor belongs to the start-up scene, so the first push replaces it: a
-pushed scene brings its own floor. The two config layers take 24 of the
-cache's 60 boxes, which leaves 36 for a pushed scene.
+pushed scene brings its own floor. The three config layers take 29 of the
+cache's 60 boxes, which leaves 31 for a pushed scene.
 
-**The bench retract is not a valid start on the chair.** The robot
-config's `retract_config`, which is also cuRobo's IK seed, is 154.4 mm
-inside the padded person layer (`person/lap`), and the planner warns about
-it at start-up. Plan from the arm's measured state, as every caller must
-anyway. A start inside a layer fails `INVALID_START`, naming the boxes:
+**Plan from the arm's measured state**, as every caller must anyway. The
+robot config's `retract_config` (also cuRobo's IK seed) is a valid state on
+the chair; the planner warns at start-up on a config where it is not. A
+start inside a layer fails `INVALID_START`, naming the boxes:
 
 ```text
-... [start collides with person/lap_0 (161 mm), person/lap_2 (73 mm), person/legs_0 (35 mm), person/torso_head_2 (4 mm)] [world: 26 boxes: scene 0 | config layers: platform 16, person 9 | scene layers: floor 1]
+... [start collides with person/thighs (105 mm), person/forearms (79 mm), person/torso_1 (45 mm)] [world: 30 boxes: scene 0 | config layers: platform 16, seat 5, person 8 | scene layers: floor 1]
 ```
 
 ### Leaving the person out
 
 A layer marked `excludable: true` may be left out of one world. The person
-is; the platform is not:
+is; the platform and the seat are not:
 
 ```python
 chair = "/config/robot/curobo/world.yaml"
@@ -329,13 +336,12 @@ SetWorld carries a world name and nothing else, and a field on it would be
 a MAJOR change. It is the hook a later approach to the person's mouth will
 use.
 
-A world without the person has nothing over the seat or at the backrest
-either, so a plan made in it is free to pass through them. If yours go near
-them, carry boxes for them in the scene you push.
+A world without the person keeps the seat: its base, backrest and the
+joystick-side armrest stay in every world.
 
 ### Generated, with coverage numbers: `make layers`
 
-The three layer files are GENERATED by `scripts/generate_layers.py`. Every
+The four layer files are GENERATED by `scripts/generate_layers.py`. Every
 number in them comes from `scripts/mebot_layers.yaml`, which gives each
 input its source (the mount, the budgets, the anthropometry, the seat, the
 floor), or from the URDF and the robot config it names. The platform is
@@ -345,42 +351,46 @@ copy is committed. The generator runs on the CPU (numpy, PyYAML) and
 writes the same bytes on amd64 and arm64.
 
 ```bash
-make layers    # regenerate the three files; fails on any diff
+make layers    # regenerate the four files; fails on any diff
 ```
 
 Never hand-edit a layer file: change the inputs, run `make layers` and
 commit what it writes. CI regenerates the files from the pinned URDF and
 fails on any difference.
 
-| Layer      | Boxes | What it holds, and how well                                                                                                                                                                                                                     |
-| ---------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `platform` | 16    | The MEBot drive base: its URDF's 46 collision primitives (40 boxes, 6 cylinders), every joint at zero. Under-coverage 0, by certificate; over-coverage 10.9 % of the primitives' bounding boxes (budget 15 %), about 15 % of their true shapes. |
-| `person`   | 8     | Any seated occupant from the ANSUR II 5th-percentile woman to the 95th-percentile man, plus 0.05 m on every face, in three segments (torso and head, lap, lower legs and feet) carved around the arm's base.                                    |
-| `floor`    | 1     | A 3 × 3 × 0.1 m slab whose top, z -0.4593 m, is the URDF's lowest point.                                                                                                                                                                        |
+| Layer      | Boxes | What it holds, and how well                                                                                                                                                                                                                                                                                                   |
+| ---------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `platform` | 16    | The MEBot drive base: its URDF's 46 collision primitives (40 boxes, 6 cylinders), every joint at zero. Under-coverage 0, by certificate; over-coverage 10.9 % of the primitives' bounding boxes (budget 15 %), about 15 % of their true shapes.                                                                               |
+| `seat`     | 5     | The seat's base, backrest and joystick-side armrest: the RAMMS seat asset's collision-hull bounds, mirrored with the mount (unmeasured), carved 35 mm clear of the arm's base.                                                                                                                                                |
+| `person`   | 8     | Any seated occupant from the ANSUR II 5th-percentile woman to the 95th-percentile man, plus 0.02 m on every face, in six segments fitted to the body (hips up to the lowest elbow, torso to the chin, head, thighs, forearms at elbow height, hip-wide on the arm's side, lower legs and feet), carved around the arm's base. |
+| `floor`    | 1     | A 3 × 3 × 0.1 m slab whose top, z -0.4593 m, is the URDF's lowest point.                                                                                                                                                                                                                                                      |
 
 The platform's under- and over-coverage are in its file's `meta`, which the
 regeneration freezes with the boxes; the share of the true shapes is
 measured on a 1 mm lattice. Every padded box clears the arm's
 joint-independent collision spheres (its base, and the shoulder on the
 arm_joint_1 axis) by at least 4 mm, or the generator writes nothing: the
-platform by 53.4 mm, the person by 5.1 mm.
+platform by 47.5 mm, the person by 10.7 mm, the seat by 35.1 mm.
 
-**What the person costs.** The arm's base is 0.265 m from the occupant's
-centreline, and the person layer is over-sized on purpose, so it confines
-the arm. Of 1,000,000 arm configurations drawn at random (each joint
-uniform over its range, the four continuous ones over two full turns), the
-share whose collision spheres clear the padded boxes:
+**What the person costs.** The arm's base is 0.36 m from the occupant's
+centreline (a best guess), and the person layer holds every occupant of its
+range with a margin, so it confines the arm. Of 200,000 arm configurations
+drawn at random (each joint uniform over its range, the four continuous
+ones over two full turns), the share whose collision spheres clear the
+padded boxes:
 
-| World                   | All configurations | Tool high and in front (z > 0.3 m, x > 0.2 m) |
-| ----------------------- | ------------------ | --------------------------------------------- |
-| floor                   | 98.1 %             | 100.0 %                                       |
-| floor, platform         | 88.2 %             | 99.7 %                                        |
-| floor, platform, person | 2.3 %              | 1.3 %                                         |
+| World                         | All configurations | Tool high and in front (z > 0.3 m, x > 0.2 m) |
+| ----------------------------- | ------------------ | --------------------------------------------- |
+| floor                         | 97.3 %             | 100.0 %                                       |
+| floor, platform               | 91.2 %             | 99.8 %                                        |
+| floor, platform, seat         | 76.0 %             | 96.2 %                                        |
+| floor, platform, seat, person | 41.4 %             | 53.8 %                                        |
 
-Plans near the person, and anything handed to them, need the person layer
-excluded, which leaves the seat and the backrest uncovered too (see
-**Leaving the person out**). The sizes are data: tuning them is one edit to
-`scripts/mebot_layers.yaml` and `make layers`.
+(Before the person was fitted to the body and the arm moved out from
+0.265 m, it was 2.3 % and 1.3 %.) Plans
+near the person, and anything handed to them, need the person layer
+excluded; the seat stays (see **Leaving the person out**). The sizes are
+data: tuning them is one edit to `scripts/mebot_layers.yaml` and `make layers`.
 
 ### How it is tested
 
@@ -391,10 +401,10 @@ holds the pairs for plain, rotated and layer boxes and for the generated
 platform, reads cuRobo's collision cache back against the composed boxes,
 and checks cuRobo's spheres against every padded box along the chair's
 plans. `test_layers.py` and `test_layergen.py` run offline, in CI too.
-Among them, every occupant of the person's range — each of its twelve
-sizes at either end of its range, 4096 occupants, with the backrest at
-either end of its own — lies inside the committed person layer or the
-column carved around the arm's base.
+Among them, every occupant of the person's range — each of its sizes at
+either end of its range, with the backrest at either end of its own — lies
+inside the committed person layer or the column carved around the arm's
+base.
 
 ```bash
 make sim        # the MEBot sim suite (Jetson): exit 0 only if every gate passes

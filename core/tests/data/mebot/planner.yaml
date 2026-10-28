@@ -8,7 +8,7 @@
 #
 #   config:=/config/robot/curobo/planner.yaml
 #
-# Keep this copy in step with the robot's by hand -- only the three layer
+# Keep this copy in step with the robot's by hand -- only the four layer
 # files are generated. Nothing checks the robot's copy yet: the deployment
 # repo's CI does not compose it, so a layer that no longer resolves or a
 # world_padding the layers were not generated for shows only when the planner
@@ -21,9 +21,9 @@
 # scripts/mebot_layers.yaml (the platform also from the MEBot URDF it pins):
 # edit that file and run `make layers`; never hand-edit the layers.
 #
-# The bench retract (retract_config in robot_gen3_2f85.yaml, also cuRobo's IK
-# seed) reaches into the padded person layer, so it is not a valid start
-# state here: plan from the arm's measured state. A seed for the chair is #20.
+# Plan from the arm's measured state. The bench retract (retract_config in
+# robot_gen3_2f85.yaml, also cuRobo's IK seed) is a valid state here; a seed
+# for the chair is #20.
 #
 # The person, and only the person, can be left out: for one world at a time,
 # and from Python only (SetWorld has no field for it).
@@ -39,4 +39,4 @@
 
 robot: robot_gen3_2f85.yaml
 world: world.yaml
-layers: [layer_mebot_platform.yaml, layer_mebot_person.yaml]
+layers: [layer_mebot_platform.yaml, layer_mebot_seat.yaml, layer_mebot_person.yaml]

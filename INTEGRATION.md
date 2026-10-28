@@ -105,7 +105,7 @@ collision world's scene. There is nothing here that can move an arm.
 
 With the arm on the MEBot wheelchair, run the planner with the chair
 config. It does NOT ship in this image: the chair's planner config, its world
-and its three layer files describe one chair's geometry and where the arm sits
+and its four layer files describe one chair's geometry and where the arm sits
 on it, so they are per-robot data and live with the robot, in rammp-deployments
 `config/robots/<robot>/curobo/`, bind-mounted read-only at `/config/robot`
 (issue #19). So `config:=/config/robot/curobo/planner.yaml` for the node, or
@@ -117,14 +117,16 @@ the chair against stale geometry.
 If your manifest sets the `world` parameter, a chair robot must override it to
 `""`: a non-empty `world` replaces whatever the planner config names, so a
 bench world left in place would plan the chair against the wrong room. The chair's drive base,
-modelled with every joint at zero (layer `platform`, 16 boxes), and the
-person in it (layer `person`, 8 boxes) are then in every collision world the
-planner builds. Nothing models the rest of the chair: its seat, backrest,
-armrests and footplate, or the plate the arm is mounted on. Nor does the
-person layer cover the column carved around the arm's base (±0.105 m about
-its axis in x and y, z -0.040 to 0.409 m in `arm_mount`): most of it is open
-space beside the shoulder that the arm can move through, so the occupant's
-right hip, elbow or forearm beside the mount is not kept from the arm there.
+modelled with every joint at zero (layer `platform`, 16 boxes), its seat
+(layer `seat`, 5 boxes: base, backrest and the joystick-side armrest, best
+guesses) and the person in it (layer `person`, 8 boxes) are then in every
+collision world the planner builds. Nothing models the footplate, the
+joystick, the brackets on the arm's side, or the plate the arm is mounted
+on. Nor do the person and the seat cover the column carved around the
+arm's base (for the person x -0.073 to 0.250, y ±0.105, z -0.049 to 0.366 m
+in `arm_mount`; the seat's is 30 mm wider): most of it is open space beside
+the shoulder that the arm can move through, so the occupant's left hip,
+elbow or forearm beside the mount is not kept from the arm there.
 See the README's **Obstacle layers** for how the layers are made and what
 they cost. For a caller:
 
@@ -132,7 +134,7 @@ they cost. For a caller:
   `update_world` replace the scene, as before; the layers the config lists
   stay in every world. The start-up scene's floor is task geometry too: the
   first push replaces it, so carry your own floor in the scenes you push.
-  The two layers take 24 of the 60-box cache, which leaves 36 for your
+  The three layers take 29 of the 60-box cache, which leaves 31 for your
   scene. A scene with no obstacles, objects or layers of its own is
   refused, and so is one that overflows the cache; the previous world
   stays.
@@ -141,19 +143,16 @@ they cost. For a caller:
   `world set to <world> (<summary>)`, e.g. for an 8-box scene:
 
   ```text
-  world set to /config/my_world.yaml (32 boxes: scene 8 | config layers: platform 16, person 8 | scene layers: none)
+  world set to /config/my_world.yaml (37 boxes: scene 8 | config layers: platform 16, seat 5, person 8 | scene layers: none)
   ```
 
-  `platform 16, person 8` there is your proof that the chair is in the
+  `platform 16, seat 5, person 8` there is your proof that the chair is in the
   world. A refused push replies with the reason, as before.
 
-- **The bench retract is not a valid start on the chair.** The robot
-  config's retract (`planner.retract_pose`, also cuRobo's IK seed) is
-  154.4 mm inside the padded person layer, and the planner warns about it
-  at start-up. Start from the arm's measured state, which `start_joints`
-  requires anyway. A failed plan's error now ends with the boxes its start
-  or goal reach into and where the world's boxes come from, e.g.
-  `[start collides with person/lap_0 (161 mm), ...] [world: 26 boxes: ...]`;
+- **Start from the arm's measured state**, which `start_joints` requires
+  anyway. A failed plan's error now ends with the boxes its start or goal
+  reach into and where the world's boxes come from, e.g.
+  `[start collides with person/thighs (105 mm), ...] [world: 30 boxes: ...]`;
   over ROS it arrives in the result's `message` as `<status>: <error>`.
 
 - **Excluding the person is Python-only.**

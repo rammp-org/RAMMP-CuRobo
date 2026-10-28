@@ -4,15 +4,18 @@
 layer: person
 excludable: true
 meta:
-  arm_base_in_mebot: {position: [0.505, 0.265, 0.376], rpy_deg: [0, 0, 0]}
+  arm_base_in_mebot: {position: [0.505, 0.36, 0.376], rpy_deg: [0, 0, 0]}
   arm_base_joint: {rpy_deg: [0, 30, 0]}
   grid_m: 0.0001
   padding_assumed_m: 0.02
   keep_out_margin_m: 0.005
   ansur_in:
     sitting_height: {row: 8, sex: men, percentile: 95, inches: 38.46}
+    sitting_height_low: {row: 8, sex: women, percentile: 5, inches: 31.61}
     sitting_elbow_height: {row: 11, sex: men, percentile: 95, inches: 11.46}
+    sitting_elbow_height_low: {row: 11, sex: women, percentile: 5, inches: 7.44}
     thigh_clearance: {row: 12, sex: men, percentile: 95, inches: 8.15}
+    thigh_clearance_low: {row: 12, sex: women, percentile: 5, inches: 5.71}
     buttock_knee_length: {row: 13, sex: men, percentile: 95, inches: 26.34}
     buttock_popliteal_length: {row: 14, sex: women, percentile: 5, inches: 17.36}
     popliteal_height: {row: 16, sex: men, percentile: 95, inches: 18.54}
@@ -20,23 +23,26 @@ meta:
     hip_breadth: {row: 19, sex: women, percentile: 95, inches: 15.75}
     chest_depth: {row: 20, sex: men, percentile: 95, inches: 11.73}
     abdominal_depth: {row: 21, sex: men, percentile: 95, inches: 12.6}
+    elbow_fingertip_length: {row: 23, sex: men, percentile: 95, inches: 20.47}
+    head_length: {row: 26, sex: men, percentile: 95, inches: 8.31}
+    head_length_low: {row: 26, sex: women, percentile: 5, inches: 7.01}
+    head_breadth: {row: 27, sex: men, percentile: 95, inches: 6.42}
     hand_breadth: {row: 29, sex: men, percentile: 95, inches: 3.78}
     foot_length: {row: 30, sex: men, percentile: 95, inches: 11.54}
-  margin_m: 0.05
-  seat: {pan_top_z: 0.4705, backrest_face_x: [0.1587, 0.2733], backrest_rear_x: -0.1502, centreline_y: 0}
+  margin_m: 0.02
+  seat: {pan_top_z: 0.4705, backrest_face_x: [0.2733, 0.2733], backrest_rear_x: -0.1502, centreline_y: 0}
   volumes:
-    envelope_m3: 0.892858
-    layer_m3: 0.873095
-    carved_m3: 0.019762
-    overlap_m3: 0.000067
-  keep_out_clearance_m: 0.0051
+    envelope_m3: 0.400831
+    layer_m3: 0.399928
+    carved_m3: 0.000903
+    overlap_m3: 0.079019
+  keep_out_clearance_m: 0.0107
 obstacles:
-  - {name: lap_0, position: [0.36885, -0.26500, 0.28800], dims: [0.2371, 0.6670, 0.4872]}
-  - {name: lap_1, position: [0.19430, -0.35180, 0.28800], dims: [0.1120, 0.4934, 0.4872]}
-  - {name: lap_2, position: [0.19430, -0.01830, 0.44885], dims: [0.1120, 0.1736, 0.1655]}
-  - {name: legs_0, position: [0.51540, -0.26500, -0.19095], dims: [0.5302, 0.5002, 0.4711]}
-  - {name: legs_1, position: [0.14745, -0.31010, -0.19095], dims: [0.2057, 0.4100, 0.4711]}
-  - {name: legs_2, position: [0.14745, -0.06000, -0.23765], dims: [0.2057, 0.0902, 0.3777]}
-  - {name: torso_head_0, position: [-0.38895, -0.26500, 0.58290], dims: [0.6327, 0.6670, 1.0770]}
-  - {name: torso_head_1, position: [0.03290, -0.35180, 0.58290], dims: [0.2110, 0.4934, 1.0770]}
-  - {name: torso_head_2, position: [0.03290, -0.01830, 0.74375], dims: [0.2110, 0.1736, 0.7553]}
+  - {name: forearms, position: [0.02825, -0.40170, 0.36055], dims: [0.5601, 0.5236, 0.2821]}
+  - {name: head, position: [-0.01895, -0.36000, 0.87885], dims: [0.4657, 0.2032, 0.4251]}
+  - {name: hips, position: [-0.07170, -0.36000, 0.16895], dims: [0.3602, 0.4402, 0.1891]}
+  - {name: legs, position: [0.39655, -0.36000, -0.16095], dims: [0.7079, 0.4402, 0.4711]}
+  - {name: thighs, position: [0.28285, -0.36000, 0.19800], dims: [0.3491, 0.4402, 0.2472]}
+  - {name: torso_0, position: [-0.16220, -0.36000, 0.58840], dims: [0.1792, 0.6070, 0.6500]}
+  - {name: torso_1, position: [0.01790, -0.38430, 0.58840], dims: [0.1810, 0.5584, 0.6500]}
+  - {name: torso_2, position: [0.01790, -0.08080, 0.63975], dims: [0.1810, 0.0486, 0.5473]}

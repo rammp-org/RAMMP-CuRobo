@@ -45,6 +45,7 @@ MEBOT = Path(__file__).resolve().parent / "data" / "mebot"
 FLOOR = str(MEBOT / "layer_mebot_floor.yaml")
 PLATFORM = str(MEBOT / "layer_mebot_platform.yaml")
 PERSON = str(MEBOT / "layer_mebot_person.yaml")
+SEAT = str(MEBOT / "layer_mebot_seat.yaml")
 
 
 @pytest.fixture(scope="session")
@@ -607,8 +608,10 @@ def _platform_pair(planner, with_platform, without):
     detour. Returns (start, goal, depth_m); fails, naming what it tried, if
     no goal does."""
     start = np.asarray(planner.retract_pose)
+    # 2.4 rad around it: with the arm on the chair's side, beside the seat
+    # (y 0.36), few goals nearer than that take its path through the platform
     goals = np.random.default_rng(19).uniform(
-        *_search_box(planner, around=start, radius=1.6), size=(8000, 7)
+        *_search_box(planner, around=start, radius=2.4), size=(8000, 7)
     )
     lines = start + np.linspace(0.0, 1.0, 50)[:, None] * (goals - start)[:, None]
     planner.update_world(with_platform)
@@ -633,7 +636,7 @@ def _platform_pair(planner, with_platform, without):
             return start, goals[i], depth
         depths.append(depth)
     pytest.fail(
-        "no goal near the retract (8000, seed 19) has a straight path the "
+        "no goal near the retract (8000, seed 19, 2.4 rad) has a straight path the "
         "platform alone blocks by 40 mm: %d goals are valid with the platform, "
         "%d of their paths are blocked by it alone, %d of those come within "
         "the activation distance of the floor, and the rest reach at most "
@@ -744,11 +747,11 @@ def test_world_read_back_matches_composition(planner, chair_planner, tmp_path):
 def test_chair_config_composes_the_layers_and_warms_up_first(chair_planner):
     boxes = chair_planner.world_boxes
     layers = Counter(box["layer"] for box in boxes)
-    assert layers == {"floor": 1, "platform": 16, "person": 9}
+    assert layers == {"floor": 1, "platform": 16, "seat": 5, "person": 8}
     # the installed world is the layer files: each box is an entry of its
     # file, padded on every side
     entries = {}
-    for name in (FLOOR, PLATFORM, PERSON):
+    for name in (FLOOR, PLATFORM, SEAT, PERSON):
         data = yaml.safe_load(Path(name).read_text(encoding="utf-8"))
         for entry in data["obstacles"]:
             entries["%s/%s" % (data["layer"], entry["name"])] = entry
@@ -758,11 +761,52 @@ def test_chair_config_composes_the_layers_and_warms_up_first(chair_planner):
         entry = entries[box["name"]]
         assert box["dims"] == pytest.approx([d + pad for d in entry["dims"]])
         assert box["pose"] == pytest.approx(entry["position"] + [1, 0, 0, 0])
-    # white-box: warm-up plans from the retract, which is inside the person,
-    # so it ran in the scene's own world, the floor alone
+    # white-box: with config layers, warm-up runs in the scene's own world,
+    # the floor alone, wherever the retract (cuRobo's IK seed) is. On this
+    # chair, the arm beside the seat, it is a valid start
     assert chair_planner._warm_boxes == 1
-    ok, detail = chair_planner.check_state_valid(chair_planner.retract_pose)
-    assert not ok and "person/" in detail, detail
+    assert chair_planner.check_state_valid(chair_planner.retract_pose) == (True, "")
+
+
+@pytest.fixture(scope="session")
+def person_state(tilted_planner, chair_planner, tmp_path_factory):
+    """Seeded and capped: a joint vector that the person alone makes invalid
+    on the chair, as platform_state is for the platform. The gen3 planner on
+    the chair's mount finds it valid with the floor, the platform and the
+    seat, the chair planner invalid, and its spheres reach 20 mm or more into
+    person boxes of the chair's start-up world, and into no other box. Fails,
+    naming what it tried, if none does."""
+    planner = tilted_planner
+    folder = tmp_path_factory.mktemp("person_state")
+    empty = _scene(folder / "empty.yaml", layers=[FLOOR, PLATFORM, SEAT])
+    states = np.random.default_rng(19).uniform(*_search_box(planner), size=(20000, 7))
+    try:
+        planner.update_world(empty)
+        free = _feasible(planner, states)
+    finally:
+        planner.update_world("world_sim_kitchen.yaml")
+    blocked = free & ~_feasible(chair_planner, states)
+    chair = _cuboids(chair_planner)
+    layer = {box["name"]: box["layer"] for box in chair_planner.world_boxes}
+    candidates = states[blocked]
+    # cuRobo's FK refuses an empty batch
+    reached = _spheres(chair_planner, candidates) if len(candidates) else []
+    elsewhere, depths = 0, []
+    for q, spheres in zip(candidates, reached):
+        hits = sphere_box_penetration(spheres[spheres[:, 3] > 0], chair)
+        if {layer[key] for key in hits} != {"person"}:
+            elsewhere += 1
+        elif max(hits.values()) >= 0.02:
+            return q.tolist()
+        else:
+            depths.append(max(hits.values()))
+    pytest.fail(
+        "no joint vector (20000, seed 19) reaches 20 mm into the person and "
+        "nothing else of the chair: the person alone blocks %d on the chair "
+        "planner, %d of those reach into other boxes of the chair, and the rest "
+        "at most %.1f mm into the person"
+        % (blocked.sum(), elsewhere, 1e3 * max(depths, default=0))
+    )
 
 
 @pytest.fixture(scope="session")
@@ -819,7 +863,7 @@ def test_chair_layers_survive_every_push(chair_planner, platform_state, tmp_path
         for form, world in pushes.items():
             chair_planner.update_world(world)
             layers = Counter(box["layer"] for box in chair_planner.world_boxes)
-            assert layers == {"scene": 1, "platform": 16, "person": 9}, form
+            assert layers == {"scene": 1, "platform": 16, "seat": 5, "person": 8}, form
             # and in cuRobo: a state that only the platform blocks stays invalid
             ok, detail = chair_planner.check_state_valid(platform_state)
             assert not ok and "platform/" in detail, (form, detail)
@@ -828,11 +872,11 @@ def test_chair_layers_survive_every_push(chair_planner, platform_state, tmp_path
 
 
 def test_person_is_excluded_without_touching_the_platform(
-    chair_planner, platform_state
+    chair_planner, platform_state, person_state
 ):
-    retract = chair_planner.retract_pose
+    inside = person_state
     whole = chair_planner.world_boxes
-    ok, detail = chair_planner.check_state_valid(retract)
+    ok, detail = chair_planner.check_state_valid(inside)
     assert not ok and "person/" in detail, detail
     try:
         chair_planner.update_world(MEBOT / "world.yaml", ignore={"person"})
@@ -840,7 +884,7 @@ def test_person_is_excluded_without_touching_the_platform(
         assert not [box for box in kept if box["layer"] == "person"]
         platform = [box for box in whole if box["layer"] == "platform"]
         assert [box for box in kept if box["layer"] == "platform"] == platform
-        assert chair_planner.check_state_valid(retract) == (True, "")
+        assert chair_planner.check_state_valid(inside) == (True, "")
         ok, detail = chair_planner.check_state_valid(platform_state)
         assert not ok and "platform/" in detail, detail
 
@@ -870,11 +914,13 @@ def chair_states(chair_planner):
     return valid[0].tolist(), valid[1:9].tolist()
 
 
-def test_invalid_start_names_the_blocking_layer(chair_planner, chair_states):
-    # the retract is inside the padded person: cuRobo refuses it as a start
-    # before it plans, and the error says what the start collides with
+def test_invalid_start_names_the_blocking_layer(
+    chair_planner, chair_states, person_state
+):
+    # a state inside the padded person: cuRobo refuses it as a start before
+    # it plans, and the error says what the start collides with
     _, goals = chair_states
-    res = chair_planner.plan_to_joints(goals[0], start=chair_planner.retract_pose)
+    res = chair_planner.plan_to_joints(goals[0], start=person_state)
     assert not res.success
     assert "INVALID_START" in res.status, res.status
     assert re.search(
@@ -956,24 +1002,24 @@ def test_plans_keep_curobo_spheres_outside_every_padded_box(
 
 
 def test_held_and_via_plans_on_the_chair_keep_out_of_its_layers(
-    chair_planner, chair_states
+    chair_planner, chair_states, person_state
 ):
     # #16's orientation hold and #17's via point plan through plan_to_pose's
     # own paths. On the chair they must plan in the world with its layers:
-    # a held or via plan from the retract, which is inside the padded person,
-    # is refused and its error names the person box; and the plans that do
-    # come back keep cuRobo's spheres out of every padded box
+    # a held or via plan from a state inside the padded person is refused and
+    # its error names the person box; and the plans that do come back keep
+    # cuRobo's spheres out of every padded box
     from rammp_curobo.constraints import HOLD_FIXED, PoseConstraint, ViaPoint
 
     fixed = PoseConstraint(hold=HOLD_FIXED)
     via = ViaPoint(offset_m=0.05)
     world = re.compile(
-        r" \[world: \d+ boxes: .*config layers: platform 16, person 9 .*\]$"
+        r" \[world: \d+ boxes: .*config layers: platform 16, seat 5, person 8 .*\]$"
     )
-    retract = chair_planner.retract_pose
-    pos, quat = chair_planner.fk(retract)
+    inside = person_state
+    pos, quat = chair_planner.fk(inside)
     for kind, kw in (("hold", dict(constraint=fixed)), ("via", dict(via=via))):
-        res = chair_planner.plan_to_pose(pos, quat, retract, **kw)
+        res = chair_planner.plan_to_pose(pos, quat, inside, **kw)
         assert not res.success, kind
         assert "INVALID_START" in res.status, (kind, res.status)
         assert re.search(r"\[start collides with person/\w+ \(\d+ mm\)", res.error), (

@@ -126,7 +126,8 @@ def test_a_path_is_measured_by_how_deep_the_sim_arm_goes_into_each_group(seated)
     at = find_pairs.deepest_contacts(seated, [IN_STANDIN])
     assert set(at) == {"standin"} and 0.01 < at["standin"] < 0.05
     along = find_pairs.deepest_contacts(seated, find_pairs.densify(START, IN_STANDIN))
-    assert along["standin"] >= at["standin"]
+    # the path ends at the state, to the last ulp of densify's arithmetic
+    assert along["standin"] >= at["standin"] - 1e-12
     # where the sim starts, it touches nothing
     assert find_pairs.deepest_contacts(seated, [START]) == {}
 
@@ -135,6 +136,7 @@ DIGESTS = {
     "layer_mebot_floor.yaml": "a" * 64,
     "layer_mebot_platform.yaml": "b" * 64,
     "layer_mebot_person.yaml": "c" * 64,
+    "layer_mebot_seat.yaml": "d" * 64,
 }
 
 
@@ -152,6 +154,9 @@ def _found():
         "digests": DIGESTS,
         "start": q(),
         "start_tool": [0.249, -0.366, 0.253],
+        "person_start": q(),
+        "person_start_box": "person/thighs",
+        "person_start_depth": 0.105,
         "reaches": {
             "seed": 33,
             "states": 1000,
@@ -180,6 +185,7 @@ def test_the_generated_part_holds_the_requests_exactly():
     assert data["layers_sha256"] == DIGESTS
     # floats as written read back as the same numbers
     assert data["start"] == found["start"].tolist()
+    assert data["person_start"] == found["person_start"].tolist()
     assert data["reaches"]["seed"] == 33
     assert data["reaches"]["goals"] == [
         g.tolist() for _, g, _ in found["reaches"]["goals"]
@@ -236,3 +242,80 @@ def test_the_committed_scenarios_are_written_as_find_pairs_writes_them():
     found = yaml.safe_load(text)
     assert set(found) == set(data) | set(find_pairs.GENERATED)
     assert set(found["layers_sha256"]) == set(stack.layer_digests())
+
+
+class _AlongX:
+    """A planner for inside_person: a sphere no joint moves, always inside a
+    seat box as the arm's base column is beside the carved seat, and one
+    that moves along x with the first joint. Every state is valid without
+    the person."""
+
+    fixed = np.array([[0.0, 0.0, 5.0, 0.05]])
+
+    def __init__(self):
+        self.pushed = []
+
+    def push(self, world):
+        self.pushed.append(world)
+        return world
+
+    def feasible(self, states):
+        return np.ones(len(states), dtype=bool)
+
+    def kinematics(self, states):
+        moving = np.zeros((len(states), 4))
+        moving[:, 0], moving[:, 3] = states[:, 0], 0.05
+        fixed = np.repeat(self.fixed[None], len(states), axis=0)
+        return np.zeros((len(states), 3)), np.concatenate([fixed, moving[:, None]], 1)
+
+
+def _cube(x, z=0.0, side=0.2):
+    return {"dims": [side] * 3, "pose": [x, 0.0, z, 1.0, 0.0, 0.0, 0.0]}
+
+
+def test_the_s5_start_is_inside_the_person_and_nothing_else():
+    present = {
+        "seat/back": _cube(0.0, z=5.0),  # around the fixed sphere: ignored
+        "person/thighs": _cube(1.0),
+        "person/legs": _cube(2.0),
+        "seat/frame": _cube(2.15),  # beside the legs: a state in both is not
+    }
+    absent = {"seat/back": present["seat/back"], "seat/frame": present["seat/frame"]}
+    box = (np.r_[0.0, np.zeros(6)], np.r_[2.5, np.ones(6)])
+    search = {"seed": 7, "states": 400, "min_depth_m": 0.02}
+    planner = _AlongX()
+    q, key, depth = find_pairs.inside_person(planner, search, present, absent, box)
+    # planned in the chair without the person, judged with it
+    assert planner.pushed == [absent, present]
+    assert key.startswith("person/") and depth >= 0.02
+    # its moving sphere reaches the person only: never the seat beside the legs
+    x = q[0]
+    assert 0.85 - 0.05 + 0.02 <= x <= 1.15 + 0.05 - 0.02 or (
+        1.85 + 0.02 - 0.05 <= x <= 2.05 + 0.05 - 0.02
+    )
+    assert not 2.05 - 0.05 < x < 2.25 + 0.05
+    # seeded: the same state again
+    again = find_pairs.inside_person(_AlongX(), search, present, absent, box)
+    assert np.array_equal(again[0], q)
+
+
+def test_no_state_inside_the_person_fails_naming_what_it_tried():
+    # the person is only ever reached shallower than the minimum, or
+    # together with the seat
+    present = {
+        "seat/back": _cube(0.0, z=5.0),
+        # its bottom 0.04 over the path: the 0.05 sphere reaches 10 mm in
+        "person/thighs": _cube(1.0, z=0.14),
+        "person/legs": _cube(2.0),
+        "seat/frame": _cube(2.0, side=0.3),  # around the legs entirely
+    }
+    absent = {"seat/back": present["seat/back"], "seat/frame": present["seat/frame"]}
+    box = (np.zeros(7), np.r_[2.5, np.ones(6)])
+    search = {"seed": 7, "states": 400, "min_depth_m": 0.02}
+    with pytest.raises(RuntimeError) as exc:
+        find_pairs.inside_person(_AlongX(), search, present, absent, box)
+    message = str(exc.value)
+    assert "no state of 400 (seed 7), of the 400 valid without the person" in message
+    assert "reaches 0.02 m into the person and nothing else" in message
+    shallow = int(message.rsplit("(", 1)[1].split()[0])
+    assert shallow > 0  # the thighs, reached but not deep enough
