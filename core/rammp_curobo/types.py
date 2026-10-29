@@ -66,6 +66,9 @@ class PlanResult:
     # plan_to_joints via the FK-pose fallback reaches the requested EE pose
     # but not necessarily the exact joint vector — this records the gap.
     goal_mismatch_rad: Optional[float] = None
+    # plan_through: per waypoint, how far the tool passes from the planned
+    # path there, m (0 where the trajectory stops).
+    corners_m: Optional[List[float]] = None
 
     @classmethod
     def failure(cls, status: str, error: str, timing: float = 0.0) -> "PlanResult":

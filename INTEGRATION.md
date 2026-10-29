@@ -101,6 +101,45 @@ status:
 `PlanToPose.action` has the full contract. `/rammp_curobo/set_world` swaps the
 collision world's scene. There is nothing here that can move an arm.
 
+### Through several waypoints: `/rammp_curobo/plan_through`
+
+One trajectory from `start_joints` through a list of `Waypoint`s, each a tool
+pose (`kind POSE`, with its own `hold`) or joints (`kind JOINTS`, planned, or
+`straight` for a straight line in joint space). A waypoint's `blend_radius`
+(m) lets the arm pass it **without stopping**: the tool may leave the planned
+path by up to that much there to cut the corner. `0`, the default, stops on
+the waypoint; the last always stops.
+
+```python
+from rammp_curobo_interfaces.action import PlanThrough
+from rammp_curobo_interfaces.msg import Waypoint
+
+home = Waypoint(kind=Waypoint.JOINTS, joints=q_home, blend_radius=0.05)
+view = Waypoint(kind=Waypoint.POSE)            # stops: the camera looks from here
+view.pose = view_pose
+plan = through_client.send_goal(
+    PlanThrough.Goal(waypoints=[home, view], start_joints=measured_q)
+).result
+# plan.corner_m: how far each waypoint's corner was cut (0 where it stops)
+```
+
+How: every leg is planned as `plan_to_pose` / `plan_to_joints` would plan it,
+from where the leg before it ends, and consecutive legs are then overlapped in
+time, so the arm moves by the sum of both while they overlap
+(`core/rammp_curobo/blend.py`). Each overlap is the longest whose states keep
+the joint velocity and acceleration limits, pass cuRobo's constraint check
+(collision, self-collision, limits) one by one, and keep the tool within the
+radius; the whole trajectory is validated like any plan. A radius is a bound,
+not a promise: where the limits or the world allow no cut, the arm stops on
+the waypoint and `corner_m` says 0. A waypoint that cannot be planned fails the
+goal, naming it (`waypoint 2/3: ...`). The trajectory is at full speed like
+every plan here; slow it at execution.
+
+A straight leg runs at half the joint limits, so blending it with the next has
+headroom, and is refused (`STRAIGHT_LEG_INFEASIBLE`) if any state of it
+collides: nothing plans round an obstacle on it. That is the way to turn a
+dense list of joint positions into one smooth motion.
+
 ## Planning on the MEBot (≥ 1.1.0)
 
 With the arm on the MEBot wheelchair, run the planner with the chair

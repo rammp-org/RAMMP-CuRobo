@@ -31,7 +31,7 @@ import time
 
 import numpy as np
 
-from rammp_curobo import geometry
+from rammp_curobo import blend, geometry
 from rammp_curobo.config import PLANNER_DEFAULTS, load_planner_config, resolve_config
 from rammp_curobo import constraints
 from rammp_curobo.constraints import PoseConstraint, ViaPoint
@@ -50,6 +50,11 @@ from rammp_curobo.world import (
 )
 
 log = logging.getLogger("rammp_curobo")
+
+# A straight joint leg (plan_through) runs at this fraction of the joint
+# limits, so blending it with the next leg has headroom: overlapped legs'
+# velocities add.
+STRAIGHT_LIMIT_FRACTION = 0.5
 
 
 def _boxes(hits):
@@ -608,6 +613,181 @@ class CuRoboPlanner:
             "joint-space method must be 'auto', 'js', or " "'fk_pose', got %r" % method
         )
 
+    def plan_through(self, waypoints, start):
+        """Plan ONE trajectory from `start` through `waypoints` (constraints.
+        Waypoint), stopping only where a waypoint's blend_radius is 0 and at
+        the last.
+
+        Each leg is planned from where the one before it ends, as
+        plan_to_pose / plan_to_joints would plan it (or straight), and the
+        legs are overlapped in time (blend.py) so the arm passes each
+        blended waypoint still moving. Every junction's overlap is the
+        longest (bisected) whose window keeps the joint velocity and
+        acceleration limits, passes cuRobo's constraint check (collision,
+        self-collision, position limits) at every state, and keeps the tool
+        within the waypoint's blend_radius of the planned path. The whole
+        trajectory is then validated and re-checked like any plan.
+
+        corners_m on the result: per waypoint, how far the tool passes from
+        the planned path there (0 where it stops). goal_mismatch_rad: the
+        largest of the joint waypoints' (plan_to_joints).
+        """
+        t0 = time.monotonic()
+        legs, q, mismatch = [], [float(v) for v in start], None
+        for i, wp in enumerate(waypoints):
+            what = "waypoint %d/%d" % (i + 1, len(waypoints))
+            try:
+                wp.validate()
+            except ValueError as exc:
+                return PlanResult.failure("BAD_WAYPOINT", "%s: %s" % (what, exc))
+            if wp.straight:
+                res = self._straight_leg(wp.joints, q)
+            elif wp.joints is not None:
+                res = self.plan_to_joints(wp.joints, start=q)
+                if res.goal_mismatch_rad is not None:
+                    mismatch = max(mismatch or 0.0, res.goal_mismatch_rad)
+            else:
+                res = self.plan_to_pose(
+                    wp.position, wp.quaternion, start=q, constraint=wp.constraint
+                )
+            if not res.success:
+                return PlanResult.failure(
+                    res.status,
+                    "%s: %s" % (what, res.error),
+                    timing=time.monotonic() - t0,
+                )
+            tr = res.joint_traj
+            legs.append((tr.positions, tr.velocities, tr.accelerations))
+            q = [float(v) for v in tr.positions[-1]]
+        if not legs:
+            return PlanResult.failure("BAD_WAYPOINT", "no waypoints")
+
+        lim = self.joint_limits()
+        lengths = [len(p) for p, _, _ in legs]
+        radii = [wp.blend_radius for wp in waypoints[:-1]]
+
+        def corner(k, overlaps, p):
+            """How far the tool passes from the planned path in junction k's
+            window: at each state, from the nearer of the two planned states
+            it was summed from (each is on the path, so this bounds it)."""
+            w = blend.window(lengths, overlaps, k)
+            o = blend.offsets(lengths, overlaps)
+            i = np.arange(w.start, w.stop)
+            tool = self._tool_positions(p[w])
+            gap_a = np.linalg.norm(
+                tool - self._tool_positions(legs[k][0][i - o[k]]), axis=1
+            )
+            gap_b = np.linalg.norm(
+                tool - self._tool_positions(legs[k + 1][0][i - o[k + 1]]), axis=1
+            )
+            return float(np.minimum(gap_a, gap_b).max())
+
+        def accept(k, overlaps):
+            p, v, a = blend.blend(legs, overlaps)
+            w = blend.window(lengths, overlaps, k)
+            if (np.abs(v[w]) > lim["velocity"]).any():
+                return False
+            if a is not None and (np.abs(a[w]) > lim["acceleration"]).any():
+                return False
+            if corner(k, overlaps, p) > radii[k]:
+                return False
+            return bool(self._feasible(p[w]).all())
+
+        caps = blend.max_overlaps(lengths, [r > 0.0 for r in radii])
+        overlaps = blend.choose_overlaps(caps, accept)
+        p, v, a = blend.blend(legs, overlaps)
+        traj = Trajectory(
+            joint_names=list(self.joint_names),
+            positions=p,
+            velocities=v,
+            accelerations=a,
+            dt=self.interpolation_dt,
+            frame_id=self.base_frame,
+        )
+        problems = validate_trajectory(
+            traj,
+            lim["position"],
+            lim["velocity"],
+            acceleration_limits=lim["acceleration"],
+        )
+        feasible = self._feasible(p)
+        if not feasible.all():
+            problems.append(
+                "constraint re-check flagged %d/%d states infeasible"
+                % ((~feasible).sum(), feasible.size)
+            )
+        if problems:
+            return PlanResult.failure(
+                "LIBRARY_VALIDATION_FAILED",
+                "plan rejected by post-validation: " + "; ".join(problems),
+                timing=time.monotonic() - t0,
+            )
+        corners = [corner(k, overlaps, p) if m else 0.0 for k, m in enumerate(overlaps)]
+        return PlanResult(
+            success=True,
+            joint_traj=traj,
+            timing=time.monotonic() - t0,
+            error=None,
+            status="OK",
+            validated=True,
+            final_joints=p[-1].copy(),
+            goal_mismatch_rad=mismatch,
+            corners_m=corners + [0.0],
+        )
+
+    def _straight_leg(self, q_goal, start):
+        """A straight joint-space leg start -> q_goal (blend.straight_leg) at
+        STRAIGHT_LIMIT_FRACTION of the joint limits, as a PlanResult: refused
+        when any state is infeasible (collision, self-collision, a limit),
+        naming the first and what it hits."""
+        t0 = time.monotonic()
+        q_goal = self._nearest_branch([float(v) for v in q_goal], start)
+        q_goal, err = self._clamp_to_limits(q_goal, "goal")
+        if err is not None:
+            return PlanResult.failure(*err)
+        start, err = self._clamp_to_limits(start, "start")
+        if err is not None:
+            return PlanResult.failure(*err)
+        lim = self.joint_limits()
+        p, v, a = blend.straight_leg(
+            start,
+            q_goal,
+            STRAIGHT_LIMIT_FRACTION * lim["velocity"],
+            STRAIGHT_LIMIT_FRACTION * lim["acceleration"],
+            self.interpolation_dt,
+        )
+        feasible = self._feasible(p)
+        if not feasible.all():
+            k = int(np.argmin(feasible))
+            _, detail = self.check_state_valid(p[k])
+            return PlanResult.failure(
+                "STRAIGHT_LEG_INFEASIBLE",
+                "the straight joint leg is infeasible at %.2f s of %.2f s (%s)"
+                % (
+                    k * self.interpolation_dt,
+                    (len(p) - 1) * self.interpolation_dt,
+                    detail,
+                ),
+                timing=time.monotonic() - t0,
+            )
+        traj = Trajectory(
+            joint_names=list(self.joint_names),
+            positions=p,
+            velocities=v,
+            accelerations=a,
+            dt=self.interpolation_dt,
+            frame_id=self.base_frame,
+        )
+        return PlanResult(
+            success=True,
+            joint_traj=traj,
+            timing=time.monotonic() - t0,
+            error=None,
+            status="OK",
+            validated=True,
+            final_joints=p[-1].copy(),
+        )
+
     def update_world(self, world, ignore=()):
         """Replace the scene of the collision world. The layers the planner
         config lists stay: they are composed into every world.
@@ -900,6 +1080,31 @@ class CuRoboPlanner:
             self._tensor([self._to_curobo_order(q)]),
             joint_names=list(self._curobo_joint_names),
         )
+
+    def _feasible(self, qs):
+        """cuRobo's constraint check (limits, self-collision, the current
+        world) of every controller-order state in `qs`, in one batch: (N,)
+        bool. A checker failure is every state infeasible (fail closed)."""
+        from curobo.types.robot import JointState as CuJointState
+
+        state = CuJointState.from_position(
+            self._tensor([self._to_curobo_order(q) for q in qs]),
+            joint_names=list(self._curobo_joint_names),
+        )
+        try:
+            metrics = self._motion_gen.check_constraints(state)
+        except Exception as exc:
+            log.error("check_constraints failed: %s", exc)
+            return np.zeros(len(qs), dtype=bool)
+        return metrics.feasible.detach().cpu().numpy().reshape(-1).astype(bool)
+
+    def _tool_positions(self, qs):
+        """The ee_link's position (N, 3) at every controller-order state in
+        `qs`, in one FK batch."""
+        state = self._motion_gen.kinematics.get_state(
+            self._tensor([self._to_curobo_order(q) for q in qs])
+        )
+        return state.ee_position.detach().cpu().numpy().astype(float)
 
     def _spheres(self, q):
         """cuRobo's collision spheres at one controller-order joint vector,

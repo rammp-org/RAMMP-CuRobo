@@ -13,8 +13,10 @@ find_package(trajectory_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/PlanToPose.action"
   "action/PlanToJoints.action"
+  "action/PlanThrough.action"
   "srv/SetWorld.srv"
   "msg/ApproachVia.msg"
+  "msg/Waypoint.msg"
   DEPENDENCIES geometry_msgs trajectory_msgs
 )
 

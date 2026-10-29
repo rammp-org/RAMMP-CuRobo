@@ -5,6 +5,7 @@
 Actions (node name rammp_curobo):
     /rammp_curobo/plan_to_pose        rammp_curobo_interfaces/PlanToPose
     /rammp_curobo/plan_to_joints      rammp_curobo_interfaces/PlanToJoints
+    /rammp_curobo/plan_through        rammp_curobo_interfaces/PlanThrough
 Services:
     /rammp_curobo/set_world           rammp_curobo_interfaces/srv/SetWorld
 
@@ -42,10 +43,11 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
-from rammp_curobo import PoseConstraint, ViaPoint
+from rammp_curobo import PoseConstraint, ViaPoint, Waypoint
 from rammp_curobo.config import load_planner_config
 from rammp_curobo.urdf_model import prepare_urdf, write_urdf
-from rammp_curobo_interfaces.action import PlanToJoints, PlanToPose
+from rammp_curobo_interfaces.action import PlanThrough, PlanToJoints, PlanToPose
+from rammp_curobo_interfaces.msg import Waypoint as WaypointMsg
 from rammp_curobo_interfaces.srv import SetWorld
 from rammp_curobo_ros.conversions import trajectory_to_msg
 
@@ -141,6 +143,52 @@ def constraint_from_goal(goal):
     return constraint, via, None
 
 
+def waypoints_from_goal(goal, n_joints):
+    """([Waypoint], why_rejected) from a PlanThrough goal. An unknown kind or
+    hold, or joints that are not n_joints finite values, is REFUSED, never
+    read as something else."""
+    waypoints = []
+    for i, w in enumerate(goal.waypoints):
+        what = "waypoint %d/%d" % (i + 1, len(goal.waypoints))
+        if w.kind == WaypointMsg.POSE:
+            p, o = w.pose.position, w.pose.orientation
+            wp = Waypoint(
+                position=(p.x, p.y, p.z),
+                quaternion=(o.x, o.y, o.z, o.w),
+                constraint=PoseConstraint(hold=int(w.hold)),
+                straight=bool(w.straight),
+                blend_radius=float(w.blend_radius),
+            )
+        elif w.kind == WaypointMsg.JOINTS:
+            joints = [float(v) for v in w.joints]
+            if len(joints) != n_joints or not all(math.isfinite(v) for v in joints):
+                return [], "%s: %d joints expected, finite, got %r" % (
+                    what,
+                    n_joints,
+                    joints,
+                )
+            wp = Waypoint(
+                joints=tuple(joints),
+                straight=bool(w.straight),
+                blend_radius=float(w.blend_radius),
+            )
+        else:
+            return [], "%s: unknown kind %d (expected POSE=%d or JOINTS=%d)" % (
+                what,
+                w.kind,
+                WaypointMsg.POSE,
+                WaypointMsg.JOINTS,
+            )
+        try:
+            wp.validate()
+        except ValueError as exc:
+            return [], "%s: %s" % (what, exc)
+        waypoints.append(wp)
+    if not waypoints:
+        return [], "no waypoints"
+    return waypoints, None
+
+
 class RammpCuroboNode(Node):
     def __init__(self):
         super().__init__("rammp_curobo")
@@ -231,6 +279,13 @@ class RammpCuroboNode(Node):
             PlanToJoints,
             "~/plan_to_joints",
             self._plan_to_joints_cb,
+            callback_group=self._cb,
+        )
+        ActionServer(
+            self,
+            PlanThrough,
+            "~/plan_through",
+            self._plan_through_cb,
             callback_group=self._cb,
         )
         self.create_service(
@@ -358,6 +413,29 @@ class RammpCuroboNode(Node):
         out = self._finish_plan(goal_handle, result, res)
         # _plan returns None (busy) or a string (bad start) as sentinels —
         # only a real PlanResult carries goal_mismatch_rad.
+        mismatch = getattr(res, "goal_mismatch_rad", None)
+        if mismatch is not None:
+            out.goal_mismatch_rad = float(mismatch)
+        return out
+
+    def _plan_through_cb(self, goal_handle):
+        result = PlanThrough.Result()
+        waypoints, why = waypoints_from_goal(
+            goal_handle.request, len(self.planner.joint_names)
+        )
+        if why is not None:
+            result.success = False
+            result.message = "invalid waypoints: %s" % why
+            goal_handle.abort()
+            return result
+        res = self._plan(
+            lambda q: self.planner.plan_through(waypoints, start=q),
+            goal_handle.request.start_joints,
+        )
+        out = self._finish_plan(goal_handle, result, res)
+        # as in _plan_to_joints_cb: only a real PlanResult carries these
+        if getattr(res, "corners_m", None) is not None:
+            out.corner_m = [float(c) for c in res.corners_m]
         mismatch = getattr(res, "goal_mismatch_rad", None)
         if mismatch is not None:
             out.goal_mismatch_rad = float(mismatch)

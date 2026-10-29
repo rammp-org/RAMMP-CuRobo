@@ -154,6 +154,14 @@ Layer boxes are in `arm_mount`, like every world.
 
 ### Added
 
+- **`/rammp_curobo/plan_through`** (`PlanThrough.action`, `Waypoint.msg`;
+  core: `CuRoboPlanner.plan_through`, `Waypoint`, `blend.py`): one trajectory
+  through a list of pose or joint waypoints. A waypoint with a `blend_radius`
+  is passed without stopping: its two legs overlap in time, the corner cut no
+  further than the radius, the joint limits and the collision world allow,
+  each overlap checked state by state. `straight` joint waypoints turn a list
+  of joint positions into one smooth motion. Additive: no existing message
+  changes.
 - **Every plan states its frame:** `trajectory.header.frame_id` is
   `arm_mount` on pose and joint plans alike (core: `Trajectory.frame_id`).
   kinova-gen3-ros2's `GoToEEPose` refuses any pose plan not stamped

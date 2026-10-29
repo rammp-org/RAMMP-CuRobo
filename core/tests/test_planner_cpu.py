@@ -176,3 +176,134 @@ def test_update_world_refuses_before_reaching_curobo(
         [{"name": "box", "position": [0.5, 0, 0], "dims": [0.1, 0.1, 0.1]}]
     )
     assert len(sent) == 1 and cpu_planner.scene.base_frame == "arm_mount"
+
+
+@pytest.fixture
+def through_planner(cpu_planner, monkeypatch):
+    """cpu_planner whose legs are straight joint moves (a pose waypoint's
+    position is its first three joints), whose "tool" is the first three
+    joints, and whose world is empty: records every leg's start."""
+    from rammp_curobo import blend
+    from rammp_curobo.types import PlanResult, Trajectory
+
+    lo, hi = _urdf_limits()
+    lim = {
+        "position": (lo, hi),
+        "velocity": np.full(7, 1.2),
+        "acceleration": np.full(7, 25.0),
+    }
+    monkeypatch.setattr(cpu_planner, "joint_limits", lambda: lim)
+    starts, failing = [], {}
+
+    def leg(goal, start):
+        starts.append(np.asarray(start, dtype=float))
+        if len(starts) in failing:
+            return PlanResult.failure("IK_FAIL", failing[len(starts)])
+        p, v, a = blend.straight_leg(
+            start, goal, lim["velocity"], lim["acceleration"], 0.02
+        )
+        traj = Trajectory(
+            list(cpu_planner.joint_names), p, v, a, 0.02, frame_id="arm_mount"
+        )
+        return PlanResult(True, traj, 0.0, None, "OK", True, p[-1].copy())
+
+    monkeypatch.setattr(
+        cpu_planner,
+        "plan_to_pose",
+        lambda pos, quat, start, constraint=None: leg(np.r_[pos, np.zeros(4)], start),
+    )
+    monkeypatch.setattr(cpu_planner, "plan_to_joints", lambda q, start: leg(q, start))
+    monkeypatch.setattr(
+        cpu_planner, "_tool_positions", lambda qs: np.asarray(qs)[:, :3]
+    )
+    cpu_planner.feasible = lambda qs: np.ones(len(qs), dtype=bool)
+    monkeypatch.setattr(cpu_planner, "_feasible", lambda qs: cpu_planner.feasible(qs))
+    monkeypatch.setattr(cpu_planner, "check_state_valid", lambda q: (False, "hits box"))
+    cpu_planner.starts, cpu_planner.failing = starts, failing
+    return cpu_planner
+
+
+def _square(radius):
+    """Three waypoints round a 0.4 rad square in joints 1-2, from joints 0."""
+    from rammp_curobo import Waypoint
+
+    return [
+        Waypoint(
+            position=(0.4, 0.0, 0.0), quaternion=(0, 0, 0, 1), blend_radius=radius
+        ),
+        Waypoint(joints=(0.4, 0.4, 0, 0, 0, 0, 0), blend_radius=radius),
+        Waypoint(joints=(0.0, 0.4, 0, 0, 0, 0, 0), straight=True, blend_radius=radius),
+    ]
+
+
+def test_plan_through_stops_where_the_radius_is_zero(through_planner):
+    res = through_planner.plan_through(_square(0.0), np.zeros(7))
+    assert res.success, res.error
+    assert res.corners_m == [0.0, 0.0, 0.0]
+    speed = np.linalg.norm(res.joint_traj.velocities, axis=1)
+    assert (speed[1:-1] == 0.0).sum() == 2  # at rest on the two inner waypoints
+    rest = res.joint_traj.positions[1:-1][speed[1:-1] == 0.0]
+    np.testing.assert_allclose(
+        rest, [[0.4, 0, 0, 0, 0, 0, 0], [0.4, 0.4, 0, 0, 0, 0, 0]]
+    )
+    # each leg planned from where the one before it ended (the third is straight)
+    np.testing.assert_allclose(through_planner.starts[1], [0.4, 0, 0, 0, 0, 0, 0])
+
+
+def test_plan_through_blends_within_the_radius_and_the_limits(through_planner):
+    stopped = through_planner.plan_through(_square(0.0), np.zeros(7)).joint_traj
+    res = through_planner.plan_through(_square(0.05), np.zeros(7))
+    assert res.success, res.error
+    traj = res.joint_traj
+    speed = np.linalg.norm(traj.velocities, axis=1)
+    assert speed[1:-1].min() > 0.0  # moving all the way to the goal
+    assert 0.0 < max(res.corners_m) <= 0.05 and res.corners_m[-1] == 0.0
+    assert (np.abs(traj.velocities) <= 1.2).all()
+    assert traj.duration < stopped.duration - 0.2
+    np.testing.assert_allclose(traj.positions[-1], [0, 0.4, 0, 0, 0, 0, 0], atol=1e-12)
+    assert traj.frame_id == "arm_mount"
+
+
+def test_plan_through_does_not_cut_a_corner_that_collides(through_planner):
+    # infeasible wherever joint 2 moves before joint 1 has arrived: inside
+    # the first corner, which the planned legs never enter
+    through_planner.feasible = lambda qs: ~(
+        (np.asarray(qs)[:, 0] < 0.4 - 1e-9) & (np.asarray(qs)[:, 1] > 1e-9)
+    )
+    res = through_planner.plan_through(_square(0.05)[:2], np.zeros(7))
+    assert res.success, res.error
+    assert res.corners_m == [0.0, 0.0]
+
+
+def test_plan_through_refuses_a_waypoint_that_fails_naming_it(through_planner):
+    through_planner.failing[2] = "no IK solution"
+    res = through_planner.plan_through(_square(0.05), np.zeros(7))
+    assert not res.success and res.joint_traj is None
+    assert res.status == "IK_FAIL"
+    assert res.error == "waypoint 2/3: no IK solution"
+    assert len(through_planner.starts) == 2  # nothing planned past it
+
+
+def test_plan_through_refuses_a_straight_leg_that_collides(through_planner):
+    through_planner.feasible = lambda qs: np.asarray(qs)[:, 1] < 0.2
+    res = through_planner.plan_through(_square(0.05)[2:], np.r_[0.4, 0.4, np.zeros(5)])
+    assert res.status == "STRAIGHT_LEG_INFEASIBLE"
+    assert "waypoint 1/1: the straight joint leg is infeasible at 0.00 s" in res.error
+    assert "hits box" in res.error
+
+
+def test_plan_through_refuses_a_malformed_waypoint(through_planner):
+    from rammp_curobo import Waypoint
+
+    for wp, why in [
+        (Waypoint(), "a pose (position, quaternion) or joints"),
+        (Waypoint(position=(0, 0, 0)), "needs both"),
+        (
+            Waypoint(position=(0, 0, 0), quaternion=(0, 0, 0, 1), straight=True),
+            "straight",
+        ),
+        (Waypoint(joints=(0,) * 7, blend_radius=-1.0), "blend_radius"),
+    ]:
+        res = through_planner.plan_through([wp], np.zeros(7))
+        assert res.status == "BAD_WAYPOINT" and why in res.error
+    assert not through_planner.starts

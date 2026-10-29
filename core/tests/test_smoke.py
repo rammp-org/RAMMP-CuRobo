@@ -1262,3 +1262,84 @@ def test_unconstrained_plan_is_unchanged(planner, start):
     assert a.success and b.success
     assert a.joint_traj.dof == b.joint_traj.dof
     assert abs(a.joint_traj.duration - b.joint_traj.duration) < 0.5
+
+
+def _corner(planner):
+    """Two waypoints with a corner between them, near the retract: a pose
+    (arm_joint_1 turned 0.5 rad) and then joints (the elbow bent from there)."""
+    q1 = list(planner.retract_pose)
+    q1[0] += 0.5
+    q2 = list(q1)
+    q2[1] -= 0.3
+    q2[3] += 0.3
+    pos, quat = planner.fk(q1)
+    return pos, quat, q2
+
+
+def test_plan_through_cuts_the_corner_it_may_and_stops_where_asked(planner, start):
+    from rammp_curobo import Waypoint
+
+    pos, quat, q2 = _corner(planner)
+    lim = planner.joint_limits()
+    out = {}
+    for radius in (0.0, 0.05):
+        res = planner.plan_through(
+            [
+                Waypoint(position=pos, quaternion=quat, blend_radius=radius),
+                Waypoint(joints=q2),
+            ],
+            start,
+        )
+        assert res.success and res.validated, res.error
+        traj = res.joint_traj
+        assert traj.frame_id == "arm_mount"
+        assert np.abs(traj.positions[0] - np.asarray(start)).max() < 1e-6
+        assert res.goal_mismatch_rad < 1e-3
+        assert np.abs(traj.positions[-1] - np.asarray(q2)).max() < 1e-3
+        assert (np.abs(traj.velocities) <= lim["velocity"] * 1.01).all()
+        assert _feasible(planner, traj.positions).all()
+        out[radius] = res
+    stopped, blended = out[0.0], out[0.05]
+    assert stopped.corners_m == [0.0, 0.0]
+    assert 0.0 < blended.corners_m[0] <= 0.05 and blended.corners_m[1] == 0.0
+    # stopped: at (cuRobo's) rest on the pose, its legs end and start within
+    # a few cm/s of it; blended: never as slow as that between start and goal
+    slowest = {
+        r: np.abs(res.joint_traj.velocities[1:-1]).max(axis=1).min()
+        for r, res in out.items()
+    }
+    assert slowest[0.0] < 0.05
+    assert slowest[0.05] > slowest[0.0]
+
+
+def test_plan_through_straight_joint_knots_never_stop_between(planner, start):
+    from rammp_curobo import Waypoint
+
+    knots = [
+        np.asarray(start) + np.r_[0.08 * k, 0.03 * np.sin(k), np.zeros(5)]
+        for k in range(1, 7)
+    ]
+    res = planner.plan_through(
+        [Waypoint(joints=tuple(q), straight=True, blend_radius=0.02) for q in knots],
+        start,
+    )
+    assert res.success, res.error
+    speed = np.abs(res.joint_traj.velocities).max(axis=1)
+    assert speed[1:-1].min() > 0.0
+    assert max(res.corners_m) <= 0.02
+    np.testing.assert_allclose(res.joint_traj.positions[-1], knots[-1], atol=1e-9)
+
+
+def test_plan_through_refuses_a_failing_waypoint_by_number(planner, start):
+    from rammp_curobo import Waypoint
+
+    pos, quat, q2 = _corner(planner)
+    res = planner.plan_through(
+        [
+            Waypoint(position=pos, quaternion=quat, blend_radius=0.05),
+            Waypoint(position=(3.0, 0.0, 0.5), quaternion=(0, 0, 0, 1)),
+        ],
+        start,
+    )
+    assert not res.success and res.joint_traj is None
+    assert res.error.startswith("waypoint 2/2: ")

@@ -139,8 +139,10 @@ source /opt/ros/humble/setup.zsh && source ~/RAMMP-CuRobo/install/setup.zsh
 ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml
 ```
 
-That's the whole service: `/rammp_curobo/plan_to_pose` and
-`/rammp_curobo/plan_to_joints` take a goal carrying the configuration to
+That's the whole service: `/rammp_curobo/plan_to_pose`,
+`/rammp_curobo/plan_to_joints` and `/rammp_curobo/plan_through` (one
+trajectory through several waypoints, not stopping where it may cut the
+corner) take a goal carrying the configuration to
 plan from (`start_joints`, **required** — the planner has no view of any
 arm) and return the trajectory. See **INTEGRATION.md** for client code,
 and **docker/** to run the same thing as a container. With the arm on the
