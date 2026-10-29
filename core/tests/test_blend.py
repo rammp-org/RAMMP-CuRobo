@@ -10,10 +10,28 @@ VMAX = np.full(7, 1.2)
 AMAX = np.full(7, 25.0)
 
 
+def straight_leg(q0, q1, vmax=VMAX, amax=AMAX, dt=DT):
+    """(p, v, a) of a straight joint move q0 -> q1 from rest to rest, on a
+    minimum-jerk profile timed so no joint passes `vmax` or `amax`."""
+    q0, q1 = np.asarray(q0, dtype=float), np.asarray(q1, dtype=float)
+    d = q1 - q0
+    # minimum jerk peaks at 1.875 x the mean speed and 5.774 d / T^2
+    duration = max(
+        np.max(1.875 * np.abs(d) / vmax), np.max(np.sqrt(5.7735 * np.abs(d) / amax)), dt
+    )
+    n = int(np.ceil(duration / dt))
+    u = np.arange(n + 1)[:, None] / n
+    T = n * dt
+    s = 10 * u**3 - 15 * u**4 + 6 * u**5
+    sd = (30 * u**2 - 60 * u**3 + 30 * u**4) / T
+    sdd = (60 * u - 180 * u**2 + 120 * u**3) / T**2
+    return q0 + s * d, sd * d, sdd * d
+
+
 def _legs(*points):
     """Straight legs through `points` (7-vectors), each from rest to rest."""
     qs = [np.asarray(q, dtype=float) for q in points]
-    return [blend.straight_leg(a, b, VMAX, AMAX, DT) for a, b in zip(qs, qs[1:])]
+    return [straight_leg(a, b) for a, b in zip(qs, qs[1:])]
 
 
 def _corner():
@@ -60,9 +78,22 @@ def test_blended_velocities_and_accelerations_are_the_positions_derivatives():
 
 def test_max_overlaps_gives_a_leg_whole_only_to_a_junction_with_a_stop_beside_it():
     lengths = [41, 61, 21]
-    assert blend.max_overlaps(lengths, [True, True]) == [30, 20]
+    assert blend.max_overlaps(lengths, [True, True]) == [29, 20]
     assert blend.max_overlaps(lengths, [True, False]) == [40, 0]
     assert blend.max_overlaps(lengths, [False, True]) == [0, 20]
+
+
+@pytest.mark.parametrize("n", [94, 95])
+def test_windows_at_their_caps_share_no_state(n):
+    lengths = [n, n, n]
+    overlaps = blend.max_overlaps(lengths, [True, True])
+    w0, w1 = (blend.window(lengths, overlaps, k) for k in (0, 1))
+    assert w0.stop <= w1.start  # junction 1's window starts after junction 0's ends
+    leg = (np.zeros((n, 7)), np.zeros((n, 7)), np.zeros((n, 7)))
+    blend.blend([leg] * 3, overlaps)  # accepted: within every leg's room
+    with pytest.raises(ValueError, match="junction 1 is outside"):
+        # the middle leg's two overlaps may total n - 2 steps; n - 1 shares a state
+        blend.blend([leg] * 3, [overlaps[0], n - 1 - overlaps[0]])
 
 
 def test_overlapping_windows_or_an_overlap_past_a_leg_are_refused():
@@ -71,7 +102,7 @@ def test_overlapping_windows_or_an_overlap_past_a_leg_are_refused():
     with pytest.raises(ValueError, match="outside"):
         blend.blend(legs[:2], [n])
     with pytest.raises(ValueError, match="junction 1 is outside"):
-        blend.blend(legs, [n // 2 + 1, n // 2 + 1])  # meeting inside leg 2
+        blend.blend(legs, [n // 2, n // 2])  # sharing a state of leg 2
     with pytest.raises(ValueError, match="overlaps for"):
         blend.blend(legs, [])
 
@@ -96,21 +127,9 @@ def test_choose_overlaps_returns_only_what_accept_allowed():
     assert blend.choose_overlaps([0, 5], lambda k, o: k == 1) == [0, 5]
 
 
-def test_a_straight_leg_keeps_its_limits_and_rests_at_both_ends():
-    q0, q1 = np.zeros(7), np.r_[1.0, -0.4, np.zeros(5)]
-    p, v, a = blend.straight_leg(q0, q1, VMAX, AMAX, DT)
-    np.testing.assert_allclose(p[[0, -1]], [q0, q1], atol=1e-12)
-    assert np.abs(v[[0, -1]]).max() < 1e-12 and np.abs(a[[0, -1]]).max() < 1e-12
-    assert (np.abs(v) <= VMAX + 1e-9).all() and (np.abs(a) <= AMAX + 1e-9).all()
-    # timed by the joint that moves most, at its limit
-    assert np.abs(v[:, 0]).max() == pytest.approx(1.2, rel=0.02)
-    # off the line nowhere: joint 2 is always the same fraction of joint 1
-    np.testing.assert_allclose(p[:, 1], -0.4 * p[:, 0], atol=1e-12)
-
-
 def test_resample_keeps_the_ends_and_slows_by_under_a_step():
     q0, q1 = np.zeros(7), np.r_[1.0, -0.4, np.zeros(5)]
-    p, v, a = blend.straight_leg(q0, q1, VMAX, AMAX, DT)
+    p, v, a = straight_leg(q0, q1, VMAX, AMAX, DT)
     slow = 0.3  # a leg at 0.3 of its speed: dt / 0.3 apart
     rp, rv, ra = blend.resample(p, v * slow, DT / slow, DT)
     duration = (len(p) - 1) * DT / slow

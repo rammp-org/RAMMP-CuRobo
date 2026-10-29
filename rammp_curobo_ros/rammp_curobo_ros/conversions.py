@@ -1,5 +1,7 @@
 """Message <-> library-type conversions. Pure functions, unit-testable."""
 
+import math
+
 import numpy as np
 from builtin_interfaces.msg import Duration as DurationMsg
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -40,7 +42,7 @@ def trajectory_from_msg(msg, joint_names, frame_id=""):
     `joint_names` order, None), or (None, why) when it is not a trajectory
     the planner could have produced: other joints, unevenly spaced points, or
     a point without positions and velocities. Accelerations are kept only when
-    every point has them."""
+    every point has them; anything non-finite is refused."""
     if sorted(msg.joint_names) != sorted(joint_names):
         return None, "joints [%s], expected [%s]" % (
             ", ".join(msg.joint_names),
@@ -59,6 +61,11 @@ def trajectory_from_msg(msg, joint_names, frame_id=""):
     if not dt > 0 or np.abs(np.diff(t) - dt).max(initial=0.0) > 1e-6:
         return None, "points are not evenly spaced in time"
     has_a = all(len(p.accelerations) == n for p in msg.points)
+    values = [v for p in msg.points for v in (*p.positions, *p.velocities)]
+    if has_a:
+        values += [v for p in msg.points for v in p.accelerations]
+    if not all(math.isfinite(v) for v in values):
+        return None, "non-finite positions, velocities or accelerations"
     return (
         Trajectory(
             joint_names=list(joint_names),

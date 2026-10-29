@@ -88,3 +88,9 @@ def test_from_msg_refuses_what_the_planner_could_not_have_produced():
     assert trajectory_from_msg(msg, JOINTS)[1] == "points are not evenly spaced in time"
     no_v = trajectory_to_msg(_traj(velocities=False, accelerations=False))
     assert "velocities" in trajectory_from_msg(no_v, JOINTS)[1]
+    nan = trajectory_to_msg(_traj())
+    nan.points[1].velocities[3] = float("nan")
+    assert "non-finite" in trajectory_from_msg(nan, JOINTS)[1]
+    twice = trajectory_to_msg(_traj())
+    twice.joint_names = JOINTS[:6] + JOINTS[:1]
+    assert "joints" in trajectory_from_msg(twice, JOINTS)[1]

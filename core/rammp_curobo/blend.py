@@ -1,15 +1,15 @@
 """One trajectory through several waypoints, without stopping at the ones between.
 
-plan_through plans a leg to each waypoint (cuRobo's plans, or a straight joint
-segment), every leg from rest to rest, and this module OVERLAPS them in time:
+CuRoboPlanner.blend_legs takes a leg to each waypoint (cuRobo's plans), every
+leg from rest to rest, and this module OVERLAPS them in time:
 leg k+1 starts m steps before leg k has finished, and while both run the arm
 moves by the sum of their displacements,
 
     q(t) = q_start + sum_k (p_k(t - t_k) - p_k(0))
 
-so velocities and accelerations add too. Every leg starts and ends at rest
-(zero velocity and acceleration), so the sum is exactly as continuous as the
-legs, and its last point is exactly the last leg's goal. At an overlapped
+so velocities and accelerations add too. Every leg starts and ends at rest,
+so the sum is as continuous as the legs, and its last point is the last leg's
+goal (exactly, when each leg starts exactly where the one before ends). At an overlapped
 waypoint the path cuts the corner: the arm passes NEAR the waypoint, still
 moving, instead of stopping on it.
 
@@ -34,14 +34,15 @@ def offsets(lengths, overlaps):
 def max_overlaps(lengths, blended):
     """The longest overlap each junction may have, given which junctions
     blend (`blended`, one bool each): a leg overlaps its neighbour by up to
-    its whole length, or half of it where it blends at its other end too,
-    so no two windows ever meet and each junction can be decided alone."""
+    its whole length, or under half of it where it blends at its other end
+    too, so no two windows share a state and each junction can be decided
+    alone."""
     last = len(lengths) - 1
     caps = []
     for k, on in enumerate(blended):
-        tail = lengths[k] - 1 if k == 0 or not blended[k - 1] else (lengths[k] - 1) // 2
+        tail = lengths[k] - 1 if k == 0 or not blended[k - 1] else (lengths[k] - 2) // 2
         nxt = k + 1 < last and blended[k + 1]
-        head = (lengths[k + 1] - 1) // 2 if nxt else lengths[k + 1] - 1
+        head = (lengths[k + 1] - 2) // 2 if nxt else lengths[k + 1] - 1
         caps.append(min(tail, head) if on else 0)
     return caps
 
@@ -60,7 +61,7 @@ def blend(legs, overlaps):
         k+1 starting where leg k ends; a may be None, and then so is the
         result's.
     overlaps: steps per junction, len(legs) - 1 of them, no two windows
-        meeting (max_overlaps keeps to that).
+        sharing a state (max_overlaps keeps to that).
     """
     lengths = [len(p) for p, _, _ in legs]
     if len(overlaps) != len(legs) - 1:
@@ -72,7 +73,8 @@ def blend(legs, overlaps):
                 "overlap %d at junction %d is outside 0..%d"
                 % (m, k, min(room[k], room[k + 1]))
             )
-        room[k + 1] -= m
+        if m:  # leg k+1's states 0..m are this window's: the next one starts after
+            room[k + 1] -= m + 1
     o = offsets(lengths, overlaps)
     n = o[-1] + lengths[-1]
     p = np.repeat(np.asarray(legs[0][0][:1], dtype=float), n, axis=0)
@@ -144,24 +146,3 @@ def resample(p, v, dt_in, dt):
     acc = (12 * u - 6) * p0 + (6 * u - 4) * m0 + (-12 * u + 6) * p1 + (6 * u - 2) * m1
     pos[-1] = p[-1]
     return pos, vel * stretch / dt_in, acc * (stretch / dt_in) ** 2
-
-
-def straight_leg(q0, q1, vmax, amax, dt):
-    """(p, v, a) of a straight joint-space move q0 -> q1, from rest to rest,
-    on a minimum-jerk profile timed so no joint passes `vmax` or `amax`
-    (per joint). Its first point is q0 and its last q1, `dt` apart."""
-    q0, q1 = np.asarray(q0, dtype=float), np.asarray(q1, dtype=float)
-    d = q1 - q0
-    # minimum jerk peaks at 1.875 x the mean speed and 5.774 d / T^2
-    duration = max(
-        np.max(1.875 * np.abs(d) / vmax),
-        np.max(np.sqrt(5.7735 * np.abs(d) / amax)),
-        dt,
-    )
-    n = int(np.ceil(duration / dt))
-    u = np.arange(n + 1)[:, None] / n
-    T = n * dt
-    s = 10 * u**3 - 15 * u**4 + 6 * u**5
-    sd = (30 * u**2 - 60 * u**3 + 30 * u**4) / T
-    sdd = (60 * u - 180 * u**2 + 120 * u**3) / T**2
-    return q0 + s * d, sd * d, sdd * d

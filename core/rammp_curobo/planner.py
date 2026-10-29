@@ -51,14 +51,11 @@ from rammp_curobo.world import (
 
 log = logging.getLogger("rammp_curobo")
 
-# A straight joint leg (plan_through) runs at this fraction of the joint
-# limits, so blending it with the next leg has headroom: overlapped legs'
-# velocities add.
-STRAIGHT_LIMIT_FRACTION = 0.5
 # blend_legs: a leg must start and end slower than this (cuRobo's plans end
-# within about 0.02 rad/s of rest), and start within this of the one before.
+# within about 0.02 rad/s of rest), and start within this of where the one
+# before ends: the blend ends off the last goal by the sum of these gaps.
 LEG_REST_RAD_S = 0.05
-LEG_JOIN_RAD = 0.01
+LEG_JOIN_RAD = 1e-3
 
 
 def _boxes(hits):
@@ -617,93 +614,67 @@ class CuRoboPlanner:
             "joint-space method must be 'auto', 'js', or 'fk_pose', got %r" % method
         )
 
-    def plan_through(self, waypoints, start):
-        """Plan ONE trajectory from `start` through `waypoints` (constraints.
-        Waypoint), stopping only where a waypoint's blend_radius is 0 and at
-        the last.
-
-        Each leg is planned from where the one before it ends, as
-        plan_to_pose / plan_to_joints would plan it (or straight), and the
-        legs are overlapped in time (blend.py) so the arm passes each
-        blended waypoint still moving. Every junction's overlap is the
-        longest (bisected) whose window keeps the joint velocity and
-        acceleration limits, passes cuRobo's constraint check (collision,
-        self-collision, position limits) at every state, and keeps the tool
-        within the waypoint's blend_radius of the planned path. The whole
-        trajectory is then validated and re-checked like any plan.
-
-        corners_m on the result: per waypoint, how far the tool passes from
-        the planned path there (0 where it stops). goal_mismatch_rad: the
-        largest of the joint waypoints' (plan_to_joints).
-        """
-        t0 = time.monotonic()
-        legs, q, mismatch = [], [float(v) for v in start], None
-        for i, wp in enumerate(waypoints):
-            what = "waypoint %d/%d" % (i + 1, len(waypoints))
-            try:
-                wp.validate()
-            except ValueError as exc:
-                return PlanResult.failure("BAD_WAYPOINT", "%s: %s" % (what, exc))
-            if wp.straight:
-                res = self._straight_leg(wp.joints, q)
-            elif wp.joints is not None:
-                res = self.plan_to_joints(wp.joints, start=q)
-                if res.goal_mismatch_rad is not None:
-                    mismatch = max(mismatch or 0.0, res.goal_mismatch_rad)
-            else:
-                res = self.plan_to_pose(
-                    wp.position, wp.quaternion, start=q, constraint=wp.constraint
-                )
-            if not res.success:
-                return PlanResult.failure(
-                    res.status,
-                    "%s: %s" % (what, res.error),
-                    timing=time.monotonic() - t0,
-                )
-            legs.append(res.joint_traj)
-            q = [float(v) for v in res.joint_traj.positions[-1]]
-        if not legs:
-            return PlanResult.failure("BAD_WAYPOINT", "no waypoints")
-        res = self.blend_legs(legs, [wp.blend_radius for wp in waypoints[:-1]])
-        res.timing = time.monotonic() - t0
-        if res.success:
-            res.goal_mismatch_rad = mismatch
-            res.corners_m = res.corners_m + [0.0]
-        return res
-
-    def blend_legs(self, legs, blend_radii, speed_scales=None):
-        """ONE trajectory through `legs` (types.Trajectory, each from rest
-        to rest, leg k+1 starting where leg k ends: plans from plan_to_pose
-        / plan_to_joints, each planned from the one before's end), the
-        arm passing junction k still moving where blend_radii[k] (m) > 0.
+    def blend_legs(self, legs, blend_radii, speed_scales=None, holds=None):
+        """ONE trajectory through `legs` (types.Trajectory, each from rest to
+        rest, leg k+1 planned from where leg k ends: plans from plan_to_pose /
+        plan_to_joints), the arm passing junction k (the end of leg k) still
+        moving where blend_radii[k] (m) > 0, and stopping on it where it is 0.
 
         speed_scales: per leg, (0, 1] of its planned speed (retime.py),
         default all 1; a leg not on this planner's dt is resampled onto it.
-        Every junction's overlap is the longest (bisected) whose window
-        keeps the joint velocity and acceleration limits, passes cuRobo's
-        constraint check (collision, self-collision, position limits) at
-        every state, and keeps the tool within blend_radii[k] of the planned
-        path. The whole trajectory is then validated and re-checked like
-        any plan. corners_m on the result: per junction, how far the tool
-        passes from the planned path there (0 where it stops).
+        holds: per leg, the PoseConstraint it was planned under, or None
+        (the default); a held leg keeps its hold through its overlaps too.
+
+        Legs are overlapped in time (blend.py). Each junction's overlap is the
+        longest (bisected) whose window:
+          - keeps the joint velocity and acceleration limits;
+          - keeps the tool within blend_radii[k] of the junction's waypoint
+            (the end of leg k) and of the planned path;
+          - keeps the hold of each held leg in it, measured as plan_to_pose
+            measures it;
+          - passes cuRobo's constraint check (collision, self-collision,
+            position limits) at every state.
+        The whole trajectory is then validated and re-checked like any plan.
+        corners_m on the result: per junction, how close the tool comes to
+        the waypoint (0 where it stops).
         """
         t0 = time.monotonic()
-        dof = len(self.joint_names)
-        scales = [1.0] * len(legs) if speed_scales is None else list(speed_scales)
+        n = len(legs)
         if not legs:
             return PlanResult.failure("BAD_LEG", "no legs")
-        if len(blend_radii) != len(legs) - 1 or len(scales) != len(legs):
+        scales = [1.0] * n if speed_scales is None else [float(s) for s in speed_scales]
+        holds = [None] * n if holds is None else list(holds)
+        if len(blend_radii) != n - 1 or len(scales) != n or len(holds) != n:
             return PlanResult.failure(
                 "BAD_LEG",
-                "%d legs need %d blend radii and %d speed scales, got %d and %d"
-                % (len(legs), len(legs) - 1, len(legs), len(blend_radii), len(scales)),
+                "%d legs need %d blend radii, %d speed scales and %d holds, "
+                "got %d, %d and %d"
+                % (n, n - 1, n, n, len(blend_radii), len(scales), len(holds)),
             )
+        radii = [float(r) for r in blend_radii]
+        for k, r in enumerate(radii):
+            if not (math.isfinite(r) and r >= 0.0):
+                return PlanResult.failure(
+                    "BAD_LEG",
+                    "junction %d: blend radius %r must be finite and >= 0" % (k + 1, r),
+                )
         sampled = []
         for k, (leg, s) in enumerate(zip(legs, scales)):
-            what = "leg %d/%d" % (k + 1, len(legs))
-            if leg.dof != dof or leg.velocities is None:
+            what = "leg %d/%d" % (k + 1, n)
+            if (
+                list(leg.joint_names) != list(self.joint_names)
+                or leg.velocities is None
+            ):
                 return PlanResult.failure(
-                    "BAD_LEG", "%s: %d joints with velocities expected" % (what, dof)
+                    "BAD_LEG",
+                    "%s: velocities for joints [%s] expected"
+                    % (what, ", ".join(self.joint_names)),
+                )
+            if not (
+                np.isfinite(leg.positions).all() and np.isfinite(leg.velocities).all()
+            ):
+                return PlanResult.failure(
+                    "BAD_LEG", "%s: non-finite positions or velocities" % what
                 )
             if not 0.0 < s <= 1.0:
                 return PlanResult.failure(
@@ -716,60 +687,70 @@ class CuRoboPlanner:
                     "%s: starts or ends moving (%.3f rad/s): legs must be rest to rest"
                     % (what, rest),
                 )
-            if (
-                k
-                and np.abs(leg.positions[0] - legs[k - 1].positions[-1]).max()
-                > LEG_JOIN_RAD
-            ):
+            gap = (
+                np.abs(leg.positions[0] - legs[k - 1].positions[-1]).max() if k else 0.0
+            )
+            if gap > LEG_JOIN_RAD:
                 return PlanResult.failure(
                     "BAD_LEG",
-                    "%s: starts %.3f rad from where leg %d ends"
-                    % (
-                        what,
-                        np.abs(leg.positions[0] - legs[k - 1].positions[-1]).max(),
-                        k,
-                    ),
+                    "%s: starts %.4f rad from where leg %d ends: plan each leg from "
+                    "the one before's last point" % (what, gap, k),
                 )
             leg = leg.scaled(s)
-            if abs(leg.dt - self.interpolation_dt) < 1e-9:
-                sampled.append((leg.positions, leg.velocities, leg.accelerations))
-            else:
+            if abs(leg.dt - self.interpolation_dt) > 1e-9:
                 sampled.append(
                     blend.resample(
                         leg.positions, leg.velocities, leg.dt, self.interpolation_dt
                     )
                 )
+            elif leg.accelerations is not None:
+                sampled.append((leg.positions, leg.velocities, leg.accelerations))
+            else:  # derived, so the acceleration limits are still checked
+                a = (
+                    np.gradient(leg.velocities, leg.dt, axis=0)
+                    if leg.n_points > 1
+                    else np.zeros_like(leg.velocities)
+                )
+                sampled.append((leg.positions, leg.velocities, a))
         legs = sampled
 
         lim = self.joint_limits()
+        tol = self.constraint_tolerance_rad
         lengths = [len(p) for p, _, _ in legs]
-        radii = [float(r) for r in blend_radii]
+        tool = [self._tool_poses(p) for p, _, _ in legs]  # per leg: (positions, wxyz)
 
-        def corner(k, overlaps, p):
-            """How far the tool passes from the planned path in junction k's
-            window: at each state, from the nearer of the two planned states
-            it was summed from (each is on the path, so this bounds it)."""
+        def window_poses(k, overlaps, p):
+            """(states' indices, tool positions, tool wxyz) in junction k's window."""
             w = blend.window(lengths, overlaps, k)
-            o = blend.offsets(lengths, overlaps)
-            i = np.arange(w.start, w.stop)
-            tool = self._tool_positions(p[w])
-            gap_a = np.linalg.norm(
-                tool - self._tool_positions(legs[k][0][i - o[k]]), axis=1
-            )
-            gap_b = np.linalg.norm(
-                tool - self._tool_positions(legs[k + 1][0][i - o[k + 1]]), axis=1
-            )
-            return float(np.minimum(gap_a, gap_b).max())
+            pos, wxyz = self._tool_poses(p[w])
+            return np.arange(w.start, w.stop), pos, wxyz
+
+        def corner(pos, k):
+            """How close the tool comes to junction k's waypoint."""
+            return float(np.linalg.norm(pos - tool[k][0][-1], axis=1).min())
 
         def accept(k, overlaps):
             p, v, a = blend.blend(legs, overlaps)
             w = blend.window(lengths, overlaps, k)
             if (np.abs(v[w]) > lim["velocity"]).any():
                 return False
-            if a is not None and (np.abs(a[w]) > lim["acceleration"]).any():
+            if (np.abs(a[w]) > lim["acceleration"]).any():
                 return False
-            if corner(k, overlaps, p) > radii[k]:
+            i, pos, wxyz = window_poses(k, overlaps, p)
+            if corner(pos, k) > radii[k]:
                 return False
+            # off the path: at each state, from the nearer of the two planned
+            # states it was summed from (each is on the path, so this bounds it)
+            o = blend.offsets(lengths, overlaps)
+            gap_a = np.linalg.norm(pos - tool[k][0][i - o[k]], axis=1)
+            gap_b = np.linalg.norm(pos - tool[k + 1][0][i - o[k + 1]], axis=1)
+            if np.minimum(gap_a, gap_b).max() > radii[k]:
+                return False
+            for j in (k, k + 1):
+                if holds[j] is not None and holds[j].hold != constraints.HOLD_NONE:
+                    goal = geometry.wxyz_to_xyzw(tool[j][1][-1])
+                    if self._hold_deviation_batch(wxyz, goal, holds[j]).max() > tol:
+                        return False
             return bool(self._feasible(p[w]).all())
 
         caps = blend.max_overlaps(lengths, [r > 0.0 for r in radii])
@@ -801,7 +782,10 @@ class CuRoboPlanner:
                 "plan rejected by post-validation: " + "; ".join(problems),
                 timing=time.monotonic() - t0,
             )
-        corners = [corner(k, overlaps, p) if m else 0.0 for k, m in enumerate(overlaps)]
+        corners = [
+            corner(window_poses(k, overlaps, p)[1], k) if m else 0.0
+            for k, m in enumerate(overlaps)
+        ]
         return PlanResult(
             success=True,
             joint_traj=traj,
@@ -811,59 +795,6 @@ class CuRoboPlanner:
             validated=True,
             final_joints=p[-1].copy(),
             corners_m=corners,
-        )
-
-    def _straight_leg(self, q_goal, start):
-        """A straight joint-space leg start -> q_goal (blend.straight_leg) at
-        STRAIGHT_LIMIT_FRACTION of the joint limits, as a PlanResult: refused
-        when any state is infeasible (collision, self-collision, a limit),
-        naming the first and what it hits."""
-        t0 = time.monotonic()
-        q_goal = self._nearest_branch([float(v) for v in q_goal], start)
-        q_goal, err = self._clamp_to_limits(q_goal, "goal")
-        if err is not None:
-            return PlanResult.failure(*err)
-        start, err = self._clamp_to_limits(start, "start")
-        if err is not None:
-            return PlanResult.failure(*err)
-        lim = self.joint_limits()
-        p, v, a = blend.straight_leg(
-            start,
-            q_goal,
-            STRAIGHT_LIMIT_FRACTION * lim["velocity"],
-            STRAIGHT_LIMIT_FRACTION * lim["acceleration"],
-            self.interpolation_dt,
-        )
-        feasible = self._feasible(p)
-        if not feasible.all():
-            k = int(np.argmin(feasible))
-            _, detail = self.check_state_valid(p[k])
-            return PlanResult.failure(
-                "STRAIGHT_LEG_INFEASIBLE",
-                "the straight joint leg is infeasible at %.2f s of %.2f s (%s)"
-                % (
-                    k * self.interpolation_dt,
-                    (len(p) - 1) * self.interpolation_dt,
-                    detail,
-                ),
-                timing=time.monotonic() - t0,
-            )
-        traj = Trajectory(
-            joint_names=list(self.joint_names),
-            positions=p,
-            velocities=v,
-            accelerations=a,
-            dt=self.interpolation_dt,
-            frame_id=self.base_frame,
-        )
-        return PlanResult(
-            success=True,
-            joint_traj=traj,
-            timing=time.monotonic() - t0,
-            error=None,
-            status="OK",
-            validated=True,
-            final_joints=p[-1].copy(),
         )
 
     def update_world(self, world, ignore=()):
@@ -1176,13 +1107,16 @@ class CuRoboPlanner:
             return np.zeros(len(qs), dtype=bool)
         return metrics.feasible.detach().cpu().numpy().reshape(-1).astype(bool)
 
-    def _tool_positions(self, qs):
-        """The ee_link's position (N, 3) at every controller-order state in
-        `qs`, in one FK batch."""
+    def _tool_poses(self, qs):
+        """The ee_link's positions (N, 3) and wxyz quaternions (N, 4) at every
+        controller-order state in `qs`, in one FK batch."""
         state = self._motion_gen.kinematics.get_state(
             self._tensor([self._to_curobo_order(q) for q in qs])
         )
-        return state.ee_position.detach().cpu().numpy().astype(float)
+        return (
+            state.ee_position.detach().cpu().numpy().astype(float),
+            state.ee_quaternion.detach().cpu().numpy().astype(float),
+        )
 
     def _spheres(self, q):
         """cuRobo's collision spheres at one controller-order joint vector,

@@ -179,154 +179,213 @@ def test_update_world_refuses_before_reaching_curobo(
 
 
 @pytest.fixture
-def through_planner(cpu_planner, monkeypatch):
-    """cpu_planner whose legs are straight joint moves (a pose waypoint's
-    position is its first three joints), whose "tool" is the first three
-    joints, and whose world is empty: records every leg's start."""
-    from rammp_curobo import blend
+def blend_planner(cpu_planner, monkeypatch):
+    """cpu_planner whose plan_to_joints legs are straight minimum-jerk moves
+    at the joint limits, whose "tool" is at the first three joints, tilted
+    about x by the fourth, and whose world is empty unless `feasible` says
+    otherwise."""
     from rammp_curobo.types import PlanResult, Trajectory
 
     lo, hi = _urdf_limits()
-    lim = {
+    cpu_planner.lim = {
         "position": (lo, hi),
         "velocity": np.full(7, 1.2),
         "acceleration": np.full(7, 25.0),
     }
-    monkeypatch.setattr(cpu_planner, "joint_limits", lambda: lim)
-    starts, failing = [], {}
+    monkeypatch.setattr(cpu_planner, "joint_limits", lambda: cpu_planner.lim)
 
     def leg(goal, start):
-        starts.append(np.asarray(start, dtype=float))
-        if len(starts) in failing:
-            return PlanResult.failure("IK_FAIL", failing[len(starts)])
-        p, v, a = blend.straight_leg(
-            start, goal, lim["velocity"], lim["acceleration"], 0.02
+        lim = cpu_planner.lim
+        q0, q1 = np.asarray(start, dtype=float), np.asarray(goal, dtype=float)
+        d = q1 - q0
+        # minimum jerk peaks at 1.875 x the mean speed and 5.774 d / T^2
+        duration = max(
+            np.max(1.875 * np.abs(d) / lim["velocity"]),
+            np.max(np.sqrt(5.7735 * np.abs(d) / lim["acceleration"])),
+            0.02,
         )
+        n = int(np.ceil(duration / 0.02))
+        u = np.arange(n + 1)[:, None] / n
+        T = n * 0.02
+        p = q0 + (10 * u**3 - 15 * u**4 + 6 * u**5) * d
+        v = (30 * u**2 - 60 * u**3 + 30 * u**4) / T * d
+        a = (60 * u - 180 * u**2 + 120 * u**3) / T**2 * d
         traj = Trajectory(
             list(cpu_planner.joint_names), p, v, a, 0.02, frame_id="arm_mount"
         )
         return PlanResult(True, traj, 0.0, None, "OK", True, p[-1].copy())
 
-    monkeypatch.setattr(
-        cpu_planner,
-        "plan_to_pose",
-        lambda pos, quat, start, constraint=None: leg(np.r_[pos, np.zeros(4)], start),
-    )
+    def tool_poses(qs):
+        qs = np.asarray(qs, dtype=float)
+        half = qs[:, 3] / 2
+        wxyz = np.stack([np.cos(half), np.sin(half), 0 * half, 0 * half], axis=1)
+        return qs[:, :3], wxyz
+
     monkeypatch.setattr(cpu_planner, "plan_to_joints", lambda q, start: leg(q, start))
-    monkeypatch.setattr(
-        cpu_planner, "_tool_positions", lambda qs: np.asarray(qs)[:, :3]
-    )
+    monkeypatch.setattr(cpu_planner, "_tool_poses", tool_poses)
     cpu_planner.feasible = lambda qs: np.ones(len(qs), dtype=bool)
     monkeypatch.setattr(cpu_planner, "_feasible", lambda qs: cpu_planner.feasible(qs))
-    monkeypatch.setattr(cpu_planner, "check_state_valid", lambda q: (False, "hits box"))
-    cpu_planner.starts, cpu_planner.failing = starts, failing
     return cpu_planner
-
-
-def _square(radius):
-    """Three waypoints round a 0.4 rad square in joints 1-2, from joints 0."""
-    from rammp_curobo import Waypoint
-
-    return [
-        Waypoint(
-            position=(0.4, 0.0, 0.0), quaternion=(0, 0, 0, 1), blend_radius=radius
-        ),
-        Waypoint(joints=(0.4, 0.4, 0, 0, 0, 0, 0), blend_radius=radius),
-        Waypoint(joints=(0.0, 0.4, 0, 0, 0, 0, 0), straight=True, blend_radius=radius),
-    ]
-
-
-def test_plan_through_stops_where_the_radius_is_zero(through_planner):
-    res = through_planner.plan_through(_square(0.0), np.zeros(7))
-    assert res.success, res.error
-    assert res.corners_m == [0.0, 0.0, 0.0]
-    speed = np.linalg.norm(res.joint_traj.velocities, axis=1)
-    assert (speed[1:-1] == 0.0).sum() == 2  # at rest on the two inner waypoints
-    rest = res.joint_traj.positions[1:-1][speed[1:-1] == 0.0]
-    np.testing.assert_allclose(
-        rest, [[0.4, 0, 0, 0, 0, 0, 0], [0.4, 0.4, 0, 0, 0, 0, 0]]
-    )
-    # each leg planned from where the one before it ended (the third is straight)
-    np.testing.assert_allclose(through_planner.starts[1], [0.4, 0, 0, 0, 0, 0, 0])
-
-
-def test_plan_through_blends_within_the_radius_and_the_limits(through_planner):
-    stopped = through_planner.plan_through(_square(0.0), np.zeros(7)).joint_traj
-    res = through_planner.plan_through(_square(0.05), np.zeros(7))
-    assert res.success, res.error
-    traj = res.joint_traj
-    speed = np.linalg.norm(traj.velocities, axis=1)
-    assert speed[1:-1].min() > 0.0  # moving all the way to the goal
-    assert 0.0 < max(res.corners_m) <= 0.05 and res.corners_m[-1] == 0.0
-    assert (np.abs(traj.velocities) <= 1.2).all()
-    assert traj.duration < stopped.duration - 0.2
-    np.testing.assert_allclose(traj.positions[-1], [0, 0.4, 0, 0, 0, 0, 0], atol=1e-12)
-    assert traj.frame_id == "arm_mount"
-
-
-def test_plan_through_does_not_cut_a_corner_that_collides(through_planner):
-    # infeasible wherever joint 2 moves before joint 1 has arrived: inside
-    # the first corner, which the planned legs never enter
-    through_planner.feasible = lambda qs: ~(
-        (np.asarray(qs)[:, 0] < 0.4 - 1e-9) & (np.asarray(qs)[:, 1] > 1e-9)
-    )
-    res = through_planner.plan_through(_square(0.05)[:2], np.zeros(7))
-    assert res.success, res.error
-    assert res.corners_m == [0.0, 0.0]
-
-
-def test_plan_through_refuses_a_waypoint_that_fails_naming_it(through_planner):
-    through_planner.failing[2] = "no IK solution"
-    res = through_planner.plan_through(_square(0.05), np.zeros(7))
-    assert not res.success and res.joint_traj is None
-    assert res.status == "IK_FAIL"
-    assert res.error == "waypoint 2/3: no IK solution"
-    assert len(through_planner.starts) == 2  # nothing planned past it
-
-
-def test_plan_through_refuses_a_straight_leg_that_collides(through_planner):
-    through_planner.feasible = lambda qs: np.asarray(qs)[:, 1] < 0.2
-    res = through_planner.plan_through(_square(0.05)[2:], np.r_[0.4, 0.4, np.zeros(5)])
-    assert res.status == "STRAIGHT_LEG_INFEASIBLE"
-    assert "waypoint 1/1: the straight joint leg is infeasible at 0.00 s" in res.error
-    assert "hits box" in res.error
-
-
-def test_plan_through_refuses_a_malformed_waypoint(through_planner):
-    from rammp_curobo import Waypoint
-
-    for wp, why in [
-        (Waypoint(), "a pose (position, quaternion) or joints"),
-        (Waypoint(position=(0, 0, 0)), "needs both"),
-        (
-            Waypoint(position=(0, 0, 0), quaternion=(0, 0, 0, 1), straight=True),
-            "straight",
-        ),
-        (Waypoint(joints=(0,) * 7, blend_radius=-1.0), "blend_radius"),
-    ]:
-        res = through_planner.plan_through([wp], np.zeros(7))
-        assert res.status == "BAD_WAYPOINT" and why in res.error
-    assert not through_planner.starts
 
 
 def _legs(planner, *points):
     """plan_to_joints legs through `points`, each from the one before's end."""
-    legs = []
-    for a, b in zip(points, points[1:]):
-        legs.append(planner.plan_to_joints(np.asarray(b, float), a).joint_traj)
+    legs, q = [], np.asarray(points[0], dtype=float)
+    for b in points[1:]:
+        legs.append(planner.plan_to_joints(np.asarray(b, float), q).joint_traj)
+        q = legs[-1].positions[-1]
     return legs
 
 
-CORNER = (np.zeros(7), np.r_[0.4, np.zeros(6)], np.r_[0.4, 0.4, np.zeros(5)])
+def _q(*first):
+    return np.r_[first, np.zeros(7 - len(first))]
 
 
-def test_blend_legs_blends_a_slow_leg_into_a_fast_one(through_planner):
-    legs = _legs(through_planner, *CORNER)
-    stopped = through_planner.blend_legs(legs, [0.0], [0.25, 1.0])
-    res = through_planner.blend_legs(legs, [0.05], [0.25, 1.0])
+CORNER = (_q(), _q(0.4), _q(0.4, 0.4))
+SQUARE = (_q(), _q(0.4), _q(0.4, 0.4), _q(0.0, 0.4))
+
+
+def test_blend_legs_stops_where_the_radius_is_zero(blend_planner):
+    res = blend_planner.blend_legs(_legs(blend_planner, *SQUARE), [0.0, 0.0])
+    assert res.success, res.error
+    assert res.corners_m == [0.0, 0.0]
+    traj = res.joint_traj
+    speed = np.linalg.norm(traj.velocities, axis=1)
+    rest = traj.positions[1:-1][speed[1:-1] == 0.0]
+    np.testing.assert_allclose(rest, [SQUARE[1], SQUARE[2]])  # at rest on both
+
+
+def test_blend_legs_cuts_the_corners_within_the_radius(blend_planner):
+    legs = _legs(blend_planner, *SQUARE)
+    stopped = blend_planner.blend_legs(legs, [0.0, 0.0]).joint_traj
+    res = blend_planner.blend_legs(legs, [0.05, 0.05])
+    assert res.success, res.error
+    traj = res.joint_traj
+    assert np.linalg.norm(traj.velocities, axis=1)[1:-1].min() > 0.0
+    assert all(0.0 < c <= 0.05 for c in res.corners_m)
+    for k, c in enumerate(res.corners_m):  # corner_m: the closest pass by the waypoint
+        miss = np.linalg.norm(traj.positions[:, :3] - SQUARE[k + 1][:3], axis=1).min()
+        assert miss == pytest.approx(c)
+    assert traj.duration < stopped.duration - 0.2
+    np.testing.assert_allclose(traj.positions[-1], SQUARE[-1], atol=1e-12)
+    assert traj.frame_id == "arm_mount"
+
+
+def test_a_smaller_radius_cuts_less(blend_planner):
+    legs = _legs(blend_planner, *CORNER)
+    wide = blend_planner.blend_legs(legs, [0.2]).corners_m[0]
+    tight = blend_planner.blend_legs(legs, [0.01]).corners_m[0]
+    assert 0.0 < tight <= 0.01 < wide
+
+
+def test_the_tool_stays_within_the_radius_of_the_planned_states(blend_planner):
+    """Nearly straight on, at different speeds, the waypoint is passed close
+    but the blend runs ahead of the planned path: every state stays within
+    the radius of the nearer of the two planned states it was summed from."""
+    from rammp_curobo import blend
+
+    legs = _legs(
+        blend_planner, _q(), _q(-0.331, 0.157, -0.138), _q(-0.591, 0.297, -0.247)
+    )
+    res = blend_planner.blend_legs(legs, [0.01], [1.0, 0.5])
+    assert res.success, res.error
+    p = res.joint_traj.positions[:, :3]
+    a = legs[0].positions[:, :3]
+    b = blend.resample(legs[1].positions, legs[1].velocities, 0.04, 0.02)[0][:, :3]
+    shift = len(p) - len(b)  # leg 2 starts here on the blend's grid
+    gaps = [
+        min(
+            np.linalg.norm(p[i] - a[min(i, len(a) - 1)]),
+            np.linalg.norm(p[i] - b[max(i - shift, 0)]),
+        )
+        for i in range(len(p))
+    ]
+    assert max(gaps) <= 0.01 + 1e-9
+    stopped = blend_planner.blend_legs(legs, [0.0], [1.0, 0.5]).joint_traj.duration
+    assert res.joint_traj.duration < stopped  # blended, within that
+
+
+def test_a_reversal_still_passes_its_waypoint(blend_planner):
+    """Out to 0.4 and back: overlapping the legs entirely would never go out
+    at all. The radius bounds the distance from the waypoint, not only from
+    the path (which the arm, standing still, never leaves)."""
+    legs = _legs(blend_planner, _q(), _q(0.4), _q())
+    res = blend_planner.blend_legs(legs, [0.05])
+    assert res.success, res.error
+    assert np.abs(res.joint_traj.positions[:, 0]).max() >= 0.4 - 0.05
+    assert res.corners_m[0] <= 0.05
+
+
+def test_velocities_that_add_stay_in_the_limits(blend_planner):
+    legs = _legs(blend_planner, _q(), _q(0.4), _q(0.8))  # both at the limit on joint 1
+    res = blend_planner.blend_legs(legs, [1.0])
+    assert res.success, res.error
+    assert np.abs(res.joint_traj.velocities).max() <= 1.2 + 1e-9
+    stopped = blend_planner.blend_legs(legs, [0.0]).joint_traj.duration
+    assert res.joint_traj.duration < stopped  # it did blend (on a line: no corner)
+
+
+@pytest.mark.parametrize("accelerations", [True, False])
+def test_accelerations_that_add_stay_in_the_limits(blend_planner, accelerations):
+    """A reversal adds the legs' braking; without accelerations on a leg they
+    are derived from its velocities, not skipped."""
+    from dataclasses import replace
+
+    blend_planner.lim["velocity"] = np.full(7, 100.0)  # only acceleration binds
+    legs = _legs(blend_planner, _q(), _q(0.4), _q())
+    if not accelerations:
+        legs = [replace(leg, accelerations=None) for leg in legs]
+    # 0.2: a full overlap (which cancels, the arm never leaving) is out of
+    # the radius, so the partial overlaps, where the braking adds, decide
+    res = blend_planner.blend_legs(legs, [0.2])
+    assert res.success, res.error
+    traj = res.joint_traj
+    measured = np.gradient(traj.velocities, traj.dt, axis=0)  # not the reported field
+    assert np.abs(measured).max() <= 25.0 * 1.05
+    assert res.corners_m[0] > 0.0
+
+
+def test_a_held_leg_keeps_its_hold_through_the_overlap(blend_planner):
+    """Leg 1 holds level (joint 4, the tilt, stays 0) while joint 1 moves;
+    leg 2 is free and tilts. Unheld, the tilt starts while leg 1 still runs."""
+    from rammp_curobo import PoseConstraint
+
+    legs = _legs(blend_planner, _q(), _q(0.4), _q(0.4, 0, 0, 0.5))
+    tol = blend_planner.constraint_tolerance_rad
+
+    def tilt_while_leg_1_runs(res):
+        q = res.joint_traj.positions
+        return np.abs(q[q[:, 0] < 0.4 - 1e-9, 3]).max()
+
+    free = blend_planner.blend_legs(legs, [0.2])
+    held = blend_planner.blend_legs(legs, [0.2], holds=[PoseConstraint(hold=1), None])
+    assert free.success and held.success, held.error
+    assert tilt_while_leg_1_runs(free) > tol  # not vacuous
+    assert tilt_while_leg_1_runs(held) <= tol
+    stopped = blend_planner.blend_legs(legs, [0.0]).joint_traj.duration
+    assert held.joint_traj.duration < stopped  # still blended, less
+
+
+def test_blend_legs_does_not_cut_a_corner_that_collides(blend_planner):
+    # infeasible wherever joint 2 moves before joint 1 has arrived: inside
+    # the corner, which the planned legs never enter
+    legs = _legs(blend_planner, *CORNER)
+    free = blend_planner.blend_legs(legs, [0.05], [1.0, 1.0])
+    blend_planner.feasible = lambda qs: ~(
+        (np.asarray(qs)[:, 0] < 0.4 - 1e-9) & (np.asarray(qs)[:, 1] > 1e-9)
+    )
+    res = blend_planner.blend_legs(legs, [0.05])
+    assert res.success, res.error
+    assert res.corners_m[0] < 1e-3 < free.corners_m[0]  # one shared step at most
+
+
+def test_blend_legs_blends_a_slow_leg_into_a_fast_one(blend_planner):
+    legs = _legs(blend_planner, *CORNER)
+    stopped = blend_planner.blend_legs(legs, [0.0], [0.25, 1.0])
+    res = blend_planner.blend_legs(legs, [0.05], [0.25, 1.0])
     assert stopped.success and res.success, res.error
     traj = res.joint_traj
-    assert traj.dt == pytest.approx(0.02) and traj.frame_id == "arm_mount"
+    assert traj.dt == pytest.approx(0.02)
     # the first leg (joint 1) at a quarter of its speed, the second (joint 2) at full
     assert np.abs(traj.velocities[:, 0]).max() == pytest.approx(
         0.25 * np.abs(legs[0].velocities[:, 0]).max(), rel=0.02
@@ -334,24 +393,35 @@ def test_blend_legs_blends_a_slow_leg_into_a_fast_one(through_planner):
     assert np.abs(traj.velocities[:, 1]).max() == pytest.approx(
         np.abs(legs[1].velocities[:, 1]).max(), rel=0.02
     )
-    assert np.linalg.norm(traj.velocities, axis=1)[1:-1].min() > 0.0
-    assert 0.0 < res.corners_m[0] <= 0.05 and len(res.corners_m) == 1
+    assert 0.0 < res.corners_m[0] <= 0.05
     assert traj.duration < stopped.joint_traj.duration
     np.testing.assert_allclose(traj.positions[-1], CORNER[-1], atol=1e-12)
 
 
-def test_blend_legs_refuses_legs_that_do_not_chain(through_planner):
-    from rammp_curobo.types import Trajectory
+def test_blend_legs_refuses_what_it_cannot_blend(blend_planner):
+    from dataclasses import replace
 
-    a, b = _legs(through_planner, *CORNER)
-    c = _legs(through_planner, np.full(7, 0.1), np.zeros(7))[0]
-    moving = Trajectory(a.joint_names, a.positions[:-5], a.velocities[:-5], None, a.dt)
+    a, b = _legs(blend_planner, *CORNER)
+    far = _legs(blend_planner, np.full(7, 0.1), _q())[0]
+    moving = replace(a, positions=a.positions[:-5], velocities=a.velocities[:-5])
+    nan = replace(
+        b,
+        positions=np.where(
+            np.arange(len(b.positions))[:, None] == 3, np.nan, b.positions
+        ),
+    )
+    renamed = replace(b, joint_names=list(reversed(b.joint_names)))
     for legs, radii, scales, why in [
         ([], [], None, "no legs"),
         ([a, b], [], None, "2 legs need 1 blend radii"),
         ([a, b], [0.0], [1.0, 0.0], "leg 2/2: speed scale 0 is outside (0, 1]"),
-        ([a, c], [0.0], None, "leg 2/2: starts 0.300 rad from where leg 1 ends"),
+        ([a, far], [0.0], None, "leg 2/2: starts 0.3000 rad from where leg 1 ends"),
         ([moving, b], [0.0], None, "leg 1/2: starts or ends moving"),
+        ([a, nan], [0.0], None, "leg 2/2: non-finite"),
+        ([a, renamed], [0.0], None, "leg 2/2: velocities for joints"),
+        ([a, b], [float("nan")], None, "junction 1: blend radius nan"),
+        ([a, b], [-0.1], None, "must be finite and >= 0"),
+        ([a, b], [float("inf")], None, "must be finite and >= 0"),
     ]:
-        res = through_planner.blend_legs(legs, radii, scales)
+        res = blend_planner.blend_legs(legs, radii, scales)
         assert res.status == "BAD_LEG" and why in res.error, res.error

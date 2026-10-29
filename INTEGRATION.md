@@ -101,70 +101,48 @@ status:
 `PlanToPose.action` has the full contract. `/rammp_curobo/set_world` swaps the
 collision world's scene. There is nothing here that can move an arm.
 
-### Through several waypoints: `/rammp_curobo/plan_through`
+### Through several goals without stopping: `/rammp_curobo/blend`
 
-One trajectory from `start_joints` through a list of `Waypoint`s, each a tool
-pose (`kind POSE`, with its own `hold`) or joints (`kind JOINTS`, planned, or
-`straight` for a straight line in joint space). A waypoint's `blend_radius`
-(m) lets the arm pass it **without stopping**: the tool may leave the planned
-path by up to that much there to cut the corner. `0`, the default, stops on
-the waypoint; the last always stops.
-
-```python
-from rammp_curobo_interfaces.action import PlanThrough
-from rammp_curobo_interfaces.msg import Waypoint
-
-home = Waypoint(kind=Waypoint.JOINTS, joints=q_home, blend_radius=0.05)
-view = Waypoint(kind=Waypoint.POSE)            # stops: the camera looks from here
-view.pose = view_pose
-plan = through_client.send_goal(
-    PlanThrough.Goal(waypoints=[home, view], start_joints=measured_q)
-).result
-# plan.corner_m: how far each waypoint's corner was cut (0 where it stops)
-```
-
-How: every leg is planned as `plan_to_pose` / `plan_to_joints` would plan it,
-from where the leg before it ends, and consecutive legs are then overlapped in
-time, so the arm moves by the sum of both while they overlap
-(`core/rammp_curobo/blend.py`). Each overlap is the longest whose states keep
-the joint velocity and acceleration limits, pass cuRobo's constraint check
-(collision, self-collision, limits) one by one, and keep the tool within the
-radius; the whole trajectory is validated like any plan. A radius is a bound,
-not a promise: where the limits or the world allow no cut, the arm stops on
-the waypoint and `corner_m` says 0. A waypoint that cannot be planned fails the
-goal, naming it (`waypoint 2/3: ...`). The trajectory is at full speed like
-every plan here; slow it at execution.
-
-A straight leg runs at half the joint limits, so blending it with the next has
-headroom, and is refused (`STRAIGHT_LEG_INFEASIBLE`) if any state of it
-collides: nothing plans round an obstacle on it. That is the way to turn a
-dense list of joint positions into one smooth motion.
-
-### Blending plans you already have: `/rammp_curobo/blend`
-
-When each leg needs its own goal type or speed, plan the legs yourself and
-hand them to `blend`: the trajectories `plan_to_pose` / `plan_to_joints`
-returned, each planned from where the one before it ends, so each keeps its
-own constraint (a `HOLD_LEVEL` leg, then a free one). `blend_radius` has one
-value per junction (one fewer than legs; `0` stops there) and `speed_scale` one
-per leg, `(0, 1]` of its planned speed (empty: all full speed). The result
-carries those speeds, so execute it at speed scale 1.
+Plan each leg with `plan_to_pose` / `plan_to_joints`, each from the last point
+of the leg before it, then hand the trajectories to `blend` for ONE
+trajectory that passes the goals between still moving. Per leg: its
+`speed_scale` (`(0, 1]` of its planned speed; empty: all 1) and the `hold` it
+was planned with (empty: none). Per junction, one fewer than legs:
+`blend_radius` (m), how far the tool may pass from that junction's goal to
+cut the corner; `0` stops on it. The result carries the speeds, so execute it
+at speed scale 1.
 
 ```python
-from rammp_curobo_interfaces.action import Blend
+from rammp_curobo_interfaces.action import Blend, PlanToPose
 
 level = pose_client.send_goal(level_goal).result.trajectory   # hold HOLD_LEVEL
-free = joints_client.send_goal(free_goal).result.trajectory   # from level's end
+free = joints_client.send_goal(free_goal).result.trajectory   # from level's last point
 plan = blend_client.send_goal(
-    Blend.Goal(legs=[level, free], blend_radius=[0.03], speed_scale=[0.8, 0.4])
+    Blend.Goal(
+        legs=[level, free],
+        blend_radius=[0.03],
+        speed_scale=[0.8, 0.4],
+        hold=[PlanToPose.Goal.HOLD_LEVEL, PlanToPose.Goal.HOLD_NONE],
+    )
 ).result
-# plan.corner_m: per junction, how far the corner was cut
+# plan.corner_m: per junction, how close the tool came to that goal
 ```
 
-The overlaps, checks and validation are `plan_through`'s. A leg must start and
-end at rest and start within 0.01 rad of where the one before it ends, its
-points evenly spaced with positions and velocities, or the goal fails naming
-the leg (`BAD_LEG: leg 2/3: ...`).
+How: consecutive legs are overlapped in time, so the arm moves by the sum of
+both while they overlap (`core/rammp_curobo/blend.py`). Each overlap is the
+longest whose states:
+
+- keep the joint velocity and acceleration limits;
+- keep the tool within the radius of the junction's goal and of the planned path;
+- keep each held leg's hold, measured as `plan_to_pose` measures it;
+- pass cuRobo's constraint check (collision, self-collision, limits), one by one.
+
+The whole trajectory is then validated like any plan. A radius is a bound, not
+a promise: where the limits, a hold or the world allow no cut, the arm stops on
+the goal and `corner_m` says 0. A leg must start and end at rest and start
+within 0.001 rad of where the one before it ends, its points evenly spaced and
+finite, with positions and velocities, or the goal fails naming the leg
+(`invalid legs: leg 2/3: ...`, or `BAD_LEG: leg 2/3: ...`).
 
 ## Planning on the MEBot (≥ 1.1.0)
 
