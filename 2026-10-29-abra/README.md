@@ -43,17 +43,22 @@ Cases, all from HOME (tool at 0.577, 0.001, 0.434 m, pointing forward):
   - the blended path strays at most 6 mm from the planned path, against 4 mm when stopped;
   - blending saves 21–43 % of the motion time.
 - **Corners:** the radius is a bound, not a target.
-  - At full speed the velocity limits bind first: the square's 3 cm radius cut 0.7–2.7 cm.
+  - At full speed the square's 3 cm radius cut 0.7–2.7 cm (0.9–2.9 cm at 0.8). Which check stopped
+    each overlap wasn't recorded, and `corner_m` is an upper bound, which also shrinks the cuts.
   - The pre-grasp's 1 cm radius cut 0.9 cm.
 - **STIFF impedance only tracks at 0.3.** There the arm runs 5–9° behind the plan, 11–25 mm
   off the path, and blending still saves 24–43 %.
   - From 0.5 up, the arm falls behind until the 0.35 rad path tolerance trips, stopped or blended.
   - The one exception: `joint_sweep` at 0.5 tracked stopped but tripped blended, because the
     legs' velocities add in the overlap.
-  - Under impedance the arm sags about 2.5° at HOME, which is more than HOLD_LEVEL's 2° start
-    check. So `mixed_hold` at mixed speeds could not be planned (`CONSTRAINT_UNSATISFIABLE`).
-- **Late start, once:** one goal (the first full-speed run) started 263 ms after the driver
-  accepted it. Aligned to its real start, it tracked within 0.51°.
+  - Under impedance the arm sags at HOME: the planner logged 2.53° of tilt, more than HOLD_LEVEL's
+    2° start check. So `mixed_hold` stopped at mixed speeds could not be planned
+    (`CONSTRAINT_UNSATISFIABLE`). Its blended run was planned and aborted.
+- **Late start, once:** one goal (`full10/square_1_stop`) started 263 ms after the driver accepted
+  it. Its row in the tables, measured from the accept time, shows 17.9° and 125 mm. Aligned to its
+  real start (`bench/lagcheck.py` fits the start offset), it tracked within 0.51°.
+- **Not covered on hardware:** `plan_through` itself and `straight` legs. Every case went through
+  `/blend`.
 
 Per-run figures: `figures/<set>/<case>.png`, with tool speed planned vs measured, tool error
 vs the plan, and distance from the planned path. `figures/video10` is the filmed run.
