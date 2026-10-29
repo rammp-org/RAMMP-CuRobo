@@ -173,7 +173,12 @@ def plan_case(b, legs, radii, scales, start):
         msgs.append(m)
         t_plan += pt
         q = traj_arrays(m)[1][-1]
-    g = Blend.Goal(legs=msgs, blend_radius=[float(r) for r in radii], speed_scale=[float(s) for s in scales])
+    g = Blend.Goal(
+        legs=msgs,
+        blend_radius=[float(r) for r in radii],
+        speed_scale=[float(s) for s in scales],
+        hold=[0 if "joints" in leg else leg.get("hold", FREE) for leg in legs],  # each leg's own
+    )
     t0 = time.monotonic()
     r = call(b.blend, g)
     if not r.success:

@@ -63,6 +63,32 @@ Cases, all from HOME (tool at 0.577, 0.001, 0.434 m, pointing forward):
 Per-run figures: `figures/<set>/<case>.png`, with tool speed planned vs measured, tool error
 vs the plan, and distance from the planned path. `figures/video10` is the filmed run.
 
+## Re-run on 80b19b6 (after review): `v2_10`
+
+The same suite, position mode at speed 1.0, on the reviewed planner. Each leg's hold now goes
+to `/blend`, which keeps a held leg's hold through its overlaps; `corner_m` is now how close the
+tool came to each goal. All 8 runs succeeded.
+
+| case | stopped | blended | saved (before the fixes, video10) |
+|---|---|---|---|
+| square (LEVEL) | 5.01 s | 3.77 s | 25 % (32 %) |
+| mixed_hold | 4.63 s | 3.89 s | 16 % (43 %) |
+| joint_sweep | 3.89 s | 2.45 s | 37 % (39 %) |
+| grab_like | 2.82 s | 2.31 s | 18 % (21 %) |
+
+- Tracking is unchanged: worst joint error 0.45–0.69°, tool within 6.3 mm of the plan, at most
+  4.9 mm from the planned path.
+- Level deviation in the square (HOLD_LEVEL throughout), with the planner's own metric
+  (`bench/tilt.py`):
+
+  | run | planned stopped | planned blended | measured stopped | measured blended |
+  |---|---|---|---|---|
+  | before the fixes (video10) | 0.64° | 1.22° | 1.00° | 1.25° |
+  | after the fixes (v2_10) | 0.61° | 0.47° | 1.03° | 1.02° |
+
+  The blend is now as level as stopping; the measured ~1° is tracking.
+- Savings shrank where legs are held (the hold limits the overlap), as expected.
+
 ## Tables
 
 **video10**
@@ -135,3 +161,16 @@ vs the plan, and distance from the planned path. `figures/video10` is the filmed
 Sets: `video10` and `full10`: position mode, speed 1.0 (two runs of the same suite).
 `s08`: position mode, 0.8. `stiff`: STIFF impedance at 0.3, 0.5 and mixed (1.0 / 0.4 per
 leg). Aborted runs ran for `ran s` before the driver stopped the arm.
+
+**v2_10**
+
+| run | result | planned s | ran s | motion s | still s | joint max ° | joint RMS ° | tool max mm | path dev max mm | corners cm |
+|---|---|---|---|---|---|---|---|---|---|---|
+| grab_like_1_blend | ok | 2.38 | 2.37 | 2.31 | 0.04 | 0.658 | 0.159 | 5.43 | 4.24 | 4.87, 0.17, 0 |
+| grab_like_1_stop | ok | 2.9 | 2.89 | 2.82 | 0.09 | 0.545 | 0.134 | 6.31 | 3.08 | 0, 0, 0 |
+| joint_sweep_1_blend | ok | 2.5 | 2.49 | 2.45 | 0.0 | 0.468 | 0.14 | 5.46 | 4.85 | 3.2, 2.22, 2.94, 4.09 |
+| joint_sweep_1_stop | ok | 3.94 | 3.93 | 3.89 | 0.13 | 0.452 | 0.11 | 5.0 | 4.15 | 0, 0, 0, 0 |
+| mixed_hold_1_blend | ok | 3.98 | 3.97 | 3.89 | 0.0 | 0.553 | 0.162 | 6.04 | 4.63 | 1.1, 4.95, 1.94, 1.8 |
+| mixed_hold_1_stop | ok | 4.72 | 4.71 | 4.63 | 0.15 | 0.621 | 0.15 | 5.57 | 3.91 | 0, 0, 0, 0 |
+| square_1_blend | ok | 3.82 | 3.81 | 3.77 | 0.01 | 0.689 | 0.185 | 5.35 | 4.03 | 2.87, 1.31, 1.63, 1.38 |
+| square_1_stop | ok | 5.08 | 5.07 | 5.01 | 0.2 | 0.495 | 0.156 | 5.56 | 3.06 | 0, 0, 0, 0 |
