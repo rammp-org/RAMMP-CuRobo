@@ -53,9 +53,10 @@ log = logging.getLogger("rammp_curobo")
 
 # blend_legs: a leg must start and end slower than this (cuRobo's plans end
 # within about 0.02 rad/s of rest), and start within this of where the one
-# before ends: the blend ends off the last goal by the sum of these gaps.
+# before ends (a leg planned from that point starts on it to float32
+# precision): every later leg runs shifted by the sum of these gaps.
 LEG_REST_RAD_S = 0.05
-LEG_JOIN_RAD = 1e-3
+LEG_JOIN_RAD = 1e-5
 
 
 def _boxes(hits):
@@ -627,8 +628,9 @@ class CuRoboPlanner:
         holds: per leg, the PoseConstraint it was planned under, or None
         (the default); a held leg keeps its hold through its overlaps too.
         hold_orientations: per leg, the orientation (xyzw) its hold keeps,
-        its goal's as plan_to_pose was given it, or None; default for a held
-        leg, its planned end (within constraint tolerance of its goal).
+        its goal's as plan_to_pose was given it (normalised and tool-spun as
+        plan_to_pose does), or None; read only for held legs. Default for a
+        held leg, its planned end (within constraint tolerance of its goal).
 
         Legs are overlapped in time (blend.py). Each junction's overlap is the
         longest (bisected) whose window:
@@ -692,12 +694,22 @@ class CuRoboPlanner:
                     "BAD_LEG",
                     "%s: %d point(s), a leg needs at least 2" % (what, leg.n_points),
                 )
-            ref = refs[k]
-            if ref is not None and not abs(np.linalg.norm(ref) - 1.0) < 1e-3:
-                return PlanResult.failure(
-                    "BAD_LEG",
-                    "%s: hold orientation %r is not a unit quaternion" % (what, ref),
-                )
+            held = holds[k] is not None and holds[k].hold != constraints.HOLD_NONE
+            if not held:
+                refs[k] = None  # read only for a held leg
+            elif refs[k] is not None:
+                # as plan_to_pose takes a goal: normalised, then the tool spin
+                wxyz = geometry.xyzw_to_wxyz(refs[k])
+                norm = float(np.linalg.norm(wxyz))
+                if not norm >= 1e-6:
+                    return PlanResult.failure(
+                        "BAD_LEG",
+                        "%s: hold orientation %r has no length" % (what, refs[k]),
+                    )
+                wxyz = [v / norm for v in wxyz]
+                if self.tool_spin_deg:
+                    wxyz = geometry.spin_about_tool(wxyz, self.tool_spin_deg)
+                refs[k] = geometry.wxyz_to_xyzw(wxyz)
             if not 0.0 < s <= 1.0:
                 return PlanResult.failure(
                     "BAD_LEG", "%s: speed scale %g is outside (0, 1]" % (what, s)
@@ -728,11 +740,7 @@ class CuRoboPlanner:
             elif leg.accelerations is not None:
                 sampled.append((leg.positions, leg.velocities, leg.accelerations))
             else:  # derived, so the acceleration limits are still checked
-                a = (
-                    np.gradient(leg.velocities, leg.dt, axis=0)
-                    if leg.n_points > 1
-                    else np.zeros_like(leg.velocities)
-                )
+                a = np.gradient(leg.velocities, leg.dt, axis=0)  # >= 2 points
                 sampled.append((leg.positions, leg.velocities, a))
         legs = sampled
 

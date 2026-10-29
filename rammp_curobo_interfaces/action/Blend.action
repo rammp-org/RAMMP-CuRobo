@@ -23,8 +23,9 @@ float64[] speed_scale
 # Per leg, the hold it was planned with (PlanToPose's HOLD_NONE=0,
 # HOLD_LEVEL=1, HOLD_FIXED=2), kept through its overlaps too; empty: none.
 uint8[] hold
-# Per leg, the orientation its hold keeps: the goal's, as sent to PlanToPose.
-# Read only for held legs, which must then have a unit quaternion. Empty: each
+# Per leg, the orientation its hold keeps: the goal's, as sent to PlanToPose,
+# which normalises it and applies the tool spin as PlanToPose does. Read only for
+# held legs (a zero-length one is refused there). Empty: each
 # held leg's planned end, which PlanToPose has checked is within its tolerance
 # of the goal, so the overlap can then reach up to twice that from the goal.
 geometry_msgs/Quaternion[] hold_orientation

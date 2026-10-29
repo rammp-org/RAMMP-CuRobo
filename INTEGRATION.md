@@ -147,7 +147,7 @@ longest whose states:
 The whole trajectory is then validated like any plan. A radius is a bound, not
 a promise: where the limits, a hold or the world allow no cut, the arm stops on
 the goal and `corner_m` says 0. A leg must start and end at rest and start
-within 0.001 rad of where the one before it ends, its points (at least 2)
+within 1e-5 rad of where the one before it ends (plan it from that point), its points (at least 2)
 evenly spaced and finite, with positions and velocities, or the goal fails naming the leg
 (`invalid legs: leg 2/3: ...`, or `BAD_LEG: leg 2/3: ...`).
 

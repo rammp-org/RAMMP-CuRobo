@@ -401,9 +401,12 @@ def test_blend_legs_blends_a_slow_leg_into_a_fast_one(blend_planner):
 def test_blend_legs_refuses_what_it_cannot_blend(blend_planner):
     from dataclasses import replace
 
+    from rammp_curobo import PoseConstraint
+
     a, b = _legs(blend_planner, *CORNER)
     far = _legs(blend_planner, np.full(7, 0.1), _q())[0]
     moving = replace(a, positions=a.positions[:-5], velocities=a.velocities[:-5])
+    rolling = replace(a, positions=a.positions[5:], velocities=a.velocities[5:])
     nan = replace(
         b,
         positions=np.where(
@@ -420,6 +423,7 @@ def test_blend_legs_refuses_what_it_cannot_blend(blend_planner):
         ([a, b], [0.0], [1.0, 0.0], "leg 2/2: speed scale 0 is outside (0, 1]"),
         ([a, far], [0.0], None, "leg 2/2: starts 0.3000 rad from where leg 1 ends"),
         ([moving, b], [0.0], None, "leg 1/2: starts or ends moving"),
+        ([rolling, b], [0.0], None, "leg 1/2: starts or ends moving"),
         ([a, nan], [0.0], None, "leg 2/2: non-finite"),
         ([a, renamed], [0.0], None, "leg 2/2: velocities for joints"),
         ([a, b], [float("nan")], None, "junction 1: blend radius nan"),
@@ -429,10 +433,19 @@ def test_blend_legs_refuses_what_it_cannot_blend(blend_planner):
     ]:
         res = blend_planner.blend_legs(legs, radii, scales)
         assert res.status == "BAD_LEG" and why in res.error, res.error
+    level = [PoseConstraint(hold=1), None]
     res = blend_planner.blend_legs(
-        [a, b], [0.05], hold_orientations=[(0, 0, 0, 2), None]
+        [a, b], [0.05], holds=level, hold_orientations=[(0, 0, 0, 0), None]
     )
-    assert res.status == "BAD_LEG" and "not a unit quaternion" in res.error
+    assert res.status == "BAD_LEG" and "has no length" in res.error
+    # read only for a held leg: an unheld leg's is ignored, a held leg's normalised
+    unheld = blend_planner.blend_legs(
+        [a, b], [0.05], hold_orientations=[(0, 0, 0, 0), None]
+    )
+    long = blend_planner.blend_legs(
+        [a, b], [0.05], holds=level, hold_orientations=[(0, 0, 0, 2), None]
+    )
+    assert unheld.success and long.success, long.error
 
 
 def _while(res, moving, joint):
@@ -525,3 +538,59 @@ def test_without_a_goal_orientation_a_hold_is_kept_against_the_legs_end(blend_pl
     assert res.success, res.error
     worst = _while(res, lambda q: q[:, 0] < 0.4 - 1e-9, 3)
     assert tol < worst <= tilt + tol + 1e-9
+
+
+def test_a_held_second_leg_is_kept_against_its_own_goal(blend_planner):
+    """Leg 1 is free and ends 1.5 deg tilted; leg 2 holds level towards a
+    level goal (its own end, and so its start, 1.5 deg tilted, within
+    tolerance). Leg 2's hold orientation, not leg 1's, is what applies."""
+    from rammp_curobo import PoseConstraint
+
+    tilt = np.radians(1.5)
+    legs = _legs(
+        blend_planner, _q(0, 0, 0, 0.5), _q(0, 0, 0, tilt), _q(0.4, 0, 0, tilt)
+    )
+    tol = blend_planner.constraint_tolerance_rad
+    leg_2 = lambda q: q[:, 0] > 1e-9  # noqa: E731
+    hold = [None, PoseConstraint(hold=1)]
+    from_end = blend_planner.blend_legs(legs, [0.2], holds=hold)
+    from_goal = blend_planner.blend_legs(
+        legs, [0.2], holds=hold, hold_orientations=[None, (0, 0, 0, 1)]
+    )
+    assert from_end.success and from_goal.success, from_goal.error
+    assert _while(from_end, leg_2, 3) > tol  # not vacuous
+    assert _while(from_goal, leg_2, 3) <= tol
+
+
+def test_a_hold_orientation_is_read_xyzw(blend_planner):
+    """A FIXED leg turned 30 deg about the vertical, its goal given as xyzw:
+    read as wxyz it would be a different orientation altogether, every state
+    of the leg would break it, and nothing would blend."""
+    from rammp_curobo import PoseConstraint
+
+    yaw = np.radians(30.0)
+    legs = _legs(
+        blend_planner,
+        _q(0, 0, 0, 0, yaw),
+        _q(0.4, 0, 0, 0, yaw),
+        _q(0.4, 0.4, 0, 0, yaw),
+    )
+    goal = (0.0, 0.0, np.sin(yaw / 2), np.cos(yaw / 2))
+    res = blend_planner.blend_legs(
+        legs,
+        [0.1],
+        holds=[PoseConstraint(hold=2), None],
+        hold_orientations=[goal, None],
+    )
+    stopped = blend_planner.blend_legs(legs, [0.0]).joint_traj.duration
+    assert res.success, res.error
+    assert res.joint_traj.duration < stopped
+
+
+def test_a_leg_beyond_the_limits_is_refused_by_the_final_check(blend_planner):
+    """Legs planned at limits the planner no longer has: with every junction
+    stopped there is no window to check, so only the final check sees it."""
+    legs = _legs(blend_planner, *CORNER)
+    blend_planner.lim["acceleration"] = np.full(7, 5.0)
+    res = blend_planner.blend_legs(legs, [0.0])
+    assert res.status == "LIBRARY_VALIDATION_FAILED"
