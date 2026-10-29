@@ -1,0 +1,14 @@
+# The nightly planner with the plan-through branch (Blend, PlanThrough) built
+# over it, plus the driver image's interfaces so the bench script can drive
+# /execute_joint_trajectory from the same container.
+FROM ghcr.io/rammp-org/kinova-gen3-ros2:nightly AS driver
+FROM ghcr.io/rammp-org/rammp-curobo:nightly
+COPY --from=driver /ros2_ws/install /opt/driver_ws
+COPY . /opt/rammp_curobo_src
+RUN python3 -m pip install --no-cache-dir --no-build-isolation --no-deps \
+        /opt/rammp_curobo_src/core \
+    && . /opt/ros/humble/setup.sh \
+    && cd /opt/rammp_curobo_src \
+    && colcon build --install-base /opt/rammp_curobo \
+        --packages-select rammp_curobo_interfaces rammp_curobo_ros \
+    && rm -rf /opt/rammp_curobo_src/build /opt/rammp_curobo_src/log
