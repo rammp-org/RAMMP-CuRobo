@@ -307,3 +307,51 @@ def test_plan_through_refuses_a_malformed_waypoint(through_planner):
         res = through_planner.plan_through([wp], np.zeros(7))
         assert res.status == "BAD_WAYPOINT" and why in res.error
     assert not through_planner.starts
+
+
+def _legs(planner, *points):
+    """plan_to_joints legs through `points`, each from the one before's end."""
+    legs = []
+    for a, b in zip(points, points[1:]):
+        legs.append(planner.plan_to_joints(np.asarray(b, float), a).joint_traj)
+    return legs
+
+
+CORNER = (np.zeros(7), np.r_[0.4, np.zeros(6)], np.r_[0.4, 0.4, np.zeros(5)])
+
+
+def test_blend_legs_blends_a_slow_leg_into_a_fast_one(through_planner):
+    legs = _legs(through_planner, *CORNER)
+    stopped = through_planner.blend_legs(legs, [0.0], [0.25, 1.0])
+    res = through_planner.blend_legs(legs, [0.05], [0.25, 1.0])
+    assert stopped.success and res.success, res.error
+    traj = res.joint_traj
+    assert traj.dt == pytest.approx(0.02) and traj.frame_id == "arm_mount"
+    # the first leg (joint 1) at a quarter of its speed, the second (joint 2) at full
+    assert np.abs(traj.velocities[:, 0]).max() == pytest.approx(
+        0.25 * np.abs(legs[0].velocities[:, 0]).max(), rel=0.02
+    )
+    assert np.abs(traj.velocities[:, 1]).max() == pytest.approx(
+        np.abs(legs[1].velocities[:, 1]).max(), rel=0.02
+    )
+    assert np.linalg.norm(traj.velocities, axis=1)[1:-1].min() > 0.0
+    assert 0.0 < res.corners_m[0] <= 0.05 and len(res.corners_m) == 1
+    assert traj.duration < stopped.joint_traj.duration
+    np.testing.assert_allclose(traj.positions[-1], CORNER[-1], atol=1e-12)
+
+
+def test_blend_legs_refuses_legs_that_do_not_chain(through_planner):
+    from rammp_curobo.types import Trajectory
+
+    a, b = _legs(through_planner, *CORNER)
+    c = _legs(through_planner, np.full(7, 0.1), np.zeros(7))[0]
+    moving = Trajectory(a.joint_names, a.positions[:-5], a.velocities[:-5], None, a.dt)
+    for legs, radii, scales, why in [
+        ([], [], None, "no legs"),
+        ([a, b], [], None, "2 legs need 1 blend radii"),
+        ([a, b], [0.0], [1.0, 0.0], "leg 2/2: speed scale 0 is outside (0, 1]"),
+        ([a, c], [0.0], None, "leg 2/2: starts 0.300 rad from where leg 1 ends"),
+        ([moving, b], [0.0], None, "leg 1/2: starts or ends moving"),
+    ]:
+        res = through_planner.blend_legs(legs, radii, scales)
+        assert res.status == "BAD_LEG" and why in res.error, res.error

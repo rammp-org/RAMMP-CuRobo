@@ -1343,3 +1343,23 @@ def test_plan_through_refuses_a_failing_waypoint_by_number(planner, start):
     )
     assert not res.success and res.joint_traj is None
     assert res.error.startswith("waypoint 2/2: ")
+
+
+def test_blend_legs_joins_a_held_leg_and_a_slower_free_one(planner, start):
+    from rammp_curobo import PoseConstraint
+
+    pos, quat, q2 = _corner(planner)
+    level = planner.plan_to_pose(pos, quat, start, constraint=PoseConstraint(hold=1))
+    assert level.success, level.error
+    free = planner.plan_to_joints(q2, level.joint_traj.positions[-1])
+    assert free.success, free.error
+    legs = [level.joint_traj, free.joint_traj]
+    res = planner.blend_legs(legs, [0.05], [1.0, 0.5])
+    assert res.success and res.validated, res.error
+    traj = res.joint_traj
+    assert 0.0 < res.corners_m[0] <= 0.05
+    assert np.abs(traj.positions[-1] - np.asarray(q2)).max() < 1e-3
+    assert _feasible(planner, traj.positions).all()
+    # the free leg at half its speed takes twice as long; the overlap shortens
+    # only the held leg
+    assert traj.duration >= 2 * free.joint_traj.duration - traj.dt

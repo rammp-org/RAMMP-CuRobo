@@ -140,6 +140,32 @@ headroom, and is refused (`STRAIGHT_LEG_INFEASIBLE`) if any state of it
 collides: nothing plans round an obstacle on it. That is the way to turn a
 dense list of joint positions into one smooth motion.
 
+### Blending plans you already have: `/rammp_curobo/blend`
+
+When each leg needs its own goal type or speed, plan the legs yourself and
+hand them to `blend`: the trajectories `plan_to_pose` / `plan_to_joints`
+returned, each planned from where the one before it ends, so each keeps its
+own constraint (a `HOLD_LEVEL` leg, then a free one). `blend_radius` has one
+value per junction (one fewer than legs; `0` stops there) and `speed_scale` one
+per leg, `(0, 1]` of its planned speed (empty: all full speed). The result
+carries those speeds, so execute it at speed scale 1.
+
+```python
+from rammp_curobo_interfaces.action import Blend
+
+level = pose_client.send_goal(level_goal).result.trajectory   # hold HOLD_LEVEL
+free = joints_client.send_goal(free_goal).result.trajectory   # from level's end
+plan = blend_client.send_goal(
+    Blend.Goal(legs=[level, free], blend_radius=[0.03], speed_scale=[0.8, 0.4])
+).result
+# plan.corner_m: per junction, how far the corner was cut
+```
+
+The overlaps, checks and validation are `plan_through`'s. A leg must start and
+end at rest and start within 0.01 rad of where the one before it ends, its
+points evenly spaced with positions and velocities, or the goal fails naming
+the leg (`BAD_LEG: leg 2/3: ...`).
+
 ## Planning on the MEBot (≥ 1.1.0)
 
 With the arm on the MEBot wheelchair, run the planner with the chair

@@ -1,4 +1,5 @@
-"""Mapping from PlanThrough goal fields to the core's Waypoint.
+"""Mapping from PlanThrough goal fields to the core's Waypoint, and from a
+Blend goal's legs to its Trajectory.
 
 No ROS runtime and no GPU — same shape as test_constraint_mapping.py.
 """
@@ -6,10 +7,11 @@ No ROS runtime and no GPU — same shape as test_constraint_mapping.py.
 import pytest
 
 try:
-    from rammp_curobo_interfaces.action import PlanThrough
+    from rammp_curobo_interfaces.action import Blend, PlanThrough
     from rammp_curobo_interfaces.msg import Waypoint as WaypointMsg
+    from trajectory_msgs.msg import JointTrajectory
 
-    from rammp_curobo_ros.planner_node import waypoints_from_goal
+    from rammp_curobo_ros.planner_node import legs_from_goal, waypoints_from_goal
 except ImportError as exc:  # pragma: no cover
     # see test_constraint_mapping.py: the skip names what was missing
     pytest.skip(
@@ -64,3 +66,11 @@ def test_a_bad_waypoint_is_refused_not_coerced(waypoint, why):
 
 def test_no_waypoints_is_refused():
     assert waypoints_from_goal(_goal(), 7) == ([], "no waypoints")
+
+
+def test_a_blend_goal_names_the_leg_it_refuses():
+    joints = ["arm_joint_%d" % i for i in range(1, 8)]
+    assert legs_from_goal(Blend.Goal(), joints) == ([], "no legs")
+    goal = Blend.Goal(legs=[JointTrajectory(joint_names=joints[:6])])
+    legs, why = legs_from_goal(goal, joints)
+    assert legs == [] and why.startswith("leg 1/1: joints")

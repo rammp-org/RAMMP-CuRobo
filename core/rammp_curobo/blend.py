@@ -114,6 +114,38 @@ def choose_overlaps(caps, accept):
     return overlaps
 
 
+def resample(p, v, dt_in, dt):
+    """(p, v, a) of a leg sampled every `dt_in` (positions p, velocities v),
+    resampled every `dt` by cubic Hermite interpolation, as the driver
+    interpolates between points. The duration is rounded up to whole steps
+    (slower by less than one step); the first and last points are kept."""
+    p, v = np.asarray(p, dtype=float), np.asarray(v, dtype=float)
+    if len(p) < 2:
+        return p.copy(), np.zeros_like(p), np.zeros_like(p)
+    duration = (len(p) - 1) * dt_in
+    n = max(1, int(np.ceil(duration / dt - 1e-9)))
+    stretch = duration / (n * dt)  # <= 1: the leg is slowed by this much
+    s = np.arange(n + 1) * (len(p) - 1) / n  # where each sample falls, in input steps
+    i = np.minimum(s.astype(int), len(p) - 2)
+    u = (s - i)[:, None]
+    p0, p1, m0, m1 = p[i], p[i + 1], v[i] * dt_in, v[i + 1] * dt_in
+    pos = (
+        (2 * u**3 - 3 * u**2 + 1) * p0
+        + (u**3 - 2 * u**2 + u) * m0
+        + (-2 * u**3 + 3 * u**2) * p1
+        + (u**3 - u**2) * m1
+    )
+    vel = (
+        (6 * u**2 - 6 * u) * p0
+        + (3 * u**2 - 4 * u + 1) * m0
+        + (-6 * u**2 + 6 * u) * p1
+        + (3 * u**2 - 2 * u) * m1
+    )
+    acc = (12 * u - 6) * p0 + (6 * u - 4) * m0 + (-12 * u + 6) * p1 + (6 * u - 2) * m1
+    pos[-1] = p[-1]
+    return pos, vel * stretch / dt_in, acc * (stretch / dt_in) ** 2
+
+
 def straight_leg(q0, q1, vmax, amax, dt):
     """(p, v, a) of a straight joint-space move q0 -> q1, from rest to rest,
     on a minimum-jerk profile timed so no joint passes `vmax` or `amax`

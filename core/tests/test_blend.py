@@ -106,3 +106,24 @@ def test_a_straight_leg_keeps_its_limits_and_rests_at_both_ends():
     assert np.abs(v[:, 0]).max() == pytest.approx(1.2, rel=0.02)
     # off the line nowhere: joint 2 is always the same fraction of joint 1
     np.testing.assert_allclose(p[:, 1], -0.4 * p[:, 0], atol=1e-12)
+
+
+def test_resample_keeps_the_ends_and_slows_by_under_a_step():
+    q0, q1 = np.zeros(7), np.r_[1.0, -0.4, np.zeros(5)]
+    p, v, a = blend.straight_leg(q0, q1, VMAX, AMAX, DT)
+    slow = 0.3  # a leg at 0.3 of its speed: dt / 0.3 apart
+    rp, rv, ra = blend.resample(p, v * slow, DT / slow, DT)
+    duration = (len(p) - 1) * DT / slow
+    assert duration <= (len(rp) - 1) * DT < duration + DT
+    np.testing.assert_allclose(rp[[0, -1]], [q0, q1], atol=1e-12)
+    assert np.abs(rv[[0, -1]]).max() < 1e-12
+    np.testing.assert_allclose(np.abs(rv[:, 0]).max(), slow * 1.2, rtol=0.02)
+    np.testing.assert_allclose(np.gradient(rp, DT, axis=0)[1:-1], rv[1:-1], atol=0.01)
+    np.testing.assert_allclose(np.gradient(rv, DT, axis=0)[1:-1], ra[1:-1], atol=0.05)
+
+
+def test_resample_onto_its_own_grid_is_the_leg():
+    p, v, _ = _corner()[0]
+    rp, rv, _ = blend.resample(p, v, DT, DT)
+    np.testing.assert_allclose(rp, p, atol=1e-12)
+    np.testing.assert_allclose(rv, v, atol=1e-12)

@@ -14,6 +14,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/PlanToPose.action"
   "action/PlanToJoints.action"
   "action/PlanThrough.action"
+  "action/Blend.action"
   "srv/SetWorld.srv"
   "msg/ApproachVia.msg"
   "msg/Waypoint.msg"

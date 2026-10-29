@@ -55,6 +55,10 @@ log = logging.getLogger("rammp_curobo")
 # limits, so blending it with the next leg has headroom: overlapped legs'
 # velocities add.
 STRAIGHT_LIMIT_FRACTION = 0.5
+# blend_legs: a leg must start and end slower than this (cuRobo's plans end
+# within about 0.02 rad/s of rest), and start within this of the one before.
+LEG_REST_RAD_S = 0.05
+LEG_JOIN_RAD = 0.01
 
 
 def _boxes(hits):
@@ -610,7 +614,7 @@ class CuRoboPlanner:
                 )
             return res
         raise ValueError(
-            "joint-space method must be 'auto', 'js', or " "'fk_pose', got %r" % method
+            "joint-space method must be 'auto', 'js', or 'fk_pose', got %r" % method
         )
 
     def plan_through(self, waypoints, start):
@@ -656,15 +660,90 @@ class CuRoboPlanner:
                     "%s: %s" % (what, res.error),
                     timing=time.monotonic() - t0,
                 )
-            tr = res.joint_traj
-            legs.append((tr.positions, tr.velocities, tr.accelerations))
-            q = [float(v) for v in tr.positions[-1]]
+            legs.append(res.joint_traj)
+            q = [float(v) for v in res.joint_traj.positions[-1]]
         if not legs:
             return PlanResult.failure("BAD_WAYPOINT", "no waypoints")
+        res = self.blend_legs(legs, [wp.blend_radius for wp in waypoints[:-1]])
+        res.timing = time.monotonic() - t0
+        if res.success:
+            res.goal_mismatch_rad = mismatch
+            res.corners_m = res.corners_m + [0.0]
+        return res
+
+    def blend_legs(self, legs, blend_radii, speed_scales=None):
+        """ONE trajectory through `legs` (types.Trajectory, each from rest
+        to rest, leg k+1 starting where leg k ends: plans from plan_to_pose
+        / plan_to_joints, each planned from the one before's end), the
+        arm passing junction k still moving where blend_radii[k] (m) > 0.
+
+        speed_scales: per leg, (0, 1] of its planned speed (retime.py),
+        default all 1; a leg not on this planner's dt is resampled onto it.
+        Every junction's overlap is the longest (bisected) whose window
+        keeps the joint velocity and acceleration limits, passes cuRobo's
+        constraint check (collision, self-collision, position limits) at
+        every state, and keeps the tool within blend_radii[k] of the planned
+        path. The whole trajectory is then validated and re-checked like
+        any plan. corners_m on the result: per junction, how far the tool
+        passes from the planned path there (0 where it stops).
+        """
+        t0 = time.monotonic()
+        dof = len(self.joint_names)
+        scales = [1.0] * len(legs) if speed_scales is None else list(speed_scales)
+        if not legs:
+            return PlanResult.failure("BAD_LEG", "no legs")
+        if len(blend_radii) != len(legs) - 1 or len(scales) != len(legs):
+            return PlanResult.failure(
+                "BAD_LEG",
+                "%d legs need %d blend radii and %d speed scales, got %d and %d"
+                % (len(legs), len(legs) - 1, len(legs), len(blend_radii), len(scales)),
+            )
+        sampled = []
+        for k, (leg, s) in enumerate(zip(legs, scales)):
+            what = "leg %d/%d" % (k + 1, len(legs))
+            if leg.dof != dof or leg.velocities is None:
+                return PlanResult.failure(
+                    "BAD_LEG", "%s: %d joints with velocities expected" % (what, dof)
+                )
+            if not 0.0 < s <= 1.0:
+                return PlanResult.failure(
+                    "BAD_LEG", "%s: speed scale %g is outside (0, 1]" % (what, s)
+                )
+            rest = np.abs(leg.velocities[[0, -1]]).max()
+            if rest > LEG_REST_RAD_S:
+                return PlanResult.failure(
+                    "BAD_LEG",
+                    "%s: starts or ends moving (%.3f rad/s): legs must be rest to rest"
+                    % (what, rest),
+                )
+            if (
+                k
+                and np.abs(leg.positions[0] - legs[k - 1].positions[-1]).max()
+                > LEG_JOIN_RAD
+            ):
+                return PlanResult.failure(
+                    "BAD_LEG",
+                    "%s: starts %.3f rad from where leg %d ends"
+                    % (
+                        what,
+                        np.abs(leg.positions[0] - legs[k - 1].positions[-1]).max(),
+                        k,
+                    ),
+                )
+            leg = leg.scaled(s)
+            if abs(leg.dt - self.interpolation_dt) < 1e-9:
+                sampled.append((leg.positions, leg.velocities, leg.accelerations))
+            else:
+                sampled.append(
+                    blend.resample(
+                        leg.positions, leg.velocities, leg.dt, self.interpolation_dt
+                    )
+                )
+        legs = sampled
 
         lim = self.joint_limits()
         lengths = [len(p) for p, _, _ in legs]
-        radii = [wp.blend_radius for wp in waypoints[:-1]]
+        radii = [float(r) for r in blend_radii]
 
         def corner(k, overlaps, p):
             """How far the tool passes from the planned path in junction k's
@@ -731,8 +810,7 @@ class CuRoboPlanner:
             status="OK",
             validated=True,
             final_joints=p[-1].copy(),
-            goal_mismatch_rad=mismatch,
-            corners_m=corners + [0.0],
+            corners_m=corners,
         )
 
     def _straight_leg(self, q_goal, start):

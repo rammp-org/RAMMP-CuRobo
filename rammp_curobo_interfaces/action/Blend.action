@@ -1,0 +1,30 @@
+# Blend `legs` into ONE trajectory, the arm passing junction k (the end of
+# leg k, the start of leg k+1) still moving where blend_radius[k] > 0.
+# Planning only — nothing moves, and this planner never touches the arm.
+#
+# Each leg is a trajectory this planner returned (PlanToPose, PlanToJoints,
+# PlanThrough, or Blend), from rest to rest, planned from where the leg before
+# it ends, so each carries its own constraint (a HOLD_LEVEL leg, a free one).
+# The legs are overlapped in time, as PlanThrough overlaps its own: every
+# overlap keeps the joint velocity and acceleration limits and is
+# collision-checked, state by state, against the current world; the whole
+# trajectory is then validated like any plan.
+# Each leg: joint_names in the planner's order, evenly spaced points, each with
+# positions and velocities.
+trajectory_msgs/JointTrajectory[] legs
+# Per junction (one fewer than legs), m: how far the tool may pass from the
+# planned path there; 0 stops on it.
+float64[] blend_radius
+# Per leg, (0, 1] of its planned speed; empty: all 1. The result carries the
+# speeds, so it is executed at speed scale 1.
+float64[] speed_scale
+---
+bool success
+string message                              # failure explanation when !success
+trajectory_msgs/JointTrajectory trajectory  # at the legs' speed scales
+float64 planning_time                       # seconds
+# Per junction: how far the tool passes from the planned path there, m (0
+# where the trajectory stops).
+float64[] corner_m
+---
+string state

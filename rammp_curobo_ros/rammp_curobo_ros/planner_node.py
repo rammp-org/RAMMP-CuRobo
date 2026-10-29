@@ -6,6 +6,7 @@ Actions (node name rammp_curobo):
     /rammp_curobo/plan_to_pose        rammp_curobo_interfaces/PlanToPose
     /rammp_curobo/plan_to_joints      rammp_curobo_interfaces/PlanToJoints
     /rammp_curobo/plan_through        rammp_curobo_interfaces/PlanThrough
+    /rammp_curobo/blend               rammp_curobo_interfaces/Blend
 Services:
     /rammp_curobo/set_world           rammp_curobo_interfaces/srv/SetWorld
 
@@ -46,10 +47,10 @@ from std_msgs.msg import String
 from rammp_curobo import PoseConstraint, ViaPoint, Waypoint
 from rammp_curobo.config import load_planner_config
 from rammp_curobo.urdf_model import prepare_urdf, write_urdf
-from rammp_curobo_interfaces.action import PlanThrough, PlanToJoints, PlanToPose
+from rammp_curobo_interfaces.action import Blend, PlanThrough, PlanToJoints, PlanToPose
 from rammp_curobo_interfaces.msg import Waypoint as WaypointMsg
 from rammp_curobo_interfaces.srv import SetWorld
-from rammp_curobo_ros.conversions import trajectory_to_msg
+from rammp_curobo_ros.conversions import trajectory_from_msg, trajectory_to_msg
 
 
 def check_start_joints(start_joints, joint_names):
@@ -189,6 +190,20 @@ def waypoints_from_goal(goal, n_joints):
     return waypoints, None
 
 
+def legs_from_goal(goal, joint_names):
+    """([Trajectory], why_rejected) from a Blend goal: every leg a trajectory
+    in `joint_names` (trajectory_from_msg), REFUSED otherwise."""
+    legs = []
+    for k, msg in enumerate(goal.legs):
+        leg, why = trajectory_from_msg(msg, joint_names)
+        if why is not None:
+            return [], "leg %d/%d: %s" % (k + 1, len(goal.legs), why)
+        legs.append(leg)
+    if not legs:
+        return [], "no legs"
+    return legs, None
+
+
 class RammpCuroboNode(Node):
     def __init__(self):
         super().__init__("rammp_curobo")
@@ -286,6 +301,13 @@ class RammpCuroboNode(Node):
             PlanThrough,
             "~/plan_through",
             self._plan_through_cb,
+            callback_group=self._cb,
+        )
+        ActionServer(
+            self,
+            Blend,
+            "~/blend",
+            self._blend_cb,
             callback_group=self._cb,
         )
         self.create_service(
@@ -439,6 +461,26 @@ class RammpCuroboNode(Node):
         mismatch = getattr(res, "goal_mismatch_rad", None)
         if mismatch is not None:
             out.goal_mismatch_rad = float(mismatch)
+        return out
+
+    def _blend_cb(self, goal_handle):
+        result = Blend.Result()
+        goal = goal_handle.request
+        legs, why = legs_from_goal(goal, self.planner.joint_names)
+        if why is not None:
+            result.success = False
+            result.message = "invalid legs: %s" % why
+            goal_handle.abort()
+            return result
+        scales = list(goal.speed_scale) or None
+        # the first leg's start is the plan's: _plan checks it like any start
+        res = self._plan(
+            lambda q: self.planner.blend_legs(legs, list(goal.blend_radius), scales),
+            list(legs[0].positions[0]),
+        )
+        out = self._finish_plan(goal_handle, result, res)
+        if getattr(res, "corners_m", None) is not None:
+            out.corner_m = [float(c) for c in res.corners_m]
         return out
 
     def _plan(self, plan_fn, start_joints):
