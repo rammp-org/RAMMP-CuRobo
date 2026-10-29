@@ -22,6 +22,7 @@ from pathlib import Path
 import numpy as np
 import rclpy
 from control_msgs.msg import JointTolerance
+from geometry_msgs.msg import Quaternion
 from rammp_arm_interfaces.action import ExecuteJointTrajectory
 from rammp_arm_interfaces.msg import EeState, ImpedanceGains
 from rammp_curobo_interfaces.action import Blend, PlanToJoints, PlanToPose
@@ -178,6 +179,10 @@ def plan_case(b, legs, radii, scales, start):
         blend_radius=[float(r) for r in radii],
         speed_scale=[float(s) for s in scales],
         hold=[0 if "joints" in leg else leg.get("hold", FREE) for leg in legs],  # each leg's own
+        hold_orientation=[
+            Quaternion() if "joints" in leg else Quaternion(x=leg["quat"][0], y=leg["quat"][1], z=leg["quat"][2], w=leg["quat"][3])
+            for leg in legs
+        ],  # each held leg's goal orientation
     )
     t0 = time.monotonic()
     r = call(b.blend, g)
@@ -291,7 +296,19 @@ def save(path, label, msg, fb, js, ee, times, res, corners, summary):
 
 def cases(p0, quat):
     """The cases, from the tool's position p0 and orientation quat at HOME."""
-    up = lambda dx, dy, dz: {"pos": (p0 + [dx, dy, dz]).tolist(), "quat": quat, "hold": LEVEL}  # noqa: E731
+    def turned(yaw_deg):
+        """quat turned yaw_deg about arm_mount Z (xyzw)."""
+        h = np.radians(yaw_deg) / 2
+        x1, y1, z1, w1 = 0.0, 0.0, np.sin(h), np.cos(h)
+        x2, y2, z2, w2 = quat
+        return [
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        ]
+
+    up = lambda dx, dy, dz, yaw=0.0: {"pos": (p0 + [dx, dy, dz]).tolist(), "quat": turned(yaw), "hold": LEVEL}  # noqa: E731
     free = lambda dx, dy, dz: {"pos": (p0 + [dx, dy, dz]).tolist(), "quat": quat, "hold": FREE}  # noqa: E731
     j = lambda *d: {"joints": (HOME + np.radians(d)).tolist()}  # noqa: E731
     return {
@@ -311,6 +328,14 @@ def cases(p0, quat):
             [0.0, 0.05, 0.05, 0.05, 0.05],
         ),
         # grab_container's shape: view, pre-grasp, grasp, raise
+        "pose_mix": (
+            [up(0.08, 0.2, -0.05), free(0.05, -0.2, 0.05), free(0, 0, 0), up(0, 0.15, 0.1)],
+            [0.0, 0.05, 0.05, 0.03],
+        ),
+        "level_turn": (
+            [up(0.05, 0.15, 0.0), up(0.05, -0.1, 0.05, 40.0), up(0, 0, 0)],
+            [0.0, 0.04, 0.03],
+        ),
         "grab_like": (
             [free(-0.05, 0.0, 0.2), up(0.12, 0.1, -0.05), {**up(0.12, 0.1, -0.13), "hold": FIXED}, up(0.12, 0.1, 0.05)],
             [0.0, 0.05, 0.01, 0.0],

@@ -89,6 +89,39 @@ tool came to each goal. All 8 runs succeeded.
   The blend is now as level as stopping; the measured ~1° is tracking.
 - Savings shrank where legs are held (the hold limits the overlap), as expected.
 
+## A second run on 80b19b6: `v2_10b`
+
+The same suite again, for repeatability. All 8 runs succeeded.
+
+| case | stopped | blended | saved |
+|---|---|---|---|
+| square (LEVEL) | 5.15 s | 3.77 s | 27 % |
+| mixed_hold | 5.23 s | 3.49 s | 33 % |
+| joint_sweep | 3.89 s | 2.45 s | 37 % |
+| grab_like | 2.92 s | 2.20 s | 25 % |
+
+The held cases vary most between runs (`mixed_hold` went from 16 % to 33 %), because cuRobo plans different legs on each call. The stopped baseline moved from 4.63 s to 5.23 s.
+
+## On d8db5c3 (holds checked against each leg's goal orientation): `v3`
+
+The bench now sends each held leg's goal orientation (`Blend.hold_orientation`), and adds two cases:
+- `pose_mix`: poses held LEVEL, free, free, LEVEL.
+- `level_turn`: LEVEL legs whose second goal is turned 40° about the vertical, a turn LEVEL leaves free in transit.
+
+Each ran at speeds 0.5 and 1.0. All 20 runs succeeded.
+
+| case | 0.5 stopped → blended | saved | 1.0 stopped → blended | saved |
+|---|---|---|---|---|
+| square (LEVEL) | 9.57 → 7.09 s | 26 % | 4.97 → 3.81 s | 23 % |
+| pose_mix | 7.90 → 5.81 s | 26 % | 3.76 → 3.06 s | 19 % |
+| level_turn | 10.26 → 6.33 s | 38 % | 4.43 → 3.57 s | 19 % |
+| joint_sweep | 7.76 → 4.79 s | 38 % | 3.89 → 2.45 s | 37 % |
+| grab_like | 5.53 → 4.45 s | 20 % | 2.84 → 2.28 s | 20 % |
+
+- **Tracking:** the worst joint error was under 0.7° everywhere except one stopped run (`pose_mix` at 0.5, 1.18°). The tool stayed within 7.4 mm of the plan and 4.9 mm of the path.
+- **Level holds:** the planned deviation stayed within 1.4° of level. In `level_turn` at full speed the blend overlapped the 40° turn with the level move (1.38° planned, 1.32° measured).
+- **Standstill inside the motion:** stopped runs 0.07–0.84 s; blended runs 0–0.13 s.
+
 ## Tables
 
 **video10**
@@ -174,3 +207,41 @@ leg). Aborted runs ran for `ran s` before the driver stopped the arm.
 | mixed_hold_1_stop | ok | 4.72 | 4.71 | 4.63 | 0.15 | 0.621 | 0.15 | 5.57 | 3.91 | 0, 0, 0, 0 |
 | square_1_blend | ok | 3.82 | 3.81 | 3.77 | 0.01 | 0.689 | 0.185 | 5.35 | 4.03 | 2.87, 1.31, 1.63, 1.38 |
 | square_1_stop | ok | 5.08 | 5.07 | 5.01 | 0.2 | 0.495 | 0.156 | 5.56 | 3.06 | 0, 0, 0, 0 |
+
+**v2_10b**
+
+| run | result | planned s | ran s | motion s | still s | joint max ° | joint RMS ° | tool max mm | path dev max mm | corners cm |
+|---|---|---|---|---|---|---|---|---|---|---|
+| grab_like_1_blend | ok | 2.26 | 2.25 | 2.2 | 0.05 | 0.636 | 0.147 | 5.82 | 4.82 | 4.71, 0.42, 0 |
+| grab_like_1_stop | ok | 3.0 | 2.99 | 2.92 | 0.1 | 0.488 | 0.129 | 6.64 | 3.05 | 0, 0, 0 |
+| joint_sweep_1_blend | ok | 2.5 | 2.49 | 2.45 | 0.0 | 0.554 | 0.139 | 4.96 | 4.91 | 3.21, 2.24, 2.95, 4.08 |
+| joint_sweep_1_stop | ok | 3.94 | 3.93 | 3.89 | 0.14 | 0.453 | 0.11 | 4.9 | 4.29 | 0, 0, 0, 0 |
+| mixed_hold_1_blend | ok | 3.58 | 3.57 | 3.49 | 0.0 | 0.66 | 0.171 | 5.94 | 5.94 | 0.98, 4.91, 2.98, 1.63 |
+| mixed_hold_1_stop | ok | 5.32 | 5.31 | 5.23 | 0.18 | 0.48 | 0.138 | 5.59 | 3.8 | 0, 0, 0, 0 |
+| square_1_blend | ok | 3.82 | 3.81 | 3.77 | 0.01 | 0.663 | 0.183 | 5.81 | 4.27 | 2.86, 1.33, 0.72, 0.6 |
+| square_1_stop | ok | 5.22 | 5.21 | 5.15 | 0.18 | 0.534 | 0.153 | 5.62 | 3.53 | 0, 0, 0, 0 |
+
+**v3**
+
+| run | result | planned s | ran s | motion s | still s | joint max ° | joint RMS ° | tool max mm | path dev max mm | corners cm |
+|---|---|---|---|---|---|---|---|---|---|---|
+| grab_like_0.5_blend | ok | 4.6 | 4.59 | 4.45 | 0.13 | 0.245 | 0.062 | 3.26 | 1.75 | 4.99, 0.17, 0 |
+| grab_like_0.5_stop | ok | 5.7 | 5.69 | 5.53 | 0.41 | 0.251 | 0.06 | 3.51 | 1.23 | 0, 0, 0 |
+| grab_like_1_blend | ok | 2.36 | 2.35 | 2.28 | 0.03 | 0.664 | 0.146 | 6.36 | 4.47 | 4.55, 0.22, 0 |
+| grab_like_1_stop | ok | 2.92 | 2.91 | 2.84 | 0.07 | 0.522 | 0.137 | 7.35 | 3.13 | 0, 0, 0 |
+| joint_sweep_0.5_blend | ok | 4.9 | 4.89 | 4.79 | 0.0 | 0.251 | 0.065 | 2.97 | 1.68 | 3.42, 2.39, 3.1, 4.24 |
+| joint_sweep_0.5_stop | ok | 7.86 | 7.85 | 7.76 | 0.57 | 0.257 | 0.054 | 3.02 | 1.46 | 0, 0, 0, 0 |
+| joint_sweep_1_blend | ok | 2.5 | 2.49 | 2.45 | 0.0 | 0.482 | 0.143 | 5.62 | 4.92 | 3.2, 2.21, 2.95, 4.09 |
+| joint_sweep_1_stop | ok | 3.94 | 3.93 | 3.89 | 0.14 | 0.45 | 0.108 | 5.09 | 4.17 | 0, 0, 0, 0 |
+| level_turn_0.5_blend | ok | 6.58 | 6.57 | 6.33 | 0.0 | 0.219 | 0.066 | 2.24 | 1.48 | 3.98, 2.88 |
+| level_turn_0.5_stop | ok | 10.58 | 10.57 | 10.26 | 0.84 | 0.232 | 0.058 | 2.31 | 1.24 | 0, 0 |
+| level_turn_1_blend | ok | 3.72 | 3.71 | 3.57 | 0.0 | 0.572 | 0.144 | 3.93 | 2.83 | 1.08, 2.91 |
+| level_turn_1_stop | ok | 4.54 | 4.53 | 4.43 | 0.18 | 0.44 | 0.118 | 4.65 | 3.38 | 0, 0 |
+| pose_mix_0.5_blend | ok | 5.98 | 5.97 | 5.81 | 0.0 | 0.328 | 0.078 | 2.92 | 1.58 | 1.35, 3.13, 1.8 |
+| pose_mix_0.5_stop | ok | 8.06 | 8.05 | 7.9 | 0.61 | 1.183 | 0.066 | 3.03 | 1.16 | 0, 0, 0 |
+| pose_mix_1_blend | ok | 3.14 | 3.13 | 3.06 | 0.0 | 0.663 | 0.188 | 4.97 | 4.01 | 1.7, 3.71, 0.54 |
+| pose_mix_1_stop | ok | 3.84 | 3.83 | 3.76 | 0.11 | 0.516 | 0.165 | 5.25 | 3.44 | 0, 0, 0 |
+| square_0.5_blend | ok | 7.22 | 7.21 | 7.09 | 0.0 | 0.279 | 0.082 | 2.84 | 1.68 | 2.89, 2.23, 1.33, 2.98 |
+| square_0.5_stop | ok | 9.7 | 9.69 | 9.57 | 0.78 | 0.251 | 0.077 | 2.82 | 1.08 | 0, 0, 0, 0 |
+| square_1_blend | ok | 3.88 | 3.87 | 3.81 | 0.0 | 0.603 | 0.159 | 5.98 | 4.12 | 2.94, 1.52, 1.11, 1.39 |
+| square_1_stop | ok | 5.02 | 5.01 | 4.97 | 0.17 | 0.491 | 0.157 | 5.57 | 3.33 | 0, 0, 0, 0 |
