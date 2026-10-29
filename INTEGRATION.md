@@ -106,13 +106,17 @@ collision world's scene. There is nothing here that can move an arm.
 Plan each leg with `plan_to_pose` / `plan_to_joints`, each from the last point
 of the leg before it, then hand the trajectories to `blend` for ONE
 trajectory that passes the goals between still moving. Per leg: its
-`speed_scale` (`(0, 1]` of its planned speed; empty: all 1) and the `hold` it
-was planned with (empty: none). Per junction, one fewer than legs:
+`speed_scale` (`(0, 1]` of its planned speed; empty: all 1), the `hold` it
+was planned with (empty: none), and for a held leg the `hold_orientation`, its
+goal's orientation as sent to `plan_to_pose` (empty: the leg's planned end,
+which is within the planner's tolerance of the goal, so an overlap can then
+reach up to twice that from the goal). Per junction, one fewer than legs:
 `blend_radius` (m), how far the tool may pass from that junction's goal to
 cut the corner; `0` stops on it. The result carries the speeds, so execute it
 at speed scale 1.
 
 ```python
+from geometry_msgs.msg import Quaternion
 from rammp_curobo_interfaces.action import Blend, PlanToPose
 
 level = pose_client.send_goal(level_goal).result.trajectory   # hold HOLD_LEVEL
@@ -123,6 +127,7 @@ plan = blend_client.send_goal(
         blend_radius=[0.03],
         speed_scale=[0.8, 0.4],
         hold=[PlanToPose.Goal.HOLD_LEVEL, PlanToPose.Goal.HOLD_NONE],
+        hold_orientation=[level_goal.target.orientation, Quaternion()],
     )
 ).result
 # plan.corner_m: per junction, how close the tool came to that goal
@@ -133,15 +138,17 @@ both while they overlap (`core/rammp_curobo/blend.py`). Each overlap is the
 longest whose states:
 
 - keep the joint velocity and acceleration limits;
-- keep the tool within the radius of the junction's goal and of the planned path;
-- keep each held leg's hold, measured as `plan_to_pose` measures it;
+- bring the tool within the radius of the junction's goal at its closest
+  pass, and keep it within the radius of the planned path;
+- keep each held leg's hold against its hold orientation, measured as
+  `plan_to_pose` measures it;
 - pass cuRobo's constraint check (collision, self-collision, limits), one by one.
 
 The whole trajectory is then validated like any plan. A radius is a bound, not
 a promise: where the limits, a hold or the world allow no cut, the arm stops on
 the goal and `corner_m` says 0. A leg must start and end at rest and start
-within 0.001 rad of where the one before it ends, its points evenly spaced and
-finite, with positions and velocities, or the goal fails naming the leg
+within 0.001 rad of where the one before it ends, its points (at least 2)
+evenly spaced and finite, with positions and velocities, or the goal fails naming the leg
 (`invalid legs: leg 2/3: ...`, or `BAD_LEG: leg 2/3: ...`).
 
 ## Planning on the MEBot (≥ 1.1.0)

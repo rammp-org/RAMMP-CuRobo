@@ -1286,7 +1286,7 @@ def test_blend_legs_joins_a_held_leg_and_a_slower_free_one(planner, start):
     assert free.success, free.error
     legs = [level.joint_traj, free.joint_traj]
     hold = PoseConstraint(hold=1)
-    res = planner.blend_legs(legs, [0.05], [1.0, 0.5], [hold, None])
+    res = planner.blend_legs(legs, [0.05], [1.0, 0.5], [hold, None], [quat, None])
     assert res.success and res.validated, res.error
     traj = res.joint_traj
     assert 0.0 < res.corners_m[0] <= 0.05

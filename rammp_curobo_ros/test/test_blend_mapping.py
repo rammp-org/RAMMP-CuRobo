@@ -7,6 +7,7 @@ import pytest
 
 try:
     from rammp_curobo_interfaces.action import Blend
+    from geometry_msgs.msg import Quaternion
     from trajectory_msgs.msg import JointTrajectory
 
     from rammp_curobo import Trajectory
@@ -33,16 +34,23 @@ def _leg():
 
 
 def test_legs_scales_and_holds_map_one_per_leg():
-    goal = Blend.Goal(legs=[_leg(), _leg()], speed_scale=[0.5, 1.0], hold=[1, 0])
-    legs, scales, holds, why = legs_from_goal(goal, JOINTS)
+    level = Quaternion(x=0.5, y=0.5, z=0.5, w=0.5)
+    goal = Blend.Goal(
+        legs=[_leg(), _leg()],
+        speed_scale=[0.5, 1.0],
+        hold=[1, 0],
+        hold_orientation=[level, Quaternion()],
+    )
+    legs, scales, holds, refs, why = legs_from_goal(goal, JOINTS)
     assert why is None and len(legs) == 2
     assert scales == [0.5, 1.0]
     assert holds[0].hold == 1 and holds[1] is None
+    assert refs == [(0.5, 0.5, 0.5, 0.5), None]  # read only for the held leg
 
 
 def test_empty_scales_and_holds_mean_full_speed_and_no_hold():
-    legs, scales, holds, why = legs_from_goal(Blend.Goal(legs=[_leg()]), JOINTS)
-    assert why is None and scales is None and holds == [None]
+    legs, scales, holds, refs, why = legs_from_goal(Blend.Goal(legs=[_leg()]), JOINTS)
+    assert why is None and scales is None and holds == [None] and refs == [None]
 
 
 @pytest.mark.parametrize(
@@ -56,8 +64,12 @@ def test_empty_scales_and_holds_mean_full_speed_and_no_hold():
         (Blend.Goal(legs=[_leg(), _leg()], speed_scale=[0.5]), "speed_scale needs 2"),
         (Blend.Goal(legs=[_leg(), _leg()], hold=[1]), "hold needs 2"),
         (Blend.Goal(legs=[_leg()], hold=[7]), "leg 1/1: hold must be one of"),
+        (
+            Blend.Goal(legs=[_leg(), _leg()], hold_orientation=[Quaternion()]),
+            "hold_orientation needs 2",
+        ),
     ],
 )
 def test_a_bad_goal_is_refused_naming_what(goal, why):
-    legs, _, _, reason = legs_from_goal(goal, JOINTS)
+    legs, _, _, _, reason = legs_from_goal(goal, JOINTS)
     assert legs == [] and why in reason

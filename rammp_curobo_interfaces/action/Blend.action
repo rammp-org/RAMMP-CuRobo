@@ -10,8 +10,8 @@
 # trajectory is then validated like any plan. A junction that allows no
 # overlap stops, as if its radius were 0.
 #
-# Each leg: its joints in any order, the planner's joints; evenly spaced
-# points, each with positions and velocities (accelerations optional).
+# Each leg: its joints in any order, the planner's joints; at least 2 evenly
+# spaced points, each with positions and velocities (accelerations optional).
 trajectory_msgs/JointTrajectory[] legs
 # Per junction (one fewer than legs), m: how far the tool may pass from that
 # junction's waypoint (and from the planned path) to cut the corner; 0 stops
@@ -23,6 +23,11 @@ float64[] speed_scale
 # Per leg, the hold it was planned with (PlanToPose's HOLD_NONE=0,
 # HOLD_LEVEL=1, HOLD_FIXED=2), kept through its overlaps too; empty: none.
 uint8[] hold
+# Per leg, the orientation its hold keeps: the goal's, as sent to PlanToPose.
+# Read only for held legs, which must then have a unit quaternion. Empty: each
+# held leg's planned end, which PlanToPose has checked is within its tolerance
+# of the goal, so the overlap can then reach up to twice that from the goal.
+geometry_msgs/Quaternion[] hold_orientation
 ---
 bool success
 string message                              # failure explanation when !success

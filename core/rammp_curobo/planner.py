@@ -614,7 +614,9 @@ class CuRoboPlanner:
             "joint-space method must be 'auto', 'js', or 'fk_pose', got %r" % method
         )
 
-    def blend_legs(self, legs, blend_radii, speed_scales=None, holds=None):
+    def blend_legs(
+        self, legs, blend_radii, speed_scales=None, holds=None, hold_orientations=None
+    ):
         """ONE trajectory through `legs` (types.Trajectory, each from rest to
         rest, leg k+1 planned from where leg k ends: plans from plan_to_pose /
         plan_to_joints), the arm passing junction k (the end of leg k) still
@@ -624,6 +626,9 @@ class CuRoboPlanner:
         default all 1; a leg not on this planner's dt is resampled onto it.
         holds: per leg, the PoseConstraint it was planned under, or None
         (the default); a held leg keeps its hold through its overlaps too.
+        hold_orientations: per leg, the orientation (xyzw) its hold keeps,
+        its goal's as plan_to_pose was given it, or None; default for a held
+        leg, its planned end (within constraint tolerance of its goal).
 
         Legs are overlapped in time (blend.py). Each junction's overlap is the
         longest (bisected) whose window:
@@ -631,7 +636,7 @@ class CuRoboPlanner:
           - keeps the tool within blend_radii[k] of the junction's waypoint
             (the end of leg k) and of the planned path;
           - keeps the hold of each held leg in it, measured as plan_to_pose
-            measures it;
+            measures it, against that leg's hold orientation;
           - passes cuRobo's constraint check (collision, self-collision,
             position limits) at every state.
         The whole trajectory is then validated and re-checked like any plan.
@@ -644,12 +649,18 @@ class CuRoboPlanner:
             return PlanResult.failure("BAD_LEG", "no legs")
         scales = [1.0] * n if speed_scales is None else [float(s) for s in speed_scales]
         holds = [None] * n if holds is None else list(holds)
-        if len(blend_radii) != n - 1 or len(scales) != n or len(holds) != n:
+        refs = [None] * n if hold_orientations is None else list(hold_orientations)
+        if (
+            len(blend_radii) != n - 1
+            or len(scales) != n
+            or len(holds) != n
+            or len(refs) != n
+        ):
             return PlanResult.failure(
                 "BAD_LEG",
-                "%d legs need %d blend radii, %d speed scales and %d holds, "
-                "got %d, %d and %d"
-                % (n, n - 1, n, n, len(blend_radii), len(scales), len(holds)),
+                "%d legs need %d blend radii, and %d speed scales, holds and hold "
+                "orientations, got %d, %d, %d and %d"
+                % (n, n - 1, n, len(blend_radii), len(scales), len(holds), len(refs)),
             )
         radii = [float(r) for r in blend_radii]
         for k, r in enumerate(radii):
@@ -675,6 +686,17 @@ class CuRoboPlanner:
             ):
                 return PlanResult.failure(
                     "BAD_LEG", "%s: non-finite positions or velocities" % what
+                )
+            if leg.n_points < 2:
+                return PlanResult.failure(
+                    "BAD_LEG",
+                    "%s: %d point(s), a leg needs at least 2" % (what, leg.n_points),
+                )
+            ref = refs[k]
+            if ref is not None and not abs(np.linalg.norm(ref) - 1.0) < 1e-3:
+                return PlanResult.failure(
+                    "BAD_LEG",
+                    "%s: hold orientation %r is not a unit quaternion" % (what, ref),
                 )
             if not 0.0 < s <= 1.0:
                 return PlanResult.failure(
@@ -748,7 +770,9 @@ class CuRoboPlanner:
                 return False
             for j in (k, k + 1):
                 if holds[j] is not None and holds[j].hold != constraints.HOLD_NONE:
-                    goal = geometry.wxyz_to_xyzw(tool[j][1][-1])
+                    goal = refs[j]
+                    if goal is None:
+                        goal = geometry.wxyz_to_xyzw(tool[j][1][-1])
                     if self._hold_deviation_batch(wxyz, goal, holds[j]).max() > tol:
                         return False
             return bool(self._feasible(p[w]).all())

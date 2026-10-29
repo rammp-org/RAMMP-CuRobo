@@ -143,53 +143,43 @@ def constraint_from_goal(goal):
 
 
 def legs_from_goal(goal, joint_names):
-    """(legs, speed_scales, holds, why_rejected) from a Blend goal: every leg a
-    trajectory in `joint_names` (trajectory_from_msg), one speed scale and one
-    hold per leg or none, the holds HOLD_* values; REFUSED otherwise. holds
-    are PoseConstraints, None where a leg holds nothing."""
+    """(legs, speed_scales, holds, hold_orientations, why_rejected) from a
+    Blend goal: every leg a trajectory in `joint_names` (trajectory_from_msg),
+    one speed scale, hold and hold orientation per leg or none, the holds
+    HOLD_* values; REFUSED otherwise. holds are PoseConstraints, None where a
+    leg holds nothing; hold_orientations xyzw, None where none applies."""
     n = len(goal.legs)
     if not n:
-        return [], None, None, "no legs"
+        return [], None, None, None, "no legs"
     legs = []
     for k, msg in enumerate(goal.legs):
         leg, why = trajectory_from_msg(msg, joint_names)
         if why is not None:
-            return [], None, None, "leg %d/%d: %s" % (k + 1, n, why)
+            return [], None, None, None, "leg %d/%d: %s" % (k + 1, n, why)
         legs.append(leg)
-    for name, values in (("speed_scale", goal.speed_scale), ("hold", goal.hold)):
+    per_leg = (
+        ("speed_scale", goal.speed_scale),
+        ("hold", goal.hold),
+        ("hold_orientation", goal.hold_orientation),
+    )
+    for name, values in per_leg:
         if len(values) not in (0, n):
-            return (
-                [],
-                None,
-                None,
-                "%d legs: %s needs %d values or none, got %d"
-                % (
-                    n,
-                    name,
-                    n,
-                    len(values),
-                ),
-            )
+            why = "%d legs: %s needs %d values or none, got %d"
+            return [], None, None, None, why % (n, name, n, len(values))
     holds = [int(h) for h in goal.hold] or [PlanToPose.Goal.HOLD_NONE] * n
     for k, h in enumerate(holds):
         if h not in _HOLD_MODES:
-            return (
-                [],
-                None,
-                None,
-                "leg %d/%d: hold must be one of %s, got %d"
-                % (
-                    k + 1,
-                    n,
-                    _HOLD_MODES,
-                    h,
-                ),
-            )
-    scales = [float(s) for s in goal.speed_scale] or None
+            why = "leg %d/%d: hold must be one of %s, got %d"
+            return [], None, None, None, why % (k + 1, n, _HOLD_MODES, h)
+    refs = [None] * n
+    for k, o in enumerate(goal.hold_orientation):
+        if holds[k]:
+            refs[k] = (o.x, o.y, o.z, o.w)
     return (
         legs,
-        scales,
+        [float(s) for s in goal.speed_scale] or None,
         [PoseConstraint(hold=h) if h else None for h in holds],
+        refs,
         None,
     )
 
@@ -426,7 +416,7 @@ class RammpCuroboNode(Node):
     def _blend_cb(self, goal_handle):
         result = Blend.Result()
         goal = goal_handle.request
-        legs, scales, holds, why = legs_from_goal(goal, self.planner.joint_names)
+        legs, scales, holds, refs, why = legs_from_goal(goal, self.planner.joint_names)
         if why is not None:
             result.success = False
             result.message = "invalid legs: %s" % why
@@ -435,7 +425,7 @@ class RammpCuroboNode(Node):
         # the first leg's start is the plan's: _plan checks it like any start
         res = self._plan(
             lambda q: self.planner.blend_legs(
-                legs, list(goal.blend_radius), scales, holds
+                legs, list(goal.blend_radius), scales, holds, refs
             ),
             list(legs[0].positions[0]),
         )

@@ -158,9 +158,10 @@ Layer boxes are in `arm_mount`, like every world.
   `blend.py`): one trajectory from plans this planner returned (pose legs
   with their own hold, joint legs), each at its own speed scale, passing the
   goals between still moving. Consecutive legs overlap in time; each overlap
-  keeps the joint velocity and acceleration limits, the held legs' holds, and
-  the tool within the junction's `blend_radius` of its goal and of the planned
-  path, and is collision-checked state by state. Additive: no existing message
+  keeps the joint velocity and acceleration limits, the held legs' holds
+  (against each one's `hold_orientation`, its goal's), the tool's closest pass
+  within the junction's `blend_radius` of its goal and every state within it of
+  the planned path, and is collision-checked state by state. Additive: no existing message
   changes.
 - **Every plan states its frame:** `trajectory.header.frame_id` is
   `arm_mount` on pose and joint plans alike (core: `Trajectory.frame_id`).

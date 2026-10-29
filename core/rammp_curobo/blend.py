@@ -43,7 +43,7 @@ def max_overlaps(lengths, blended):
         tail = lengths[k] - 1 if k == 0 or not blended[k - 1] else (lengths[k] - 2) // 2
         nxt = k + 1 < last and blended[k + 1]
         head = (lengths[k + 1] - 2) // 2 if nxt else lengths[k + 1] - 1
-        caps.append(min(tail, head) if on else 0)
+        caps.append(max(0, min(tail, head)) if on else 0)
     return caps
 
 

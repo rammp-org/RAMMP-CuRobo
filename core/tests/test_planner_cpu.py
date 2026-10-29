@@ -182,8 +182,8 @@ def test_update_world_refuses_before_reaching_curobo(
 def blend_planner(cpu_planner, monkeypatch):
     """cpu_planner whose plan_to_joints legs are straight minimum-jerk moves
     at the joint limits, whose "tool" is at the first three joints, tilted
-    about x by the fourth, and whose world is empty unless `feasible` says
-    otherwise."""
+    about x by the fourth and then turned about the vertical by the fifth,
+    and whose world is empty unless `feasible` says otherwise."""
     from rammp_curobo.types import PlanResult, Trajectory
 
     lo, hi = _urdf_limits()
@@ -217,9 +217,9 @@ def blend_planner(cpu_planner, monkeypatch):
 
     def tool_poses(qs):
         qs = np.asarray(qs, dtype=float)
-        half = qs[:, 3] / 2
-        wxyz = np.stack([np.cos(half), np.sin(half), 0 * half, 0 * half], axis=1)
-        return qs[:, :3], wxyz
+        cx, sx = np.cos(qs[:, 3] / 2), np.sin(qs[:, 3] / 2)  # tilt about x
+        cz, sz = np.cos(qs[:, 4] / 2), np.sin(qs[:, 4] / 2)  # then about vertical
+        return qs[:, :3], np.stack([cz * cx, cz * sx, sz * sx, sz * cx], axis=1)
 
     monkeypatch.setattr(cpu_planner, "plan_to_joints", lambda q, start: leg(q, start))
     monkeypatch.setattr(cpu_planner, "_tool_poses", tool_poses)
@@ -411,6 +411,9 @@ def test_blend_legs_refuses_what_it_cannot_blend(blend_planner):
         ),
     )
     renamed = replace(b, joint_names=list(reversed(b.joint_names)))
+    point = replace(
+        b, positions=b.positions[:1], velocities=b.velocities[:1], accelerations=None
+    )
     for legs, radii, scales, why in [
         ([], [], None, "no legs"),
         ([a, b], [], None, "2 legs need 1 blend radii"),
@@ -422,6 +425,103 @@ def test_blend_legs_refuses_what_it_cannot_blend(blend_planner):
         ([a, b], [float("nan")], None, "junction 1: blend radius nan"),
         ([a, b], [-0.1], None, "must be finite and >= 0"),
         ([a, b], [float("inf")], None, "must be finite and >= 0"),
+        ([a, point], [0.05], None, "leg 2/2: 1 point(s), a leg needs at least 2"),
     ]:
         res = blend_planner.blend_legs(legs, radii, scales)
         assert res.status == "BAD_LEG" and why in res.error, res.error
+    res = blend_planner.blend_legs(
+        [a, b], [0.05], hold_orientations=[(0, 0, 0, 2), None]
+    )
+    assert res.status == "BAD_LEG" and "not a unit quaternion" in res.error
+
+
+def _while(res, moving, joint):
+    """|joint| (rad) over the states where `moving` (a predicate on the
+    states) holds: a held leg's span."""
+    q = res.joint_traj.positions
+    return np.abs(q[moving(q), joint]).max()
+
+
+def test_a_held_second_leg_keeps_its_hold_through_the_overlap(blend_planner):
+    """Leg 1 is free and levels the tool (joint 4 back to 0); leg 2 holds
+    level while joint 1 moves. Unheld, leg 2 starts before the tool is level."""
+    from rammp_curobo import PoseConstraint
+
+    legs = _legs(blend_planner, _q(0, 0, 0, 0.5), _q(), _q(0.4))
+    tol = blend_planner.constraint_tolerance_rad
+    leg_2 = lambda q: q[:, 0] > 1e-9  # noqa: E731
+    free = blend_planner.blend_legs(legs, [0.2])
+    held = blend_planner.blend_legs(legs, [0.2], holds=[None, PoseConstraint(hold=1)])
+    assert free.success and held.success, held.error
+    assert _while(free, leg_2, 3) > tol  # not vacuous
+    assert _while(held, leg_2, 3) <= tol
+    stopped = blend_planner.blend_legs(legs, [0.0]).joint_traj.duration
+    assert held.joint_traj.duration < stopped
+
+
+def test_level_frees_the_spin_about_vertical_and_fixed_does_not(blend_planner):
+    """Leg 1 is held while joint 1 moves; leg 2 turns the tool about the
+    vertical (joint 5). LEVEL leaves that turn free in the overlap; FIXED
+    keeps it out of leg 1's span."""
+    from rammp_curobo import PoseConstraint
+
+    legs = _legs(blend_planner, _q(), _q(0.4), _q(0.4, 0, 0, 0, 0.5))
+    tol = blend_planner.constraint_tolerance_rad
+    leg_1 = lambda q: q[:, 0] < 0.4 - 1e-9  # noqa: E731
+    free = blend_planner.blend_legs(legs, [0.2])
+    level = blend_planner.blend_legs(legs, [0.2], holds=[PoseConstraint(hold=1), None])
+    fixed = blend_planner.blend_legs(legs, [0.2], holds=[PoseConstraint(hold=2), None])
+    assert free.success and level.success and fixed.success, fixed.error
+    assert _while(level, leg_1, 4) > tol  # the spin overlaps leg 1 under LEVEL
+    assert level.joint_traj.duration == pytest.approx(free.joint_traj.duration)
+    assert _while(fixed, leg_1, 4) <= tol
+    assert fixed.joint_traj.duration > level.joint_traj.duration
+
+
+def test_a_hold_is_kept_against_the_goal_not_only_the_legs_end(blend_planner):
+    """Leg 1 holds level but ends 1.5 deg tilted (within tolerance of its
+    level goal); leg 2 tilts further. Against the leg's end the overlap may
+    add a whole tolerance on top; against its goal it stays within one."""
+    from rammp_curobo import PoseConstraint
+
+    tilt = np.radians(1.5)
+    legs = _legs(
+        blend_planner, _q(0, 0, 0, tilt), _q(0.4, 0, 0, tilt), _q(0.4, 0, 0, 0.3)
+    )
+    tol = blend_planner.constraint_tolerance_rad
+    leg_1 = lambda q: q[:, 0] < 0.4 - 1e-9  # noqa: E731
+    hold = [PoseConstraint(hold=1), None]
+    from_end = blend_planner.blend_legs(legs, [0.2], holds=hold)
+    from_goal = blend_planner.blend_legs(
+        legs, [0.2], holds=hold, hold_orientations=[(0, 0, 0, 1), None]
+    )
+    assert from_end.success and from_goal.success, from_goal.error
+    assert _while(from_end, leg_1, 3) > tol  # not vacuous: up to tilt + tol
+    assert _while(from_goal, leg_1, 3) <= tol
+
+
+def test_the_final_check_still_refuses(blend_planner):
+    """A world every overlap window passes but the whole trajectory does not
+    (here the windows are shorter than any whole trajectory)."""
+    legs = _legs(blend_planner, *CORNER)
+    longest = max(len(leg.positions) for leg in legs)
+    blend_planner.feasible = lambda qs: np.full(len(qs), len(qs) <= longest)
+    res = blend_planner.blend_legs(legs, [0.05])
+    assert res.status == "LIBRARY_VALIDATION_FAILED"
+    assert "constraint re-check flagged" in res.error
+
+
+def test_without_a_goal_orientation_a_hold_is_kept_against_the_legs_end(blend_planner):
+    """A level leg that drifts 1.5 deg on its way (its goal, and so its end,
+    at 1.5 deg), then a leg that tilts further: with no hold orientation given
+    the reference is the leg's end, so the overlap may tilt up to a tolerance
+    past it, not past the leg's start."""
+    from rammp_curobo import PoseConstraint
+
+    tilt = np.radians(1.5)
+    legs = _legs(blend_planner, _q(), _q(0.4, 0, 0, tilt), _q(0.4, 0, 0, 0.3))
+    tol = blend_planner.constraint_tolerance_rad
+    res = blend_planner.blend_legs(legs, [0.2], holds=[PoseConstraint(hold=1), None])
+    assert res.success, res.error
+    worst = _while(res, lambda q: q[:, 0] < 0.4 - 1e-9, 3)
+    assert tol < worst <= tilt + tol + 1e-9

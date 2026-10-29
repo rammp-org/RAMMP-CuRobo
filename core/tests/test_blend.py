@@ -83,6 +83,10 @@ def test_max_overlaps_gives_a_leg_whole_only_to_a_junction_with_a_stop_beside_it
     assert blend.max_overlaps(lengths, [False, True]) == [0, 20]
 
 
+def test_a_one_point_leg_gets_no_overlap_rather_than_a_negative_one():
+    assert blend.max_overlaps([10, 1, 10], [True, True]) == [0, 0]
+
+
 @pytest.mark.parametrize("n", [94, 95])
 def test_windows_at_their_caps_share_no_state(n):
     lengths = [n, n, n]
@@ -146,3 +150,16 @@ def test_resample_onto_its_own_grid_is_the_leg():
     rp, rv, _ = blend.resample(p, v, DT, DT)
     np.testing.assert_allclose(rp, p, atol=1e-12)
     np.testing.assert_allclose(rv, v, atol=1e-12)
+
+
+def test_resample_rescales_velocities_with_the_rounding_stretch():
+    """A leg 0.15 s long lands on 8 steps of 0.02 (0.16 s): every velocity must
+    shrink by 0.15/0.16, or positions and velocities disagree."""
+    q0, q1 = np.zeros(7), np.r_[0.3, np.zeros(6)]
+    u = np.linspace(0, 1, 7)[:, None]  # 6 steps of 0.025 s, minimum jerk
+    p = q0 + (10 * u**3 - 15 * u**4 + 6 * u**5) * (q1 - q0)
+    v = (30 * u**2 - 60 * u**3 + 30 * u**4) / 0.15 * (q1 - q0)
+    rp, rv, _ = blend.resample(p, v, 0.025, DT)
+    assert len(rp) == 9  # 0.15 s rounded up to 0.16 s
+    # minimum jerk peaks at 1.875 x the mean speed: 0.3 m in 0.16 s, not 0.15 s
+    assert np.abs(rv[:, 0]).max() == pytest.approx(1.875 * 0.3 / 0.16, rel=0.01)
