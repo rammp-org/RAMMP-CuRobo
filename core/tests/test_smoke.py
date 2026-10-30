@@ -1262,3 +1262,40 @@ def test_unconstrained_plan_is_unchanged(planner, start):
     assert a.success and b.success
     assert a.joint_traj.dof == b.joint_traj.dof
     assert abs(a.joint_traj.duration - b.joint_traj.duration) < 0.5
+
+
+def _corner(planner):
+    """Two goals with a corner between them, near the retract: a pose
+    (arm_joint_1 turned 0.5 rad) and then joints (the elbow bent from there)."""
+    q1 = list(planner.retract_pose)
+    q1[0] += 0.5
+    q2 = list(q1)
+    q2[1] -= 0.3
+    q2[3] += 0.3
+    pos, quat = planner.fk(q1)
+    return pos, quat, q2
+
+
+def test_blend_legs_joins_a_held_leg_and_a_slower_free_one(planner, start):
+    from rammp_curobo import PoseConstraint
+
+    pos, quat, q2 = _corner(planner)
+    level = planner.plan_to_pose(pos, quat, start, constraint=PoseConstraint(hold=1))
+    assert level.success, level.error
+    free = planner.plan_to_joints(q2, level.joint_traj.positions[-1])
+    assert free.success, free.error
+    legs = [level.joint_traj, free.joint_traj]
+    hold = PoseConstraint(hold=1)
+    res = planner.blend_legs(legs, [0.05], [1.0, 0.5], [hold, None], [quat, None])
+    assert res.success and res.validated, res.error
+    traj = res.joint_traj
+    assert 0.0 < res.corners_m[0] <= 0.05
+    # level for as long as the held leg runs, its overlap included
+    _, wxyz = planner._tool_poses(traj.positions[: level.joint_traj.n_points])
+    tilt = planner._hold_deviation_batch(wxyz, quat, hold)
+    assert tilt.max() <= planner.constraint_tolerance_rad
+    assert np.abs(traj.positions[-1] - np.asarray(q2)).max() < 1e-3
+    assert _feasible(planner, traj.positions).all()
+    # the free leg at half its speed takes twice as long; the overlap shortens
+    # only the held leg
+    assert traj.duration >= 2 * free.joint_traj.duration - traj.dt

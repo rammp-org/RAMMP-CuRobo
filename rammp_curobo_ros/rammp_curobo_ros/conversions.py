@@ -1,7 +1,12 @@
 """Message <-> library-type conversions. Pure functions, unit-testable."""
 
+import math
+
+import numpy as np
 from builtin_interfaces.msg import Duration as DurationMsg
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+
+from rammp_curobo import Trajectory
 
 
 def duration_msg(seconds):
@@ -30,3 +35,49 @@ def trajectory_to_msg(traj):
         p.time_from_start = duration_msg((k + 1) * traj.dt)
         msg.points.append(p)
     return msg
+
+
+def trajectory_from_msg(msg, joint_names, frame_id=""):
+    """trajectory_msgs/JointTrajectory -> (rammp_curobo Trajectory in
+    `joint_names` order, None), or (None, why) when it is not a trajectory
+    the planner could have produced: other joints, unevenly spaced points, or
+    a point without positions and velocities. Accelerations are kept only when
+    every point has them; anything non-finite is refused."""
+    if sorted(msg.joint_names) != sorted(joint_names):
+        return None, "joints [%s], expected [%s]" % (
+            ", ".join(msg.joint_names),
+            ", ".join(joint_names),
+        )
+    if not msg.points:
+        return None, "no points"
+    n = len(joint_names)
+    if any(len(p.positions) != n or len(p.velocities) != n for p in msg.points):
+        return None, "every point needs %d positions and %d velocities" % (n, n)
+    order = [list(msg.joint_names).index(j) for j in joint_names]
+    t = np.array(
+        [p.time_from_start.sec + p.time_from_start.nanosec * 1e-9 for p in msg.points]
+    )
+    dt = t[0] if len(t) == 1 else t[1] - t[0]
+    if not dt > 0 or np.abs(np.diff(t) - dt).max(initial=0.0) > 1e-6:
+        return None, "points are not evenly spaced in time"
+    has_a = all(len(p.accelerations) == n for p in msg.points)
+    values = [v for p in msg.points for v in (*p.positions, *p.velocities)]
+    if has_a:
+        values += [v for p in msg.points for v in p.accelerations]
+    if not all(math.isfinite(v) for v in values):
+        return None, "non-finite positions, velocities or accelerations"
+    return (
+        Trajectory(
+            joint_names=list(joint_names),
+            positions=np.array([p.positions for p in msg.points])[:, order],
+            velocities=np.array([p.velocities for p in msg.points])[:, order],
+            accelerations=(
+                np.array([p.accelerations for p in msg.points])[:, order]
+                if has_a
+                else None
+            ),
+            dt=float(dt),
+            frame_id=frame_id,
+        ),
+        None,
+    )

@@ -5,6 +5,7 @@
 Actions (node name rammp_curobo):
     /rammp_curobo/plan_to_pose        rammp_curobo_interfaces/PlanToPose
     /rammp_curobo/plan_to_joints      rammp_curobo_interfaces/PlanToJoints
+    /rammp_curobo/blend               rammp_curobo_interfaces/Blend
 Services:
     /rammp_curobo/set_world           rammp_curobo_interfaces/srv/SetWorld
 
@@ -45,9 +46,9 @@ from std_msgs.msg import String
 from rammp_curobo import PoseConstraint, ViaPoint
 from rammp_curobo.config import load_planner_config
 from rammp_curobo.urdf_model import prepare_urdf, write_urdf
-from rammp_curobo_interfaces.action import PlanToJoints, PlanToPose
+from rammp_curobo_interfaces.action import Blend, PlanToJoints, PlanToPose
 from rammp_curobo_interfaces.srv import SetWorld
-from rammp_curobo_ros.conversions import trajectory_to_msg
+from rammp_curobo_ros.conversions import trajectory_from_msg, trajectory_to_msg
 
 
 def check_start_joints(start_joints, joint_names):
@@ -141,6 +142,48 @@ def constraint_from_goal(goal):
     return constraint, via, None
 
 
+def legs_from_goal(goal, joint_names):
+    """(legs, speed_scales, holds, hold_orientations, why_rejected) from a
+    Blend goal: every leg a trajectory in `joint_names` (trajectory_from_msg),
+    one speed scale, hold and hold orientation per leg or none, the holds
+    HOLD_* values; REFUSED otherwise. holds are PoseConstraints, None where a
+    leg holds nothing; hold_orientations xyzw, None where none applies."""
+    n = len(goal.legs)
+    if not n:
+        return [], None, None, None, "no legs"
+    legs = []
+    for k, msg in enumerate(goal.legs):
+        leg, why = trajectory_from_msg(msg, joint_names)
+        if why is not None:
+            return [], None, None, None, "leg %d/%d: %s" % (k + 1, n, why)
+        legs.append(leg)
+    per_leg = (
+        ("speed_scale", goal.speed_scale),
+        ("hold", goal.hold),
+        ("hold_orientation", goal.hold_orientation),
+    )
+    for name, values in per_leg:
+        if len(values) not in (0, n):
+            why = "%d legs: %s needs %d values or none, got %d"
+            return [], None, None, None, why % (n, name, n, len(values))
+    holds = [int(h) for h in goal.hold] or [PlanToPose.Goal.HOLD_NONE] * n
+    for k, h in enumerate(holds):
+        if h not in _HOLD_MODES:
+            why = "leg %d/%d: hold must be one of %s, got %d"
+            return [], None, None, None, why % (k + 1, n, _HOLD_MODES, h)
+    refs = [None] * n
+    for k, o in enumerate(goal.hold_orientation):
+        if holds[k]:
+            refs[k] = (o.x, o.y, o.z, o.w)
+    return (
+        legs,
+        [float(s) for s in goal.speed_scale] or None,
+        [PoseConstraint(hold=h) if h else None for h in holds],
+        refs,
+        None,
+    )
+
+
 class RammpCuroboNode(Node):
     def __init__(self):
         super().__init__("rammp_curobo")
@@ -231,6 +274,13 @@ class RammpCuroboNode(Node):
             PlanToJoints,
             "~/plan_to_joints",
             self._plan_to_joints_cb,
+            callback_group=self._cb,
+        )
+        ActionServer(
+            self,
+            Blend,
+            "~/blend",
+            self._blend_cb,
             callback_group=self._cb,
         )
         self.create_service(
@@ -363,6 +413,29 @@ class RammpCuroboNode(Node):
             out.goal_mismatch_rad = float(mismatch)
         return out
 
+    def _blend_cb(self, goal_handle):
+        result = Blend.Result()
+        goal = goal_handle.request
+        legs, scales, holds, refs, why = legs_from_goal(goal, self.planner.joint_names)
+        if why is not None:
+            result.success = False
+            result.message = "invalid legs: %s" % why
+            goal_handle.abort()
+            return result
+        # the first leg's start is the plan's: _plan checks it like any start
+        res = self._plan(
+            lambda q: self.planner.blend_legs(
+                legs, list(goal.blend_radius), scales, holds, refs
+            ),
+            list(legs[0].positions[0]),
+        )
+        out = self._finish_plan(
+            goal_handle, result, res, speed="at the legs' speed scales"
+        )
+        if getattr(res, "corners_m", None) is not None:
+            out.corner_m = [float(c) for c in res.corners_m]
+        return out
+
     def _plan(self, plan_fn, start_joints):
         """One library planning call from the caller-supplied start state.
 
@@ -380,7 +453,7 @@ class RammpCuroboNode(Node):
         finally:
             self._plan_lock.release()
 
-    def _finish_plan(self, goal_handle, result, res):
+    def _finish_plan(self, goal_handle, result, res, speed="at full speed"):
         if res is None:
             result.success = False
             result.message = "planner busy — one plan at a time"
@@ -395,9 +468,10 @@ class RammpCuroboNode(Node):
         result.success = bool(res.success)
         result.planning_time = float(res.timing)
         if res.success:
-            result.message = "planned %d points, %.2f s at full speed" % (
+            result.message = "planned %d points, %.2f s %s" % (
                 res.joint_traj.n_points,
                 res.joint_traj.duration,
+                speed,
             )
             if res.error:
                 result.message += " — warning: " + res.error
