@@ -67,11 +67,51 @@ Layer boxes are in `arm_mount`, like every world.
 
 ### Changed (breaking)
 
+- **The chair has a seat, the person fits a body, and the arm sits outside
+  the seat.** The person layer was far larger than a person (0.873 m³,
+  11–20× the ANSUR stand-ins, reaching past the arm's base): on flatbot the
+  arm's own rest pose started 141 mm inside it, and nothing planned.
+  - The person is fitted to the body: hips up to the lowest elbow, a torso
+    as wide as the shoulders (the upper arms) up to the chin, a head, thighs
+    and lower legs at hip width, and forearms at elbow height out to the
+    fingertips, hip-wide on the arm's side (no armrest there: that forearm
+    rests on the thigh, `person.arm_side`) and shoulder-wide on the
+    armrest's. A 2 cm margin (was 5 cm); the back at the backrest face
+    (0.2733, a best guess), so the person no longer includes the backrest.
+    Each face still takes the size that puts it furthest out over the
+    5th-percentile woman to the 95th-percentile man; four take the small end
+    (new `*_low` inputs: the highest and lowest chin, the thinnest thighs,
+    the lowest elbow). 8 boxes, 0.399 m³.
+  - A new `seat` layer (5 boxes, not excludable): the seat's base, backrest
+    and joystick-side armrest, from the bounding boxes of the RAMMS seat
+    asset's collision hulls, mirrored with the mount (best guesses). It is
+    carved 35 mm clear of the arm's fixed spheres (`seat.keep_out_margin_m`):
+    closer than the planner's `collision_activation_distance`, cuRobo
+    returned `DT_EXCEPTION` on nearly every plan.
+  - The arm's base is 0.36 m from the seat centreline (was the RAMMS
+    chain's 0.265, which is inside the seat's footprint and beside a large
+    occupant's thigh): a best guess, just outside the seat base. The Gen3's
+    forward home pose is now a valid state, straight ahead and swung out;
+    swung toward the occupant it meets their legs.
+  - The chair's start-up world is 30 boxes. Of random configurations, 41.4 %
+    clear the chair with the person (was 2.3 %), 53.8 % of those with the
+    tool high and in front (was 1.3 %). The bench retract is now a valid
+    start; on flatbot the arm's measured rest pose is 25 mm into the torso
+    and 5 mm into the backrest (was 141 mm), within the mount's unmeasured
+    fore-aft and height.
+  - Every padded person box still holds the sim's stand-ins (G1) and every
+    occupant of the range (`test_layergen`). The sim gives the seat solid
+    geometry. S1 covers the platform and the seat together (no path crosses
+    the platform alone and keeps clear of the seat); the control planner's
+    chair world includes the seat; find_pairs' near-miss filter ignores the
+    arm's fixed spheres. S5 plans from `person_start`, a seeded state inside
+    the person, in place of the bench retract.
 - **The chair's arm is on its left, tilted 30° on its mount.** The MEBot
   layers were generated for the RAMMS model's arm, level on the chair's right
   rail; flatbot's is on the left, with the joystick on the right, and leans
   30° forward on the `new_adapter_plate_v3` (its `mount.yaml`). The mount's y
-  is mirrored to 0.265 m, and the generator takes the tilt as
+  is mirrored (and, in the entry above, moved out to 0.36 m), and the
+  generator takes the tilt as
   `mount.arm_base_joint.rpy_deg`: it places the arm's fixed spheres, which the
   person is carved around and the platform's merges clear, while the boxes
   stay square to the chair in `arm_mount`. The person is now 9 boxes, so the
@@ -225,8 +265,8 @@ Layer boxes are in `arm_mount`, like every world.
 ### Changed
 
 - With config layers, cuRobo warms up in the scene's own world and the layers
-  load after: warm-up plans from the retract, which on the chair is inside the
-  person layer. The planner warns at start-up when the retract is not a valid
+  load after: warm-up plans from the retract, which on a chair can be inside a
+  layer. The planner warns at start-up when the retract is not a valid
   state in its world.
 - The SetWorld success message is `world set to <world> (<summary>)`, and the
   node logs the summary at start-up and in its ready line.

@@ -198,7 +198,7 @@ def test_the_requests_are_tied_to_the_generated_layer_files(monkeypatch):
         Path(path).name: hashlib.sha256((REPO / path).read_bytes()).hexdigest()
         for path in outputs
     }
-    assert len(expected) == 3
+    assert len(expected) == 4  # platform, person, seat, floor
     monkeypatch.setattr(stack, "CHAIR_CONFIG", "gen3.yaml")
     assert stack.layer_digests() == expected
 

@@ -95,7 +95,7 @@ docker run --rm -it --runtime nvidia --network host --ipc host \
   model). `ros2 launch rammp_curobo_ros planner.launch.py ...` still works
   but always exits 0. Under sheppy, see below.
 - The arm on the MEBot wheelchair (a release after 1.1.0). The chair's planner
-  config, its world and its three layer files are NOT part of the installed
+  config, its world and its four layer files are NOT part of the installed
   package, so no bare name resolves to them: they describe one chair's
   geometry and ship with that robot, in rammp-deployments
   `config/robots/<robot>/curobo/` (issue #19). The repo's **fixture** copy is
@@ -110,7 +110,7 @@ docker run --rm -it --runtime nvidia --network host --ipc host \
   The chair's drive base and the person in it are then in every world,
   worlds pushed over `/rammp_curobo/set_world` included, and the node's log
   says so:
-  `Collision world: 26 boxes: scene 0 | config layers: platform 16, person 9 | scene layers: floor 1`.
+  `Collision world: 30 boxes: scene 0 | config layers: platform 16, seat 5, person 8 | scene layers: floor 1`.
   See INTEGRATION.md, "Planning on the MEBot". An image without obstacle
   layers has no such config and refuses it.
 - **Verify the bridge on first start** (the container runs as root; mixed

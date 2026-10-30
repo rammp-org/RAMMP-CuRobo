@@ -32,7 +32,7 @@ def test_the_scene_follows_the_recipe(model):
     m = model
     overlays = _geoms(m, "overlay/")
     # the counts of the scene the recipe builds: a change to it shows here
-    assert (m.nbody, m.ngeom - len(overlays), m.njnt, m.nu) == (69, 108, 15, 8)
+    assert (m.nbody, m.ngeom - len(overlays), m.njnt, m.nu) == (70, 113, 15, 8)
     assert m.opt.impratio == 10 and m.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC
     # the gripper is in the bracelet, as g_
     assert m.body(m.body_parentid[m.body("g_base").id]).name == "bracelet_link"
@@ -47,8 +47,12 @@ def test_the_scene_follows_the_recipe(model):
 
 def test_the_mebot_is_its_urdf_with_every_joint_deleted(model):
     m = model
+    # the URDF's: the seat, under mebot/ too, is its layer's boxes (below)
     mebot = [
-        g for g in range(m.ngeom) if m.body(m.geom_bodyid[g]).name.startswith("mebot/")
+        g
+        for g in range(m.ngeom)
+        if m.body(m.geom_bodyid[g]).name.startswith("mebot/")
+        and m.body(m.geom_bodyid[g]).name != "mebot/seat"
     ]
     kinds = [int(m.geom_type[g]) for g in mebot]
     assert len(mebot) == 46
@@ -63,6 +67,21 @@ def test_the_mebot_is_its_urdf_with_every_joint_deleted(model):
     assert d.xpos[m.body("mebot/mebot").id] == pytest.approx(-MOUNT)
 
 
+def test_the_seat_is_its_layers_boxes_unpadded(assets, model):
+    # the drive base's URDF has no seat: its layer's boxes are all that is
+    # known of it, so they are its true shape, solid, in arm_mount
+    m = model
+    seat = assets.layers["seat"].obstacles
+    assert len(seat) == 5
+    for box in seat:
+        g = m.geom("seat/" + box.name)
+        assert m.body(m.geom_bodyid[g.id]).name == "mebot/seat"
+        assert g.type == mujoco.mjtGeom.mjGEOM_BOX
+        assert 2 * g.size == pytest.approx(box.dims)
+        assert g.pos == pytest.approx(box.position)
+        assert g.contype or g.conaffinity
+
+
 def test_the_floor_is_the_floor_layers_top(assets, model):
     floor = assets.layers["floor"].obstacles[0]
     top = floor.position[2] + floor.dims[2] / 2
@@ -74,7 +93,7 @@ def test_the_floor_is_the_floor_layers_top(assets, model):
 def test_the_overlays_are_the_padded_layers_and_touch_nothing(assets, model):
     m = model
     overlays = _geoms(m, "overlay/")
-    assert len(overlays) == 26  # floor 1, platform 16, person 9
+    assert len(overlays) == 30  # floor 1, platform 16, seat 5, person 8
     for layer in assets.layers.values():
         for box in layer.obstacles:
             g = m.geom("overlay/%s/%s" % (layer.name, box.name))
@@ -88,6 +107,8 @@ def test_the_overlays_are_the_padded_layers_and_touch_nothing(assets, model):
                 assert b > max(r, gr)
             elif layer.name == "person":  # orange
                 assert r > gr > b
+            elif layer.name == "seat":  # purple
+                assert min(r, b) > gr
             else:  # grey
                 assert r == gr == b
 
@@ -163,7 +184,9 @@ def test_contacts_are_counted_against_three_groups(assets, model):
     assert all(under(m.geom_bodyid[g], root) for g in arm)
     # the gripper's included
     assert any(m.body(m.geom_bodyid[g]).name.startswith("g_") for g in arm)
-    assert len(groups["mebot"]) == 46 and len(groups["floor"]) == 1
+    # the drive base's 46 and the seat's 5: an arm meeting the seat meets the
+    # wheelchair
+    assert len(groups["mebot"]) == 46 + 5 and len(groups["floor"]) == 1
     assert len(groups["standin"]) == len(scene.standin(assets, "upright_lap")[0])
     # visual geoms and the overlays are in no group
     every = set(arm).union(*map(set, groups.values()))

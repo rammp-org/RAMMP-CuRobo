@@ -1,7 +1,7 @@
 # A scene for the control planner (/rammp_curobo_control, gen3.yaml, which
 # composes no layers of its own): the MEBot's floor layer alone, with no
 # platform and no person. The same request planned here and with
-# control_floor_platform.yaml differs by the platform layer alone.
+# control_floor_platform.yaml differs by the platform and seat layers alone.
 
 # The layer is named by a path relative to THIS file, not by name: the MEBot
 # layers are one robot's geometry and no longer ship in the package (issue

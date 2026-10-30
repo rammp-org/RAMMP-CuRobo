@@ -27,7 +27,7 @@ IK_FAIL = "MotionGenStatus.IK_FAIL: no collision-free joint solution AT the goal
 INVALID_START = (
     "MotionGenStatus.INVALID_START_STATE_WORLD_COLLISION: the start state "
     "collides with the world (or exceeds limits) [start collides with "
-    "person/lap (154 mm), person/torso_head_3 (134 mm)] [world: 23 boxes: ...]"
+    "person/thighs (105 mm), person/forearms (60 mm)] [world: 30 boxes: ...]"
 )
 
 
@@ -154,8 +154,8 @@ def test_only_a_planner_that_judged_a_request_and_found_no_plan_refuses_it(gates
 # goal's pose, whose failure says nothing of the joint goal.
 AUTO_IK_FAIL = (
     "MotionGenStatus.IK_FAIL: no collision-free joint solution AT the goal — move "
-    "it away from obstacles or relax the orientation. [world: 25 boxes: scene 0 | "
-    "config layers: platform 16, person 9 | scene layers: floor 1]"
+    "it away from obstacles or relax the orientation. [world: 30 boxes: scene 0 | "
+    "config layers: platform 16, seat 5, person 8 | scene layers: floor 1]"
 )
 
 
@@ -170,7 +170,7 @@ def test_a_request_whose_goal_the_planner_refuses_as_a_start_tests_nothing(gates
         )
         assert case["gates"] == dict.fromkeys(gates, False)
         assert case["outcome"].startswith(run_suite.PREMISE + ": the goal is refused")
-        assert "person/lap (154 mm)" in case["outcome"]
+        assert "person/thighs (105 mm)" in case["outcome"]
     # a goal it judged leaves the request's verdict as it was: one it plans
     # from, or one it plans from to no plan (it took the start)
     for check in (VALID, dict(refused(IK_FAIL), world=None)):
@@ -205,27 +205,27 @@ def test_a_positive_control_passes_only_when_it_hits_what_its_layer_covers():
 
 
 REPLY = (
-    "world set to /c/consumer_world.yaml (33 boxes: scene 8 | config layers: "
-    "platform 16, person 9 | scene layers: none)"
+    "world set to /c/consumer_world.yaml (37 boxes: scene 8 | config layers: "
+    "platform 16, seat 5, person 8 | scene layers: none)"
 )
 
 
 def test_the_push_reply_names_every_config_layer_with_its_boxes():
-    expected = {"platform": 16, "person": 9}
+    expected = {"platform": 16, "seat": 5, "person": 8}
     case = run_suite.pushed("here", True, REPLY, expected)
     assert case["gates"] == {"G4": True}
     for ok, reply in (
-        (True, REPLY.replace("person 9", "person 0")),
-        (True, REPLY.replace(", person 9", "")),
-        (True, "world set to /c/platform 16 person 9.yaml (8 boxes: scene 8)"),
+        (True, REPLY.replace("person 8", "person 0")),
+        (True, REPLY.replace(", person 8", "")),
+        (True, "world set to /c/platform 16 seat 5 person 8.yaml (8 boxes: scene 8)"),
         (False, "collision world is empty; refusing it"),
     ):
         case = run_suite.pushed("here", ok, reply, expected)
         assert case["gates"] == {"G4": False}, reply
 
 
-def test_a_plan_from_the_retract_fails_naming_the_person_and_a_depth():
-    case = run_suite.from_retract("here", refused(INVALID_START))
+def test_a_plan_from_inside_the_person_fails_naming_the_person_and_a_depth():
+    case = run_suite.from_inside_person("here", refused(INVALID_START))
     assert case["gates"] == {"G5": True}
     for report in (
         refused(INVALID_START.replace("person/", "platform/")),
@@ -233,10 +233,10 @@ def test_a_plan_from_the_retract_fails_naming_the_person_and_a_depth():
             "MotionGenStatus.INVALID_START_STATE_JOINT_LIMITS: [start: no world box "
             "penetrated — self-collision or joint limits]"
         ),
-        refused(INVALID_START.replace(" (154 mm)", "").replace(" (134 mm)", "")),
+        refused(INVALID_START.replace(" (105 mm)", "").replace(" (60 mm)", "")),
         flown(),
     ):
-        assert run_suite.from_retract("here", report)["gates"] == {"G5": False}
+        assert run_suite.from_inside_person("here", report)["gates"] == {"G5": False}
 
 
 def test_each_gate_is_the_verdict_of_the_cases_that_bear_on_it():
@@ -302,7 +302,7 @@ class Scripted:
 def _answers(planner, world, joints, execute):
     """As on the Jetson: every request with its layers flown clear, but the
     first S3 reach, which the chair planner refuses; every positive control
-    a hit; and the retract refused naming the person."""
+    a hit; and the start inside the person refused naming the person."""
     if not execute:
         return refused(INVALID_START)
     floor = stack.worlds()["floor_only"][1]
@@ -375,7 +375,7 @@ def test_each_scenario_plans_in_its_world_with_the_standin_as_found(scripted, ca
     assert pushes == [str(stack.config("consumer_world.yaml"))]
     # each request planned with its layers, refused or flown, is followed by
     # the planner's check of its goal, in the world it planned in; a
-    # positive control's and the retract's are not checked
+    # positive control's and S5's are not checked
     checks = [call[1:] for call in tester.calls if call[0] == "check_state"]
     assert checks == (
         [(stack.CONTROL, pair["goal"]) for pair in platform["pairs"]]
@@ -386,14 +386,14 @@ def test_each_scenario_plans_in_its_world_with_the_standin_as_found(scripted, ca
     for before, call in zip(tester.calls, tester.calls[1:]):
         if call[0] == "check_state":
             assert before[0] == "move" and (before[1], before[4]) == call[1:]
-    # S5 plans from the bench retract, last, without flying (only a request
-    # not flown is answered INVALID_START here)
+    # S5 plans from find_pairs' start inside the person, last, without flying
+    # (only a request not flown is answered INVALID_START here)
     assert tester.calls[-2][0] == "move" and tester.calls[-1] == ("close",)
-    assert tester.calls[-2][3] == run_suite.bench_retract()
-    assert result["cases"][-1]["case"] == "S5 retract"
+    assert tester.calls[-2][3] == DATA["person_start"]
+    assert result["cases"][-1]["case"] == "S5 inside"
     # one line per case: S0 (as stood in for), 3 pairs on and off in S1 and
     # S2, 8 reaches and how many of them the chair planner flew (G7), the
-    # push and the 3 requests after it, the retract
+    # push and the 3 requests after it, the start inside the person
     lines = [line for line in out.splitlines() if re.match(r"S\d", line)]
     n = 2 + 2 * 3 + 2 * 3 + 8 + 1 + 1 + 3 + 1
     assert len(lines) == n and all(line.endswith("PASS") for line in lines)
@@ -446,7 +446,7 @@ def test_each_line_names_the_world_its_planner_said_it_planned_in(
     _, _, result = scripted([], script=answers)
     where = {case["case"]: case["where"] for case in result["cases"]}
     chair = "/rammp_curobo (%s)" % taken[taken.index("(") + 1 : -1]
-    assert where["S2a on"] == where["S3 reach 8"] == where["S5 retract"] == chair
+    assert where["S2a on"] == where["S3 reach 8"] == where["S5 inside"] == chair
     assert where["S4a"] == "/rammp_curobo (%s)" % consumer[consumer.index("(") + 1 : -1]
     assert where["S1a on"] == "/rammp_curobo_control (23 boxes: scene 0 | ...)"
     assert where["S1a off"] == "/rammp_curobo_control (control_floor.yaml)"
@@ -646,8 +646,8 @@ def test_a_push_reply_without_the_person_fails_whatever_the_chair_config_lists(
     layers, world = stack.chair_layers()
     platform_only = [layer for layer in layers if layer.name == "platform"]
     monkeypatch.setattr(stack, "chair_layers", lambda: (platform_only, world))
-    without = REPLY.replace(", person 9", "")
+    without = REPLY.replace(", person 8", "")
     monkeypatch.setattr(Scripted, "set_world", lambda self, world: (True, without))
     status, _, result = scripted(["--only", "S4"])
     assert status == 1 and result["gates"]["G4"] == "FAIL"
-    assert "person 9" in result["cases"][0]["outcome"]
+    assert "person 8" in result["cases"][0]["outcome"]

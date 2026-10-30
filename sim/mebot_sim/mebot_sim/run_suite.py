@@ -29,8 +29,9 @@ no case to judge.
       on the chair planner. Its reply names each layer of its config with
       its boxes, and the S2 requests, asked again, are refused or flown
       touching nothing (G4).
-  S5  A plan from the bench retract on the chair planner fails, naming the
-      person box the start is in and how deep (G5).
+  S5  A plan from a start inside the person (find_pairs' person_start) on
+      the chair planner fails, naming the person box the start is in and
+      how deep (G5).
 
 G6: each planner flew a plan that touched nothing, and every flight that
 touched nothing came to rest within end_error_rad of its plan's last point,
@@ -75,7 +76,7 @@ GATES = {
     "G2": "no flight planned with the layers touches anything",
     "G3": "every positive control is planned, flown, and hits what its layer covers",
     "G4": "the layers survive a consumer's push",
-    "G5": "a plan from the retract names person/ and a depth",
+    "G5": "a plan from inside the person names person/ and a depth",
     "G6": "each planner flies a plan that touches nothing, and every such flight "
     "comes to rest at its last point",
     "G7": "the chair planner plans and flies at least min_chair_reaches of the S3 "
@@ -232,9 +233,9 @@ def pushed(where, ok, reply, expected):
     )
 
 
-def from_retract(where, report):
-    """S5: planned from the bench retract, the request fails, naming a person
-    box the start is in and how deep (G5)."""
+def from_inside_person(where, report):
+    """S5: planned from a start inside the person, the request fails, naming
+    a person box the start is in and how deep (G5)."""
     named = re.search(r"person/\w+ \(\d+ mm\)", report["message"])
     passed = not report["planned"] and named is not None
     outcome = (
@@ -244,7 +245,7 @@ def from_retract(where, report):
         if report["planned"]
         else report["message"]
     )
-    return stack.case("S5 retract", where, outcome, {"G5": passed}, **report)
+    return stack.case("S5 inside", where, outcome, {"G5": passed}, **report)
 
 
 def gates(cases):
@@ -299,23 +300,6 @@ def _git():
         return sha, bool(git("status", "--porcelain", "--untracked-files=no"))
     except (OSError, subprocess.CalledProcessError):
         return "unknown", None
-
-
-def bench_retract():
-    """The bench retract: the robot config's retract_config, which is also
-    cuRobo's IK seed, arm_joint_1..arm_joint_7."""
-    stack.core()
-    import yaml
-    from rammp_curobo.config import load_planner_config, resolve_config
-
-    cfg, where = load_planner_config(stack.chair_config())
-    # read as load_robot_config reads it, which refuses to load without the
-    # arm's model; the seed is taken from the file as-is
-    path = resolve_config(cfg["robot"], relative_to=where)
-    with open(path, encoding="utf-8") as f:
-        cspace = yaml.safe_load(f)["robot_cfg"]["kinematics"]["cspace"]
-    by_name = dict(zip(cspace["joint_names"], cspace["retract_config"]))
-    return [float(by_name[name]) for name in cfg["joint_names"]]
 
 
 class Suite:
@@ -474,9 +458,11 @@ class Suite:
     def _s5(self, data):
         planner, world, _ = stack.worlds()["all"]
         report = self.tester.move(
-            planner, world, bench_retract(), joints=data["start"], execute=False
+            planner, world, data["person_start"], joints=data["start"], execute=False
         )
-        self.add(from_retract(planned_in(planner, report["world"], world), report))
+        self.add(
+            from_inside_person(planned_in(planner, report["world"], world), report)
+        )
 
     def reported(self):
         """What the suite reports without a gate."""

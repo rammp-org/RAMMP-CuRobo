@@ -116,7 +116,12 @@ def registration(m, platform, shrink=0.0):
     as urdf_primitives does."""
     d = mujoco.MjData(m)
     mujoco.mj_kinematics(m, d)
-    geoms = scene.contact_groups(m)[1]["mebot"]
+    # the drive base's: the seat, under mebot/ too, is its own layer's boxes
+    geoms = [
+        g
+        for g in scene.contact_groups(m)[1]["mebot"]
+        if m.body(m.geom_bodyid[g]).name != "mebot/seat"
+    ]
     points = surface_samples(m, d, geoms)
     outside = ~_inside(points, bounds(platform.obstacles, -shrink))
     primitives = collections.Counter(
