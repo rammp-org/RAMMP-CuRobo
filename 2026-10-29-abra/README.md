@@ -245,3 +245,12 @@ leg). Aborted runs ran for `ran s` before the driver stopped the arm.
 | square_0.5_stop | ok | 9.7 | 9.69 | 9.57 | 0.78 | 0.251 | 0.077 | 2.82 | 1.08 | 0, 0, 0, 0 |
 | square_1_blend | ok | 3.88 | 3.87 | 3.81 | 0.0 | 0.603 | 0.159 | 5.98 | 4.12 | 2.94, 1.52, 1.11, 1.39 |
 | square_1_stop | ok | 5.02 | 5.01 | 4.97 | 0.17 | 0.491 | 0.157 | 5.57 | 3.33 | 0, 0, 0, 0 |
+
+## Driver actions bench (kinova-gen3-ros2#65)
+
+`bench/track_goto.py` sends each case to the driver's `/go_to_ee_poses` / `/go_to_joint_configs`
+as one goal, stopped then blended, and records the driver's feedback and `/joint_states`.
+`bench/swap_in.sh` puts a #65 driver build and a blend-capable planner in place of the stack's
+(stopping `sheppy-arm` and `sheppy-planner`); `bench/swap_out.sh` restores them;
+`bench/run_goto.sh <out> --speeds 0.5` runs the bench. Once the nightly carries #65 and #48 the
+swap is not needed: run `track_goto.py` in the nightly driver image.
