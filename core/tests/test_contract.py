@@ -1,5 +1,6 @@
 """check_robot_dir: every problem in a robot directory at once."""
 
+import json
 import shutil
 from pathlib import Path
 
@@ -129,6 +130,30 @@ def test_a_config_dict_without_planner_is_a_listed_problem(tmp_path):
     with pytest.raises(RobotDataError) as e:
         check_robot_dir(cfg, cdir, URDF)
     assert e.value.problems == ["planner config has no 'planner' entry"]
+
+
+@pytest.mark.parametrize("bad", ["drop mimic", "not json"])
+def test_a_malformed_kinematics_reference_is_named_not_the_planner_config(
+    tmp_path, bad
+):
+    d = _dir(tmp_path)
+    ref = d / "arm_kinematics.json"
+    if bad == "not json":
+        ref.write_text("{not json")
+    else:
+        joints = json.loads(ref.read_text())
+        ref.write_text(
+            json.dumps(
+                {
+                    n: {k: v for k, v in j.items() if k != "mimic"}
+                    for n, j in joints.items()
+                }
+            )
+        )
+    with pytest.raises(RobotDataError) as e:
+        _check(d)
+    assert len(e.value.problems) == 1
+    assert str(ref) in e.value.problems[0] and "planner config" not in str(e.value)
 
 
 @pytest.mark.parametrize("text", ["robot: [unclosed\n", "- a\n- b\n"])

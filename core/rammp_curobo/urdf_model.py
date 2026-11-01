@@ -78,15 +78,26 @@ def prepare_urdf(xml, spec):
             "robot model has no %r link (model_check.arm_base_link of %s)"
             % (spec.arm_base_link, spec.path)
         )
-    ref = json.loads(spec.kinematics_reference.read_text())
+    try:
+        ref = json.loads(spec.kinematics_reference.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "kinematics reference %s is not JSON: %s" % (spec.kinematics_reference, exc)
+        ) from None
     if not ref:
         raise ValueError(
             "kinematics reference %s lists no joints; nothing would be checked"
             % spec.kinematics_reference
         )
-    check_kinematics(
-        kinematic_reference(root, spec.arm_base_link), ref, spec.arm_base_link
-    )
+    try:
+        check_kinematics(
+            kinematic_reference(root, spec.arm_base_link), ref, spec.arm_base_link
+        )
+    except (KeyError, TypeError, AttributeError) as exc:  # the reference's shape
+        raise ValueError(
+            "kinematics reference %s is malformed: %s %s"
+            % (spec.kinematics_reference, type(exc).__name__, exc)
+        ) from None
 
     for link in root.findall("link"):
         for tag in ("visual", "collision"):

@@ -38,6 +38,15 @@ class RobotDataError(ValueError):
         )
 
 
+def _entry(cfg, *keys):
+    """cfg[keys[0]][keys[1]]..., or ValueError naming the first missing key."""
+    for key in keys:
+        if not isinstance(cfg, dict) or key not in cfg:
+            raise ValueError("planner config has no %r entry" % key)
+        cfg = cfg[key]
+    return cfg
+
+
 def _root_link(robot_path):
     """The robot file's kinematics.base_link, or None when it cannot be read:
     the world is checked against it even when the rest of the file is bad."""
@@ -101,14 +110,14 @@ def check_robot_dir(cfg, cfg_dir, urdf_xml):
     def attempt(what):
         try:
             return what()
-        except KeyError as exc:  # a config dict short of a key
-            problems.append("planner config has no %s entry" % exc)
         except _LOAD_ERRORS as exc:
             problems.append(str(exc))
             return None
 
     robot_path = attempt(
-        lambda: resolve_config(cfg["robot"], relative_to=cfg_dir, search_cwd=False)
+        lambda: resolve_config(
+            _entry(cfg, "robot"), relative_to=cfg_dir, search_cwd=False
+        )
     )
     spec = attempt(lambda: load_robot_spec(robot_path)) if robot_path else None
     if spec:
@@ -116,7 +125,9 @@ def check_robot_dir(cfg, cfg_dir, urdf_xml):
     frame = spec.root_link if spec else (robot_path and _root_link(robot_path))
 
     world_path = attempt(
-        lambda: resolve_config(cfg["world"], relative_to=cfg_dir, search_cwd=False)
+        lambda: resolve_config(
+            _entry(cfg, "world"), relative_to=cfg_dir, search_cwd=False
+        )
     )
     scene = (
         attempt(lambda: load_scene(world_path, frame)) if world_path and frame else None
@@ -134,9 +145,9 @@ def check_robot_dir(cfg, cfg_dir, urdf_xml):
         attempt(
             lambda: compose_cuboids(
                 scene or Scene(frame, [], []),
-                padding=cfg["planner"]["world_padding"],
-                no_pad_names=frozenset(cfg["planner"]["no_pad_names"] or []),
-                cache_obb=cfg["planner"]["collision_cache_obb"],
+                padding=_entry(cfg, "planner", "world_padding"),
+                no_pad_names=frozenset(_entry(cfg, "planner", "no_pad_names") or []),
+                cache_obb=_entry(cfg, "planner", "collision_cache_obb"),
                 layers=layers,
                 allow_empty=True,
             )
