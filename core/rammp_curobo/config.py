@@ -1,10 +1,11 @@
 """Config file resolution and the planner-config schema defaults.
 
-`CuRoboPlanner.from_config()` accepts either a filesystem path or the bare
-name of a packaged default (rammp_curobo/configs/*.yaml). Robot/world files
-referenced from a planner config resolve relative to that config's own
-directory first, so a user can copy gen3.yaml next to their code, edit the
-world line, and everything keeps working.
+`CuRoboPlanner.from_config()` accepts a filesystem path or `example:<name>`
+for a file shipped in the image (rammp_curobo/configs/*.yaml); a bare name
+never falls back to the image. Robot/world files referenced from a planner
+config resolve relative to that config's own directory, so a user can copy
+gen3.yaml next to their code, edit the world line, and everything keeps
+working.
 """
 
 import logging
@@ -16,20 +17,13 @@ import yaml
 log = logging.getLogger("rammp_curobo")
 
 PACKAGED_CONFIG_DIR = Path(__file__).resolve().parent / "configs"
+EXAMPLE_PREFIX = "example:"
+EXAMPLE_DIR = PACKAGED_CONFIG_DIR  # the image's examples, reached only by example:
 
 # Defaults mirror RAMMP-Kinova's field-tuned planner parameters; every one
 # of them can be overridden from the planner YAML. See configs/gen3.yaml for
 # what each knob does.
 PLANNER_DEFAULTS = {
-    "joint_names": [
-        "arm_joint_1",
-        "arm_joint_2",
-        "arm_joint_3",
-        "arm_joint_4",
-        "arm_joint_5",
-        "arm_joint_6",
-        "arm_joint_7",
-    ],
     "layers": [],
     "planner": {
         "interpolation_dt": 0.02,
@@ -64,38 +58,64 @@ PLANNER_DEFAULTS = {
 }
 
 
+def _example_names():
+    return sorted(
+        f.name for f in EXAMPLE_DIR.iterdir() if f.suffix in (".yaml", ".json", ".urdf")
+    )
+
+
+def is_example(path):
+    """True iff `path` lies inside the image's examples (EXAMPLE_DIR)."""
+    try:
+        Path(path).resolve().relative_to(EXAMPLE_DIR)
+    except ValueError:
+        return False
+    return True
+
+
 def resolve_config(name_or_path, relative_to=None, search_cwd=True):
     """Resolve a config reference to an existing file path.
 
-    Search order: absolute path -> relative to `relative_to` -> relative to
-    the current directory -> packaged defaults. Raises FileNotFoundError
-    naming every location tried.
+    `example:<name>` -> the image's copy, EXAMPLE_DIR / <name> (a plain file
+    name). Otherwise: absolute path as is; relative -> next to `relative_to`,
+    then the current directory. The image's examples are NEVER a candidate for
+    a bare name. Raises FileNotFoundError naming every location tried.
 
     `search_cwd=False` skips the current directory. Layer references use it:
-    a file that merely shares a packaged layer's name in whatever directory
-    the planner was started from must not replace that layer.
+    a file that merely shares an example's name in whatever directory the
+    planner was started from must not replace that layer.
     """
-    p = Path(os.path.expanduser(str(name_or_path)))
-    tried = []
+    ref = str(name_or_path)
+    if ref.startswith(EXAMPLE_PREFIX):
+        name = ref[len(EXAMPLE_PREFIX) :]
+        if (
+            "/" not in name
+            and name not in ("", "..")
+            and (EXAMPLE_DIR / name).is_file()
+        ):
+            return EXAMPLE_DIR / name
+        raise FileNotFoundError(
+            "config %r not found; the examples are: %s"
+            % (ref, ", ".join(_example_names()))
+        )
+    p = Path(os.path.expanduser(ref))
     if p.is_absolute():
         if p.is_file():
             return p
-        tried.append(p)
+        tried = [p]
     else:
-        candidates = []
+        tried = []
         if relative_to is not None:
-            candidates.append(Path(relative_to) / p)
+            tried.append(Path(relative_to) / p)
         if search_cwd:
-            candidates.append(Path.cwd() / p)
-        candidates.append(PACKAGED_CONFIG_DIR / p)
-        for c in candidates:
+            tried.append(Path.cwd() / p)
+        for c in tried:
             if c.is_file():
                 return c
-        tried.extend(candidates)
-    raise FileNotFoundError(
-        "config %r not found; tried: %s"
-        % (str(name_or_path), ", ".join(str(t) for t in tried))
-    )
+    msg = "config %r not found; tried: %s" % (ref, ", ".join(str(t) for t in tried))
+    if not p.is_absolute() and (EXAMPLE_DIR / p).is_file():
+        msg += "; to use the image's copy, write %s%s" % (EXAMPLE_PREFIX, ref)
+    raise FileNotFoundError(msg)
 
 
 def _merge(base, override):
@@ -123,7 +143,16 @@ def load_planner_config(name_or_path):
 
     path = resolve_config(name_or_path)
     with open(path, "r", encoding="utf-8") as f:
-        data = yaml.load(f, Loader=_StrictLoader) or {}
+        try:
+            data = yaml.load(f, Loader=_StrictLoader) or {}
+        except yaml.YAMLError as exc:
+            raise ValueError(
+                "planner config %s is not valid YAML: %s" % (path, exc)
+            ) from None
+    if not isinstance(data, dict):
+        raise ValueError(
+            "planner config %s is not a mapping, got %s" % (path, type(data).__name__)
+        )
     # Configs copied from <= v1.1.0 carry execution.speed_scale: 0.25, which
     # nothing ever read (issue #22). Execution speed is the executor's job;
     # drop the block so it cannot pass for a live setting.

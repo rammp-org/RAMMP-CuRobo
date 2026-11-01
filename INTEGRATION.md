@@ -20,7 +20,7 @@ and the arm's base coincide, so the numbers are unchanged.
 ```python
 from rammp_curobo import CuRoboPlanner
 
-planner = CuRoboPlanner.from_config("gen3.yaml", urdf_path=urdf)  # ~20 s GPU init, keep it alive
+planner = CuRoboPlanner.from_config("example:gen3.yaml", urdf_path=urdf)  # ~20 s GPU init, keep it alive
 res = planner.plan_to_joints(q_goal, q_now)        # start is REQUIRED, not optional
 if res.success:                                     # res is a PlanResult
     hand_off(res.joint_traj)   # numpy: joint_names, positions (N,7), velocities, dt
@@ -46,9 +46,13 @@ baked robot config refuses to load. `pos`/`quat` are `arm_tool_frame` in
 `arm_mount`, and `res.joint_traj.frame_id` is `"arm_mount"`.
 
 Config is one YAML (`core/rammp_curobo/configs/gen3.yaml` — robot file,
-world file, obstacle layers, planner knobs). Copy it next to your code and
-point `from_config` at your copy to customize; bare names resolve to the
-packaged defaults. No cuRobo types cross the API.
+world file, obstacle layers, planner knobs). `example:gen3.yaml` is the
+shipped example (Gen3 + 2F-85, kitchen world); for your own robot, point
+`from_config` at your robot directory's `planner.yaml` by path. Its robot,
+world and layer files resolve next to it, or by absolute path, or as
+`example:<name>`; a bare name never resolves to the image's copy (see
+docs/ROBOT_DATA.md). Robot directories are the contract for what a robot
+supplies. No cuRobo types cross the API.
 
 Requirements: the pinned GPU stack from the README (torch + cuRobo v0.7.8)
 and `pip install --user --no-build-isolation -e <repo>/core`.
@@ -162,7 +166,10 @@ on it, so they are per-robot data and live with the robot, in rammp-deployments
 `CuRoboPlanner.from_config("<that path>")` for the library. Re-measuring the
 chair is a commit there, not a release here, and nothing resolves these files
 by bare name — a packaged fallback would let an unmounted `/config/robot` plan
-the chair against stale geometry.
+the chair against stale geometry. The same holds for every robot's data:
+docs/ROBOT_DATA.md. Started with no `config`, the node plans the shipped
+example robot and says so (banner, a WARN if a model is published, and
+`(example robot)` on every result and `SetWorld` reply).
 
 If your manifest sets the `world` parameter, a chair robot must override it to
 `""`: a non-empty `world` replaces whatever the planner config names, so a

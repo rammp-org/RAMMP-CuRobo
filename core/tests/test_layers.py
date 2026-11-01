@@ -16,7 +16,9 @@ import pytest
 import yaml
 
 import rammp_curobo
+from core_test_helpers import load_scene, scene_from_obstacles
 from rammp_curobo.config import PACKAGED_CONFIG_DIR, load_planner_config, resolve_config
+from rammp_curobo.contract import RobotDataError
 from rammp_curobo.geometry import euler_deg_to_quat_xyzw
 from rammp_curobo.planner import CuRoboPlanner
 from rammp_curobo.scene import (
@@ -26,8 +28,6 @@ from rammp_curobo.scene import (
     SceneObject,
     load_layer,
     load_layers,
-    load_scene,
-    scene_from_obstacles,
 )
 from rammp_curobo.types import PlanResult
 from rammp_curobo.world import (
@@ -43,6 +43,7 @@ from rammp_curobo.world import (
 # The chair is one robot's geometry, not package data: this checkout keeps a
 # fixture copy of what rammp-deployments ships under config/robots/<robot>/curobo.
 MEBOT = Path(__file__).resolve().parent / "data" / "mebot"
+DOJO = Path(__file__).resolve().parent / "data" / "dojo"
 
 # a layer file that uses every allowed key. Each malformed case below is this
 # file with one edit, so its refusal is about that edit alone
@@ -345,25 +346,26 @@ def test_resolve_config_searches_cwd_unless_told_not_to(tmp_path, monkeypatch):
     (beside / "near.yaml").write_text("")
     monkeypatch.chdir(cwd)
 
-    # the v1.0.0 order is still the default: beside the referencing file,
-    # then CWD, then the package
+    # beside the referencing file, then CWD; never the image by bare name
     assert resolve_config("near.yaml", relative_to=beside) == beside / "near.yaml"
     assert resolve_config("stray.yaml") == cwd / "stray.yaml"
     assert resolve_config("sub/stray.yaml") == cwd / "sub" / "stray.yaml"
     assert resolve_config("gen3.yaml") == cwd / "gen3.yaml"
 
+    # example: is the image's copy whatever sits in the CWD
     packaged = PACKAGED_CONFIG_DIR / "gen3.yaml"
-    assert resolve_config("gen3.yaml", search_cwd=False) == packaged
+    assert resolve_config("example:gen3.yaml") == packaged
+    with pytest.raises(FileNotFoundError):
+        resolve_config("gen3.yaml", search_cwd=False)
     near = resolve_config("near.yaml", relative_to=beside, search_cwd=False)
     assert near == beside / "near.yaml"
     # a directory part does not turn a reference into a CWD lookup
     for ref in ("stray.yaml", "sub/stray.yaml"):
         with pytest.raises(FileNotFoundError) as exc:
             resolve_config(ref, relative_to=beside, search_cwd=False)
-        assert str(exc.value) == "config '%s' not found; tried: %s, %s" % (
+        assert str(exc.value) == "config '%s' not found; tried: %s" % (
             ref,
             beside / ref,
-            PACKAGED_CONFIG_DIR / ref,
         )
 
 
@@ -760,8 +762,8 @@ def test_scene_layers_resolve_next_to_the_scene_and_never_from_cwd(
     tmp_path, monkeypatch
 ):
     # a scene that lists no layers has none
-    for name in ("world_sim_kitchen.yaml", "world_real_bench.yaml"):
-        assert load_scene(PACKAGED_CONFIG_DIR / name).layers == []
+    for world in (PACKAGED_CONFIG_DIR / "world_sim_kitchen.yaml", DOJO / "world.yaml"):
+        assert load_scene(world).layers == []
     assert scene_from_obstacles([]).layers == []
 
     scenes, cwd, packaged, far, links = (
@@ -770,7 +772,7 @@ def test_scene_layers_resolve_next_to_the_scene_and_never_from_cwd(
     for folder in (scenes, cwd, packaged, far, links):
         folder.mkdir()
     monkeypatch.chdir(cwd)
-    monkeypatch.setattr("rammp_curobo.config.PACKAGED_CONFIG_DIR", packaged)
+    monkeypatch.setattr("rammp_curobo.config.EXAMPLE_DIR", packaged)
     _layer(scenes / "near.yaml", "beside")
     _layer(cwd / "near.yaml", "stray")
     _layer(packaged / "near.yaml", "shipped")
@@ -784,7 +786,7 @@ def test_scene_layers_resolve_next_to_the_scene_and_never_from_cwd(
         _scene(
             scenes / "scene.yaml",
             "near.yaml",
-            "shipped.yaml",
+            "example:shipped.yaml",
             far / "elsewhere.yaml",
             "whole.yaml",
         )
@@ -820,8 +822,8 @@ def test_scene_layers_resolve_next_to_the_scene_and_never_from_cwd(
     with pytest.raises(FileNotFoundError) as exc:
         load_scene(scene)
     assert str(exc.value) == (
-        "layer 'only_in_cwd.yaml' listed in %s not found; tried: %s, %s"
-        % (scene, scenes / "only_in_cwd.yaml", packaged / "only_in_cwd.yaml")
+        "layer 'only_in_cwd.yaml' listed in %s not found; tried: %s"
+        % (scene, scenes / "only_in_cwd.yaml")
     )
 
     # a scene named by a relative path still gives its layers absolute paths
@@ -849,8 +851,8 @@ def test_missing_layer_is_named_with_every_path_tried(
     with pytest.raises(FileNotFoundError) as exc:
         load_scene(scene)
     assert str(exc.value) == (
-        "layer 'gone.yaml' listed in %s not found; tried: %s, %s"
-        % (scene, tmp_path / "gone.yaml", PACKAGED_CONFIG_DIR / "gone.yaml")
+        "layer 'gone.yaml' listed in %s not found; tried: %s"
+        % (scene, tmp_path / "gone.yaml")
     )
 
     # an absolute path is the only place to look
@@ -870,16 +872,16 @@ def test_missing_layer_is_named_with_every_path_tried(
     # world is not packaged any more (issue #19), and naming it here would
     # fail on the world before any layer was looked for
     config.write_text(
-        "robot: robot_gen3_2f85.yaml\n"
-        "world: world_sim_kitchen.yaml\n"
+        "robot: example:robot_gen3_2f85.yaml\n"
+        "world: example:world_sim_kitchen.yaml\n"
         "layers: [gone.yaml]\n"
     )
-    with pytest.raises(FileNotFoundError) as exc:
+    with pytest.raises(RobotDataError) as exc:
         CuRoboPlanner.from_config(config, urdf_path=urdf_level)
-    assert str(exc.value) == (
-        "layer 'gone.yaml' listed in planner config in %s not found; tried: %s, %s"
-        % (tmp_path, tmp_path / "gone.yaml", PACKAGED_CONFIG_DIR / "gone.yaml")
-    )
+    assert exc.value.problems == [
+        "layer 'gone.yaml' listed in planner config in %s not found; tried: %s"
+        % (tmp_path, tmp_path / "gone.yaml")
+    ]
     assert inits == []
 
 
@@ -1133,7 +1135,7 @@ for path in (kitchen, layer):
     except UnicodeDecodeError:
         continue
     sys.exit("premise broken: this locale reads %s as it is" % path)
-print(len(load_scene(kitchen).obstacles), load_layer(layer).name)
+print(len(load_scene(kitchen, 'arm_mount').obstacles), load_layer(layer).name)
 """
     child = _in_a_c_locale(code, kitchen, layer)
     assert child.returncode == 0, child.stderr
@@ -1167,10 +1169,10 @@ def premise(path):
 premise(sys.argv[2])
 for path in sys.argv[2:]:
     cfg, folder = load_planner_config(path)
-    robot = resolve_config(cfg["robot"], relative_to=folder)
+    robot = resolve_config(cfg["robot"], relative_to=folder, search_cwd=False)
     premise(robot)
     ee_link = load_robot_config(robot, urdf_path=sys.argv[1])["kinematics"]["ee_link"]
-    scene = load_scene(resolve_config(cfg["world"], relative_to=folder))
+    scene = load_scene(resolve_config(cfg["world"], relative_to=folder), 'arm_mount')
     layers = load_layers(cfg["layers"], relative_to=folder, listed_in=path)
     names = [layer.name for layer in layers + scene.layers]
     print(Path(path).name, robot.name, ee_link, len(scene.obstacles), names)
@@ -1263,7 +1265,7 @@ def test_layer_boxes_are_namespaced_padded_and_attributed(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "config", ["gen3.yaml", "gen3_real.yaml"], ids=["kitchen", "bench"]
+    "config", ["example:gen3.yaml", DOJO / "planner.yaml"], ids=["kitchen", "bench"]
 )
 def test_layer_free_worlds_compose_exactly_as_v100(config):
     cfg, cfg_dir = load_planner_config(config)
@@ -1980,8 +1982,10 @@ def test_chair_config_composes_within_the_cache():
     # scripts/mebot_layers.yaml names, so another robot YAML voids both
     inputs = Path(__file__).resolve().parents[2] / "scripts" / "mebot_layers.yaml"
     keep_out = yaml.safe_load(inputs.read_text(encoding="utf-8"))["keep_out"]
-    robot = resolve_config(cfg["robot"], relative_to=folder)
-    assert robot == PACKAGED_CONFIG_DIR / keep_out["robot_config"]
+    robot = resolve_config(cfg["robot"], relative_to=folder, search_cwd=False)
+    assert robot == resolve_config(
+        keep_out["robot_config"], relative_to=inputs.parent, search_cwd=False
+    )
 
 
 def test_chair_startup_world_is_empty_to_a_v100_loader():
@@ -2027,7 +2031,7 @@ def test_config_layers_reach_every_world_input(urdf_level, tmp_path, monkeypatch
     # push takes: a name, a path, a Scene and a list
     kitchen = PACKAGED_CONFIG_DIR / "world_sim_kitchen.yaml"
     scene = load_scene(kitchen)
-    for world in ("world_sim_kitchen.yaml", kitchen, scene):
+    for world in ("example:world_sim_kitchen.yaml", kitchen, scene):
         planner.update_world(world)
         assert installed() == {"scene": 26, "platform": 16, "seat": 5, "person": 8}
     # the scene the planner says it holds is the one pushed last
@@ -2111,13 +2115,13 @@ def test_config_layers_reach_every_world_input(urdf_level, tmp_path, monkeypatch
         config.read_text(encoding="utf-8") + "planner: {collision_cache_obb: 29}\n",
         encoding="utf-8",
     )
-    with pytest.raises(ValueError) as exc:
+    with pytest.raises(RobotDataError) as exc:
         CuRoboPlanner.from_config(mounted / "small.yaml", urdf_path=urdf_level)
-    assert str(exc.value) == (
+    assert exc.value.problems == [
         "30 collision boxes > collision_cache_obb=29 (platform 16, seat 5, "
         "person 8, floor 1); raise the cache setting in the planner config or "
         "shrink a layer"
-    )
+    ]
     assert inits == [True, True]
 
 
@@ -2285,7 +2289,7 @@ def test_a_layer_box_in_the_arms_fixed_spheres_is_refused_and_the_world_kept(
     planner._motion_gen.update_world = out_of_memory
     before = (planner.scene, planner.world_boxes)
     with pytest.raises(RuntimeError, match="out of memory"):
-        planner.update_world("world_sim_kitchen.yaml")
+        planner.update_world("example:world_sim_kitchen.yaml")
     assert (planner.scene, planner.world_boxes) == before
 
 
@@ -2841,3 +2845,19 @@ def test_a_meta_that_is_not_a_mapping_is_refused(tmp_path):
         )
         with pytest.raises(ValueError, match="'meta' must be a mapping"):
             load_layer(path)
+
+
+def test_bad_example_layer_names_the_examples(tmp_path):
+    with pytest.raises(FileNotFoundError) as exc:
+        load_layers(["example:nope.yaml"], relative_to=tmp_path, listed_in="scene.yaml")
+    msg = str(exc.value)
+    assert "layer 'example:nope.yaml' listed in scene.yaml" in msg
+    assert "gen3.yaml" in msg and "robot_gen3_2f85.yaml" in msg
+
+
+def test_bare_layer_name_in_the_image_is_refused_with_the_example_hint(tmp_path):
+    # gen3.yaml stands in for any file that exists only in the image
+    with pytest.raises(FileNotFoundError) as exc:
+        load_layers(["gen3.yaml"], relative_to=tmp_path, listed_in="scene.yaml")
+    assert "write example:gen3.yaml" in str(exc.value)
+    assert str(tmp_path / "gen3.yaml") in str(exc.value)

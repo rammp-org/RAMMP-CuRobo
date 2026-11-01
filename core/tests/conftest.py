@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from core_test_helpers import gen3_spec
 from rammp_curobo.urdf_model import prepare_urdf, write_urdf
 
 DATA = Path(__file__).parent / "data"
@@ -59,7 +60,7 @@ def pytest_make_collect_report(collector):
 
 
 def _written(tmp_path_factory, name):
-    xml = prepare_urdf((DATA / name).read_text())
+    xml = prepare_urdf((DATA / name).read_text(), gen3_spec())
     return write_urdf(xml, tmp_path_factory.mktemp(Path(name).stem))
 
 

@@ -53,7 +53,7 @@ def _urdf_limits():
 @pytest.fixture
 def cpu_planner(monkeypatch, urdf_level):
     monkeypatch.setattr(CuRoboPlanner, "_init_curobo", lambda self, warmup: None)
-    p = CuRoboPlanner.from_config("gen3.yaml", urdf_path=urdf_level)
+    p = CuRoboPlanner.from_config("example:gen3.yaml", urdf_path=urdf_level)
     lo, hi = _urdf_limits()
     monkeypatch.setattr(
         p,
@@ -82,22 +82,34 @@ def test_finish_stamps_the_models_root(cpu_planner):
     assert res.joint_traj.scaled(0.5).frame_id == "arm_mount"
 
 
-def test_a_robot_config_rooted_elsewhere_is_refused(monkeypatch, urdf_level):
+def test_joint_names_default_to_the_robot_files(cpu_planner):
+    assert cpu_planner.joint_names == ["arm_joint_%d" % i for i in range(1, 8)]
+
+
+def test_a_config_naming_other_joints_than_the_robot_files_is_refused(
+    monkeypatch, urdf_level
+):
     from rammp_curobo import planner as planner_mod
 
-    real = planner_mod.load_robot_config
-
-    def rooted_at_arm_base_link(*args, **kwargs):
-        cfg = real(*args, **kwargs)
-        cfg["kinematics"]["base_link"] = "arm_base_link"
-        return cfg
-
-    monkeypatch.setattr(planner_mod, "load_robot_config", rooted_at_arm_base_link)
     monkeypatch.setattr(CuRoboPlanner, "_init_curobo", lambda self, warmup: None)
-    with pytest.raises(
-        ValueError, match="base_link is .arm_base_link., expected .arm_mount."
-    ):
-        CuRoboPlanner.from_config("gen3.yaml", urdf_path=urdf_level)
+    cfg, cfg_dir = planner_mod.load_planner_config("example:gen3.yaml")
+    cfg["joint_names"] = cfg["joint_names"][:-1] + ["j7"]
+    with pytest.raises(ValueError, match="not the robot file's joints"):
+        CuRoboPlanner(cfg, config_dir=cfg_dir, urdf_path=urdf_level)
+    cfg["joint_names"] = [
+        "arm_joint_1"
+    ] * 7  # duplicates: same set, not the same joints
+    with pytest.raises(ValueError, match="not the robot file's joints"):
+        CuRoboPlanner(cfg, config_dir=cfg_dir, urdf_path=urdf_level)
+    cfg["joint_names"] = []  # explicit, so not the robot file's order
+    with pytest.raises(ValueError, match="not the robot file's joints"):
+        CuRoboPlanner(cfg, config_dir=cfg_dir, urdf_path=urdf_level)
+    # the same joints in another order are the config's to choose
+    cfg["joint_names"] = ["arm_joint_%d" % i for i in range(7, 0, -1)]
+    assert (
+        CuRoboPlanner(cfg, config_dir=cfg_dir, urdf_path=urdf_level).joint_names
+        == (cfg["joint_names"])
+    )
 
 
 def test_park_pose_is_refused_by_name_and_a_near_miss_clamped(cpu_planner):
@@ -136,7 +148,7 @@ def test_a_negative_joint_limit_margin_is_refused(monkeypatch, urdf_level):
     from rammp_curobo.config import load_planner_config
 
     monkeypatch.setattr(CuRoboPlanner, "_init_curobo", lambda self, warmup: None)
-    cfg, cfg_dir = load_planner_config("gen3.yaml")
+    cfg, cfg_dir = load_planner_config("example:gen3.yaml")
     cfg["planner"]["joint_limit_margin_rad"] = -0.01
     with pytest.raises(ValueError, match="joint_limit_margin_rad"):
         CuRoboPlanner(cfg, config_dir=cfg_dir, urdf_path=urdf_level)
@@ -161,7 +173,7 @@ def test_update_world_refuses_before_reaching_curobo(
     with pytest.raises(ValueError, match="empty"):
         cpu_planner.update_world([])
     with pytest.raises(ValueError, match="empty"):
-        cpu_planner.update_world("world_empty.yaml")
+        cpu_planner.update_world("example:world_empty.yaml")
     wrong = tmp_path / "world_base_link.yaml"
     wrong.write_text(
         "base_frame: base_link\nobstacles:\n"
@@ -594,3 +606,32 @@ def test_a_leg_beyond_the_limits_is_refused_by_the_final_check(blend_planner):
     blend_planner.lim["acceleration"] = np.full(7, 5.0)
     res = blend_planner.blend_legs(legs, [0.0])
     assert res.status == "LIBRARY_VALIDATION_FAILED"
+
+
+def test_a_robot_dir_never_borrows_data_from_the_cwd(
+    cpu_planner, monkeypatch, tmp_path, urdf_level
+):
+    from rammp_curobo import planner as planner_mod
+    from rammp_curobo.config import EXAMPLE_DIR
+
+    robot, cwd = tmp_path / "robot", tmp_path / "cwd"
+    robot.mkdir()
+    cwd.mkdir()
+    (robot / "planner.yaml").write_text("robot: robot.yaml\nworld: world.yaml\n")
+    for src, dst in (
+        ("robot_gen3_2f85.yaml", "robot.yaml"),
+        ("arm_kinematics.json", "arm_kinematics.json"),
+        ("world_empty.yaml", "world.yaml"),
+    ):
+        (cwd / dst).write_text((EXAMPLE_DIR / src).read_text())
+    monkeypatch.chdir(cwd)
+    cfg, cfg_dir = planner_mod.load_planner_config(robot / "planner.yaml")
+    # with and without the model check: both name the robot dir
+    with pytest.raises(ValueError, match=str(robot)):
+        CuRoboPlanner(cfg, config_dir=cfg_dir, urdf_path=urdf_level)
+    with pytest.raises(FileNotFoundError, match=str(robot)):
+        CuRoboPlanner(cfg, config_dir=cfg_dir)
+    # a pushed world path is next to the config, not in the cwd
+    (cwd / "pushed.yaml").write_text("base_frame: arm_mount\nobstacles: []\n")
+    with pytest.raises(FileNotFoundError, match="pushed.yaml"):
+        cpu_planner.update_world("pushed.yaml")

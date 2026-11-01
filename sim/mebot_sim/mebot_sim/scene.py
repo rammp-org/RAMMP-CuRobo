@@ -91,7 +91,10 @@ def _chair_world(config=None):
 
     cfg, where = load_planner_config(config)
     layers = load_layers(cfg["layers"], relative_to=where, listed_in=config)
-    world = load_scene(resolve_config(cfg["world"], relative_to=where))
+    world = load_scene(
+        resolve_config(cfg["world"], relative_to=where, search_cwd=False),
+        stack.ROOT_FRAME,
+    )
     p = cfg["planner"]
     cuboids, sources = compose_cuboids(
         world,

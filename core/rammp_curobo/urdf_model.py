@@ -1,35 +1,36 @@
 """The arm's own robot model, as published on /arm/robot_description.
 
-The planner builds its kinematics from the URDF the robot publishes
-(kinova-gen3-ros2's arm_state_publisher), so it plans in `arm_mount` with the
-arm's own joint names and limits. This module checks the text is that model
-and sanitises it for cuRobo; the caller writes it to a file and passes the
-path on. Standard library only — no ROS, no cuRobo.
+The planner builds its kinematics from the URDF the robot publishes, so it
+plans in that model's root with the arm's own joint names and limits. The
+names it expects (root link, tool link, joints, locked joints) come from the
+robot file (`robot_config.RobotSpec`), not from this module. This module
+checks the text is that model and sanitises it for cuRobo; the caller writes
+it to a file and passes the path on. Standard library only -- no ROS, no
+cuRobo.
 
-Sanitising strips <visual>, <collision> and top-level <ros2_control>: the
-rendered mesh paths point into /opt/ros/humble/share, which the planner image
-does not have, and the baked spheres are the collision model, so meshes are
-never needed.
+Sanitising strips <visual>, <collision> and top-level <ros2_control>: mesh
+paths may point at packages the planner image lacks, and the baked spheres
+are the collision model, so meshes are never needed.
 
-It also fills the <limit> cuRobo v0.7.8 requires on every moving joint. The
-2F-85's mimic joints carry none (URDF allows that on a continuous joint), and
-cuRobo's parser dereferences it even on a locked joint. Only joints whose
-motion is defined by another joint (<mimic>) are filled, from the joint they
-follow; a limitless joint that follows nothing is refused by name.
+It also fills the <limit> cuRobo v0.7.8 requires on every moving joint. A
+gripper's mimic joints may carry none (URDF allows that on a continuous
+joint), and cuRobo's parser dereferences it even on a locked joint. Only joints
+whose motion is defined by another joint (<mimic>) are filled, from the joint
+they follow; a limitless joint that follows nothing is refused by name.
 
-The 2F-85 gripper is required: the robot config locks its joints and puts
-collision spheres on its links, so a gripperless model cannot load, and it is
-refused here by name rather than failing inside cuRobo.
+A model missing any joint the robot file lists (its cspace joints and the
+joints it locks) is refused here by name rather than failing inside cuRobo.
 
-The kinematics below the arm's base must be the ones the spheres were moved
-onto. The bake (scripts/bake_robot_config.py) records every joint below
-`arm_base_link` from arm_level.urdf in configs/arm_kinematics.json, and a
-model whose joints differ from it (an origin by more than 1 mm or 0.1 deg,
-an axis by more than 0.1 deg, a parent, child, type or mimic, or a joint
-missing or extra) is refused by name: an upstream description change would
-otherwise shift the baked spheres off the links, silently. `arm_base_joint`
-is the mount and may vary. Limit differences are logged, not refused: the
-limits are the model's to set (they are what the driver enforces).
+The kinematics below the spec's `arm_base_link` must be the ones the spheres
+were moved onto. The bake (scripts/bake_robot_config.py) records every joint
+below it from the reference URDF in a JSON file the robot file names
+(`model_check.kinematics_reference`), and a model whose joints differ from it
+(an origin by more than 1 mm or 0.1 deg, an axis by more than 0.1 deg, a
+parent, child, type or mimic, or a joint missing or extra) is refused by name:
+an upstream description change would otherwise shift the baked spheres off the
+links, silently. The joint above `arm_base_link` is the mount and may vary.
+Limit differences are logged, not refused: the limits are the model's to set
+(they are what the driver enforces).
 """
 
 import json
@@ -38,31 +39,19 @@ import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-ROOT_LINK = "arm_mount"
-EE_LINK = "arm_tool_frame"
-ARM_JOINTS = tuple("arm_joint_%d" % i for i in range(1, 8))
-GRIPPER_JOINTS = (
-    "arm_robotiq_85_left_knuckle_joint",
-    "arm_robotiq_85_right_knuckle_joint",
-    "arm_robotiq_85_left_inner_knuckle_joint",
-    "arm_robotiq_85_right_inner_knuckle_joint",
-    "arm_robotiq_85_left_finger_tip_joint",
-    "arm_robotiq_85_right_finger_tip_joint",
-)
-BASE_LINK = "arm_base_link"
-KINEMATICS_REFERENCE = Path(__file__).parent / "configs" / "arm_kinematics.json"
 ORIGIN_TOL_M = 1e-3
 ANGLE_TOL_DEG = 0.1
 
 log = logging.getLogger("rammp_curobo")
 
 
-def prepare_urdf(xml):
+def prepare_urdf(xml, spec):
     """URDF text -> sanitised URDF text, or ValueError naming what is wrong.
 
-    Refuses a model that is not ours before cuRobo sees it: the root link
-    must be `arm_mount`, and `arm_tool_frame`, all seven `arm_joint_N` and
-    the six 2F-85 `GRIPPER_JOINTS` must exist.
+    Refuses a model that is not the robot file's before cuRobo sees it: the
+    root link must be `spec.root_link`, `spec.ee_link` must exist, every one
+    of `spec.joint_names` and `spec.locked_joints` must exist, and the joints
+    below `spec.arm_base_link` must match `spec.kinematics_reference`.
     """
     if not xml or not xml.strip():
         raise ValueError("robot model is empty")
@@ -75,18 +64,40 @@ def prepare_urdf(xml):
     joints = {joint.get("name") for joint in root.findall("joint")}
     children = {c.get("link") for c in root.findall("joint/child")}
     roots = sorted(links - children)
-    if roots != [ROOT_LINK]:
+    if roots != [spec.root_link]:
         raise ValueError(
-            "robot model root link is %s, expected %r" % (roots, ROOT_LINK)
+            "robot model root link is %s, expected %r" % (roots, spec.root_link)
         )
-    if EE_LINK not in links:
-        raise ValueError("robot model has no %r link" % EE_LINK)
-    missing = [j for j in ARM_JOINTS + GRIPPER_JOINTS if j not in joints]
+    if spec.ee_link not in links:
+        raise ValueError("robot model has no %r link" % spec.ee_link)
+    missing = [j for j in spec.joint_names + spec.locked_joints if j not in joints]
     if missing:
         raise ValueError("robot model is missing joints %s" % missing)
-    check_kinematics(
-        kinematic_reference(root), json.loads(KINEMATICS_REFERENCE.read_text())
-    )
+    if spec.arm_base_link not in links:
+        raise ValueError(
+            "robot model has no %r link (model_check.arm_base_link of %s)"
+            % (spec.arm_base_link, spec.path)
+        )
+    try:
+        ref = json.loads(spec.kinematics_reference.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "kinematics reference %s is not JSON: %s" % (spec.kinematics_reference, exc)
+        ) from None
+    if not ref:
+        raise ValueError(
+            "kinematics reference %s lists no joints; nothing would be checked"
+            % spec.kinematics_reference
+        )
+    try:
+        check_kinematics(
+            kinematic_reference(root, spec.arm_base_link), ref, spec.arm_base_link
+        )
+    except (KeyError, TypeError, AttributeError) as exc:  # the reference's shape
+        raise ValueError(
+            "kinematics reference %s is malformed: %s %s"
+            % (spec.kinematics_reference, type(exc).__name__, exc)
+        ) from None
 
     for link in root.findall("link"):
         for tag in ("visual", "collision"):
@@ -98,11 +109,11 @@ def prepare_urdf(xml):
     return ET.tostring(root, encoding="unicode")
 
 
-def kinematic_reference(root):
-    """{joint: its kinematics} for every joint below `arm_base_link`, from a
+def kinematic_reference(root, base_link):
+    """{joint: its kinematics} for every joint below `base_link`, from a
     parsed URDF: parent, child, type, origin xyz/rpy, axis (None on a fixed
     joint), mimic and limit, URDF defaults filled in."""
-    below, out = {BASE_LINK}, {}
+    below, out = {base_link}, {}
     grew = True
     while grew:  # the joints may come in any order
         grew = False
@@ -137,7 +148,7 @@ def kinematic_reference(root):
     return out
 
 
-def check_kinematics(live, ref):
+def check_kinematics(live, ref, base_link):
     """Refuse `live` (kinematic_reference of the model) unless it matches
     `ref` within ORIGIN_TOL_M / ANGLE_TOL_DEG, naming the joint; log limit
     differences."""
@@ -145,7 +156,7 @@ def check_kinematics(live, ref):
     if extra or missing:
         raise ValueError(
             "robot model joints below %s differ from the reference the spheres "
-            "were baked on: missing %s, extra %s" % (BASE_LINK, missing, extra)
+            "were baked on: missing %s, extra %s" % (base_link, missing, extra)
         )
     for name, want in ref.items():
         got = live[name]
@@ -164,7 +175,10 @@ def check_kinematics(live, ref):
                 "the reference the spheres were baked on (max %g mm / %g deg)"
                 % (name, 1e3 * moved_m, turned, axis, 1e3 * ORIGIN_TOL_M, ANGLE_TOL_DEG)
             )
-        if got["limit"] != want["limit"]:
+        # a mimic's limit is filled by _fill_mimic_limits, so a model that has
+        # been through prepare_urdf once has one where the reference has none
+        filled = want["mimic"] is not None and want["limit"] is None
+        if got["limit"] != want["limit"] and not filled:
             log.warning(
                 "robot model joint %r limit %s differs from the reference's %s; "
                 "planning with the model's",

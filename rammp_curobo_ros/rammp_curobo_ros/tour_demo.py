@@ -36,7 +36,7 @@ from rammp_curobo_ros.ros_util import NODE_NAMESPACE, spin_until_done
 # holds none (issue #6). A demo is allowed one; a planner is not.
 HOME = [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]
 # arm_tool_frame orientation at HOME on a level mount (FK-verified on
-# gen3_real.yaml to 3e-4): tool z level along +x, wrist flat. Targets and
+# the arm_level fixture to 3e-4): tool z level along +x, wrist flat. Targets and
 # this attitude are in arm_mount, so on a tilted mount it is still level,
 # but no longer HOME's own. Targets steer THIS attitude toward
 # each bearing (Rz(bearing) ⊗ q_home) so the wrist stays flat instead of

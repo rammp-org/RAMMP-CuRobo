@@ -1,16 +1,19 @@
 # Planner config for the RAMMP Kinova Gen3 7-DoF + Robotiq 2F-85.
 #
 #   from rammp_curobo import CuRoboPlanner
-#   planner = CuRoboPlanner.from_config('gen3.yaml', urdf_path=path)
+#   planner = CuRoboPlanner.from_config('example:gen3.yaml', urdf_path=path)
 #
 # `path` is the arm's own URDF as a file: the ROS node writes the model on
 # /arm/robot_description to one; the tests use core/tests/data/arm_level.urdf.
 #
-# robot/world resolve relative to this file's directory first, then the
-# packaged defaults — copy this file next to your code and point `world` at
-# your own scene to customize. Values not set here fall back to the same
-# defaults (config.PLANNER_DEFAULTS); everything below is explicit on
-# purpose so this file is the single reference for what the planner runs.
+# robot/world resolve next to this file, or by absolute path, or as
+# `example:<name>` for the image's copies (never by a bare name from the
+# image). A copy of this file resolves its robot/world next to the copy, so
+# the copy must name BOTH: `robot: example:robot_gen3_2f85.yaml` (or a copy of
+# that file beside it) and `world: example:world_sim_kitchen.yaml` (or your own
+# world file beside it). Leaving `world:` as written here finds nothing. Values not set here fall
+# back to the same defaults (config.PLANNER_DEFAULTS); everything below is
+# explicit on purpose so this file is the single reference for what the planner runs.
 
 robot: robot_gen3_2f85.yaml          # baked cuRobo robot config (generated)
 world: world_sim_kitchen.yaml        # collision world; swap for your scene

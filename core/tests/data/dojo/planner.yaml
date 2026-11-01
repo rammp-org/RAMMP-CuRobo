@@ -1,0 +1,21 @@
+# Arm-only planner config for dojo's bench: the arm's own planner settings,
+# with the MEASURED real bench as the collision world -- nothing sim-related
+# loads.
+#
+# THIS IS THIS CHECKOUT'S FIXTURE COPY, for the tests. The copy dojo runs
+# lives with that robot, in rammp-deployments under config/robots/dojo/curobo,
+# bind-mounted at /config/robot:
+#
+#   ros2 launch rammp_curobo_ros planner.launch.py config:=/config/robot/curobo/planner.yaml
+#
+# The robot model is the arm's own URDF from /arm/robot_description (plans and
+# the world are in arm_mount); from Python pass it as a file:
+#   CuRoboPlanner.from_config('<this file>', urdf_path=path)
+#
+# Every unlisted knob inherits the same defaults gen3.yaml spells out
+# (config.PLANNER_DEFAULTS); see gen3.yaml for the commentary on each.
+# Reminder: edit world.yaml to match the real bench BEFORE the
+# first hardware run (docs/HARDWARE_BRINGUP.md step 1).
+
+robot: example:robot_gen3_2f85.yaml
+world: world.yaml

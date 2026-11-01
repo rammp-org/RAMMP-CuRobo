@@ -1,0 +1,11 @@
+# A made-up two-joint arm, to show the checks hold no Gen3 names. Only the
+# fields load_robot_spec reads; cuRobo never loads this file.
+robot_cfg:
+  kinematics:
+    base_link: base
+    ee_link: tool
+    cspace:
+      joint_names: [j1, j2]
+model_check:
+  arm_base_link: link0
+  kinematics_reference: arm_kinematics.json

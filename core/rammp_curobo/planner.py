@@ -2,7 +2,9 @@
 
     from rammp_curobo import CuRoboPlanner
 
-    planner = CuRoboPlanner.from_config('gen3.yaml', urdf_path='robot_description.urdf')
+    planner = CuRoboPlanner.from_config(
+        'example:gen3.yaml', urdf_path='robot_description.urdf'
+    )
     res = planner.plan_to_pose([0.45, 0.0, 0.35], [1, 0, 0, 0], q_now, quat_order='wxyz')
     res = planner.plan_to_joints(q_goal, q_now)
     planner.update_world([{'name': 'box', 'position': [0.5, 0, 0], 'dims': [0.1, 0.1, 0.1]}])
@@ -28,10 +30,12 @@ Jetson-specific decisions inherited from RAMMP-Kinova's field notes (do not
 import logging
 import math
 import time
+from pathlib import Path
 
 import numpy as np
 
 from rammp_curobo import blend, geometry
+from rammp_curobo.contract import check_robot_dir
 from rammp_curobo.config import PLANNER_DEFAULTS, load_planner_config, resolve_config
 from rammp_curobo import constraints
 from rammp_curobo.constraints import PoseConstraint, ViaPoint
@@ -39,7 +43,6 @@ from rammp_curobo.resample import resample_quintic
 from rammp_curobo.robot_config import load_robot_config
 from rammp_curobo.scene import Scene, load_layers, load_scene, scene_from_obstacles
 from rammp_curobo.types import PlanResult, Trajectory
-from rammp_curobo.urdf_model import ROOT_LINK
 from rammp_curobo.validate import validate_trajectory
 from rammp_curobo.world import (
     compose_cuboids,
@@ -76,7 +79,6 @@ class CuRoboPlanner:
         self._cfg = config
         self._config_dir = config_dir
         p = config["planner"]
-        self.joint_names = list(config["joint_names"])
         self.interpolation_dt = float(p["interpolation_dt"])
         self.max_attempts = int(p["max_attempts"])
         self.finetune_attempts = int(p["finetune_attempts"])
@@ -104,27 +106,38 @@ class CuRoboPlanner:
         self.tool_spin_deg = float(config["tool"]["spin_deg"])
         self.tool_tip_offset = float(config["tool"]["tip_offset_m"])
 
-        robot_path = resolve_config(config["robot"], relative_to=config_dir)
-        world_path = resolve_config(config["world"], relative_to=config_dir)
+        if urdf_path is not None:
+            # one error listing every problem, before any file is loaded for
+            # real; a model checked already (the node) checks again, silently
+            check_robot_dir(config, config_dir, Path(urdf_path).read_text())
+        robot_path = resolve_config(
+            config["robot"], relative_to=config_dir, search_cwd=False
+        )
+        world_path = resolve_config(
+            config["world"], relative_to=config_dir, search_cwd=False
+        )
         # The arm's model: the URDF from /arm/robot_description, as a file.
         self._robot_cfg = load_robot_config(robot_path, urdf_path=urdf_path)
         # The frame every Cartesian input and trajectory is in. cuRobo calls the
-        # root of the chain it plans in "base_link"; for us that is arm_mount,
-        # the gravity-aligned root, NOT the arm's own arm_base_link. A robot
-        # YAML naming another root would plan (and stamp) in that frame, which
-        # kinova-gen3-ros2 refuses only at execution: refuse it here instead.
+        # root of the chain it plans in "base_link"; it is the robot file's root
+        # link (the Gen3's is arm_mount, the gravity-aligned root, NOT the arm's
+        # own arm_base_link). prepare_urdf checks the model has that root.
         self.base_frame = str(self._robot_cfg["kinematics"]["base_link"])
-        if self.base_frame != ROOT_LINK:
-            raise ValueError(
-                "robot config %s: kinematics.base_link is %r, expected %r (the "
-                "URDF's root)" % (robot_path, self.base_frame, ROOT_LINK)
-            )
         # The link plan_to_pose goals and fk() poses are for (arm_tool_frame).
         self.ee_link = str(self._robot_cfg["kinematics"]["ee_link"])
         # The IK seed / null-space reference, in controller order. A planner
         # fact (it fixes the elbow family), NOT a statement about where the
         # arm belongs — this planner has no such opinion (issue #6).
         cspace = self._robot_cfg["kinematics"]["cspace"]
+        # The controller's joint order: the config's, which must name the
+        # robot file's joints, or the robot file's own order when it names none.
+        names = config.get("joint_names")
+        self.joint_names = list(cspace["joint_names"] if names is None else names)
+        if sorted(self.joint_names) != sorted(cspace["joint_names"]):
+            raise ValueError(
+                "planner config joint_names %s are not the robot file's joints %s"
+                % (self.joint_names, list(cspace["joint_names"]))
+            )
         by_name = dict(zip(cspace["joint_names"], cspace["retract_config"]))
         self.retract_pose = [float(by_name[n]) for n in self.joint_names]
         # cuRobo plans (IK, trajopt, the constraint re-check) inside limits
@@ -154,8 +167,8 @@ class CuRoboPlanner:
 
     @classmethod
     def from_config(cls, name_or_path, *, urdf_path=None):
-        """Build from a planner YAML (packaged name like 'gen3.yaml' or a
-        filesystem path). See configs/gen3.yaml for the schema. urdf_path is
+        """Build from a planner YAML ('example:gen3.yaml' for the image's
+        copy, or a filesystem path). See configs/gen3.yaml for the schema. urdf_path is
         the arm's model as a file (urdf_model.write_urdf)."""
         cfg, cfg_dir = load_planner_config(name_or_path)
         return cls(cfg, config_dir=cfg_dir, urdf_path=urdf_path)
@@ -854,7 +867,7 @@ class CuRoboPlanner:
             scene = scene_from_obstacles(world, base_frame=self.base_frame)
         else:
             scene = load_scene(
-                resolve_config(world, relative_to=self._config_dir),
+                resolve_config(world, relative_to=self._config_dir, search_cwd=False),
                 frame=self.base_frame,
             )
         cuboids, sources = self._compose(scene, ignore=ignore)

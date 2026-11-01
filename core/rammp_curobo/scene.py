@@ -28,7 +28,6 @@ import yaml
 
 from rammp_curobo.config import resolve_config
 from rammp_curobo.geometry import euler_deg_to_quat_xyzw
-from rammp_curobo.urdf_model import ROOT_LINK
 
 
 class Obstacle:
@@ -405,10 +404,10 @@ def load_layers(refs, relative_to, listed_in):
     """Load the layer files a scene or a planner config lists, in order.
 
     A ref is an absolute path, a path relative to `relative_to` (the
-    directory of the listing file) or the name of a packaged layer. It is
-    never looked up in the current directory: the planner can be started
-    from anywhere, and a file there that shares a packaged layer's name
-    must not replace that layer. For a listing file opened through a
+    directory of the listing file) or `example:<name>` for a layer shipped in
+    the image. It is never looked up in the current directory: the planner
+    can be started from anywhere, and a file there that shares an
+    example layer's name must not replace that layer. For a listing file opened through a
     symlink, `relative_to` is the link's directory, not its target's: an
     install made of links (colcon's --symlink-install) then finds the
     layers a copying install would. A file listed twice loads once; two
@@ -425,9 +424,12 @@ def load_layers(refs, relative_to, listed_in):
         try:
             path = resolve_config(ref, relative_to=relative_to, search_cwd=False)
         except FileNotFoundError as exc:
+            # an example: ref has no "tried:" list; its message names the examples
+            detail = str(exc)
+            if "tried: " in detail:
+                detail = "tried: " + detail.partition("tried: ")[2]
             raise FileNotFoundError(
-                "layer %r listed in %s not found; tried: %s"
-                % (ref, listed_in, str(exc).partition("tried: ")[2])
+                "layer %r listed in %s not found; %s" % (ref, listed_in, detail)
             ) from None
         layer = load_layer(path)
         if any(layer.path == other.path for other in layers):
@@ -446,14 +448,14 @@ SCENE_KEYS = ("base_frame", "obstacles", "objects", "targets", "layers")
 LIST_KEYS = ("obstacles", "objects", "targets")
 
 
-def load_scene(path, frame=ROOT_LINK):
+def load_scene(path, frame):
     """Parse a world YAML. Refuses a mis-keyed file: a typo'd or missing
     `obstacles` would otherwise load as an empty world without a word, so
     an empty world must say `obstacles: []`.
 
     `base_frame` is required and must be `frame`, the frame the planner
-    plans in (arm_mount): the numbers are applied in that frame whatever
-    the file says, so a world authored in another frame (the arm's tilted
+    plans in (the robot file's root link): the numbers are applied in that
+    frame whatever the file says, so a world authored in another frame (the arm's tilted
     base) would put every box in the wrong place, silently. The layers the
     file lists are in that frame too.
     """
@@ -499,7 +501,7 @@ def load_scene(path, frame=ROOT_LINK):
     )
 
 
-def scene_from_obstacles(entries, base_frame=ROOT_LINK):
+def scene_from_obstacles(entries, base_frame):
     """Build a Scene from plain dicts (the `update_world(obstacles)` path).
 
     Each entry follows the YAML object schema: name + position required,

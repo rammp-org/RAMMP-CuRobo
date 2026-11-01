@@ -25,9 +25,17 @@ if not torch.cuda.is_available():
 
 from rammp_curobo import CuRoboPlanner  # noqa: E402
 from rammp_curobo.robot_config import load_robot_config  # noqa: E402
-from rammp_curobo.urdf_model import ARM_JOINTS, GRIPPER_JOINTS  # noqa: E402
 
 DATA = Path(__file__).parent / "data"
+ARM_JOINTS = tuple("arm_joint_%d" % i for i in range(1, 8))
+GRIPPER_JOINTS = (
+    "arm_robotiq_85_left_knuckle_joint",
+    "arm_robotiq_85_right_knuckle_joint",
+    "arm_robotiq_85_left_inner_knuckle_joint",
+    "arm_robotiq_85_right_inner_knuckle_joint",
+    "arm_robotiq_85_left_finger_tip_joint",
+    "arm_robotiq_85_right_finger_tip_joint",
+)
 BAKE = Path(__file__).resolve().parents[2] / "scripts" / "bake_robot_config.py"
 _spec = importlib.util.spec_from_file_location("bake_robot_config", BAKE)
 _bake = importlib.util.module_from_spec(_spec)
@@ -77,7 +85,7 @@ class Kin:
 
 @pytest.fixture(scope="module")
 def new_kin(urdf_level):
-    return Kin(load_robot_config("robot_gen3_2f85.yaml", urdf_path=urdf_level))
+    return Kin(load_robot_config("example:robot_gen3_2f85.yaml", urdf_path=urdf_level))
 
 
 @pytest.fixture(scope="module")
@@ -99,7 +107,7 @@ def configs(new_kin, old_kin):
 
 @pytest.fixture(scope="module")
 def planner(urdf_level):
-    return CuRoboPlanner.from_config("gen3.yaml", urdf_path=urdf_level)
+    return CuRoboPlanner.from_config("example:gen3.yaml", urdf_path=urdf_level)
 
 
 @pytest.fixture
@@ -170,7 +178,7 @@ def test_gripper_is_locked_open_through_its_mimics(urdf_level):
     links = [
         root.find("joint[@name='%s']/child" % j).get("link") for j in GRIPPER_JOINTS
     ]
-    cfg = load_robot_config("robot_gen3_2f85.yaml", urdf_path=urdf_level)
+    cfg = load_robot_config("example:robot_gen3_2f85.yaml", urdf_path=urdf_level)
     cfg["kinematics"]["link_names"] = links
     kin = Kin(cfg)
     retract = kin.cfg["cspace"]["retract_config"]
@@ -222,7 +230,7 @@ def test_tilted_model_plans_in_arm_mount(planner, urdf_tilt30):
     """The same arm-relative goal, rotated by Ry(30 deg) into arm_mount, is
     what the tilted model plans to. Joint solutions are NOT compared:
     redundant IK may pick another family for the identical pose."""
-    tilt = CuRoboPlanner.from_config("gen3.yaml", urdf_path=urdf_tilt30)
+    tilt = CuRoboPlanner.from_config("example:gen3.yaml", urdf_path=urdf_tilt30)
     tilt.update_world(FAR_BOX)
     start = list(planner.retract_pose)
     q_target = list(start)

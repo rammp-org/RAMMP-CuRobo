@@ -1,7 +1,9 @@
-# Plan a collision-free trajectory to a tool pose (arm_tool_frame) in arm_mount.
+# Plan a collision-free trajectory to a tool pose in the planning frame. Both
+# come from the robot file: its ee_link in its base_link (on RAMMP's robots,
+# arm_tool_frame in arm_mount, as the comments below say).
 # Planning only — nothing moves, and this planner never touches the arm.
-geometry_msgs/Pose target  # arm_tool_frame in arm_mount (no frame field: always arm_mount)
-# REQUIRED: the configuration the plan starts from (rad, arm_joint_1..7).
+geometry_msgs/Pose target  # ee_link in base_link (no frame field: always the planning frame)
+# REQUIRED: the configuration the plan starts from (rad, the planner's joint_names).
 # The caller owns the arm and its state; supplying the measured q is what
 # keeps this planner decoupled from the robot. An empty or wrong-length
 # vector is rejected — there is no "look at /joint_states" fallback.
@@ -76,8 +78,8 @@ ApproachVia approach_via
 ---
 bool success
 string message                              # failure explanation when !success
-# time-parameterized at full speed; joint_names arm_joint_1..7,
-# header.frame_id "arm_mount" on success (the frame the target was planned in;
+# time-parameterized at full speed; joint_names the planner's,
+# header.frame_id the planning frame on success (the frame the target was planned in;
 # a failed plan's trajectory is empty, with an empty frame)
 trajectory_msgs/JointTrajectory trajectory
 float64 planning_time                       # seconds

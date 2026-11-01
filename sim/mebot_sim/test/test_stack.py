@@ -156,7 +156,7 @@ def test_each_world_holds_the_layers_it_is_said_to(tmp_path, monkeypatch):
     for planner, world, sees in stack.worlds().values():
         cfg, where = load_planner_config(configs[planner])
         layers = load_layers(cfg["layers"], relative_to=where, listed_in="test")
-        scene = load_scene(resolve_config(world, relative_to=where))
+        scene = load_scene(resolve_config(world, relative_to=where), stack.ROOT_FRAME)
         _, sources = compose_cuboids(scene, layers=layers)
         assert sorted(set(sources.values())) == sorted(sees.split(", ")), world
         assert "scene" not in sources.values()
@@ -199,7 +199,7 @@ def test_the_requests_are_tied_to_the_generated_layer_files(monkeypatch):
         for path in outputs
     }
     assert len(expected) == 4  # platform, person, seat, floor
-    monkeypatch.setattr(stack, "CHAIR_CONFIG", "gen3.yaml")
+    monkeypatch.setattr(stack, "CHAIR_CONFIG", "example:gen3.yaml")
     assert stack.layer_digests() == expected
 
 
@@ -209,15 +209,15 @@ def test_the_arm_model_is_the_one_the_planner_takes_with_the_drivers_names():
     stack.core()
     import xml.etree.ElementTree as ET
 
-    from rammp_curobo.urdf_model import ROOT_LINK, prepare_urdf
+    from rammp_curobo.urdf_model import prepare_urdf
 
-    root = ET.fromstring(prepare_urdf(stack.arm_model()))
+    root = ET.fromstring(prepare_urdf(stack.arm_model(), stack.arm_spec()))
     joints = {j.get("name"): j for j in root.findall("joint")}
     assert all(name in joints for name in stack.JOINTS)
     # the arm is tilted on arm_mount, the layers' frame, by the tilt the
     # layers were generated for and the MuJoCo arm is turned by
     mount = joints["arm_base_joint"]
-    assert mount.find("parent").get("link") == ROOT_LINK
+    assert mount.find("parent").get("link") == stack.ROOT_FRAME
     origin = mount.find("origin")
     tilt = stack.generator().load_data()["mount"]["arm_base_joint"]["rpy_deg"]
     rpy = [float(v) for v in origin.get("rpy").split()]

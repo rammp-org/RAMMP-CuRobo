@@ -46,6 +46,7 @@ def test_model_latched_before_the_wait_arrives(node):
 
 def test_a_different_model_is_reported_every_time(node):
     errors = []
+    node.example_mode = False
     node.get_logger = lambda: type("L", (), {"error": staticmethod(errors.append)})
     pub = node.create_publisher(String, ROBOT_DESCRIPTION_TOPIC, MODEL_QOS)
     pub.publish(String(data="<robot name='in_use'/>"))

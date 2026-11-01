@@ -16,7 +16,13 @@ import numpy as np
 import pytest
 import yaml
 
-from rammp_curobo.config import PACKAGED_CONFIG_DIR, load_planner_config, resolve_config
+from rammp_curobo.config import (
+    EXAMPLE_DIR,
+    PACKAGED_CONFIG_DIR,
+    is_example,
+    load_planner_config,
+    resolve_config,
+)
 from rammp_curobo.constraints import (
     HOLD_FIXED,
     HOLD_LEVEL,
@@ -33,19 +39,16 @@ from rammp_curobo.geometry import (
     xyzw_to_wxyz,
 )
 from rammp_curobo.retime import scale_trajectory
-from rammp_curobo.robot_config import load_robot_config
-from rammp_curobo.scene import load_scene, scene_from_obstacles
+from rammp_curobo.robot_config import load_robot_config, load_robot_spec
 from rammp_curobo.types import Trajectory
-from rammp_curobo.urdf_model import (
-    ARM_JOINTS,
-    _fill_mimic_limits,
-    prepare_urdf,
-    write_urdf,
-)
+from rammp_curobo.urdf_model import _fill_mimic_limits, prepare_urdf, write_urdf
 from rammp_curobo.validate import start_state_matches, validate_trajectory
 from rammp_curobo.world import make_world_config, world_cuboids
 
+from core_test_helpers import gen3_spec, load_scene, scene_from_obstacles
+
 DATA = Path(__file__).parent / "data"
+ARM_JOINTS = tuple("arm_joint_%d" % i for i in range(1, 8))
 BAKE = Path(__file__).resolve().parents[2] / "scripts" / "bake_robot_config.py"
 _spec = importlib.util.spec_from_file_location("bake_robot_config", BAKE)
 _bake = importlib.util.module_from_spec(_spec)
@@ -56,6 +59,33 @@ LINK_MAP = _bake.LINK_MAP
 
 def read(name):
     return (DATA / name).read_text()
+
+
+def test_example_prefix_resolves_into_the_image():
+    assert resolve_config("example:gen3.yaml") == EXAMPLE_DIR / "gen3.yaml"
+    assert is_example(resolve_config("example:robot_gen3_2f85.yaml"))
+
+
+def test_bare_name_never_falls_back_to_the_image(tmp_path):
+    with pytest.raises(FileNotFoundError) as e:
+        resolve_config("robot_gen3_2f85.yaml", relative_to=tmp_path, search_cwd=False)
+    assert str(tmp_path) in str(e.value)
+    assert "example:robot_gen3_2f85.yaml" in str(e.value)
+
+
+@pytest.mark.parametrize(
+    "ref", ["example:../gen3.yaml", "example:sub/gen3.yaml", "example:nope.yaml"]
+)
+def test_bad_example_reference_lists_the_examples(ref):
+    with pytest.raises(FileNotFoundError) as e:
+        resolve_config(ref)
+    assert "gen3.yaml" in str(e.value) and "robot_gen3_2f85.yaml" in str(e.value)
+
+
+def test_example_config_resolves_its_own_references():
+    cfg, cfg_dir = load_planner_config("example:gen3.yaml")
+    want = EXAMPLE_DIR / "robot_gen3_2f85.yaml"
+    assert resolve_config(cfg["robot"], relative_to=cfg_dir) == want
 
 
 def load_yaml_robot(name_or_path):
@@ -133,7 +163,6 @@ def test_packaged_configs_exist():
         "gen3.yaml",
         "robot_gen3_2f85.yaml",
         "world_sim_kitchen.yaml",
-        "world_real_bench.yaml",
         "world_empty.yaml",
     ):
         assert (PACKAGED_CONFIG_DIR / name).is_file(), name
@@ -163,11 +192,13 @@ def test_the_chair_is_not_packaged_and_resolves_to_no_stale_copy():
         assert not (PACKAGED_CONFIG_DIR / name).exists(), name
         with pytest.raises(FileNotFoundError):
             resolve_config(name, search_cwd=False)
+        with pytest.raises(FileNotFoundError):
+            resolve_config("example:" + name)
         assert (fixtures / name).is_file(), name
 
 
 def test_planner_config_loads_and_merges():
-    cfg, cfg_dir = load_planner_config("gen3.yaml")
+    cfg, cfg_dir = load_planner_config("example:gen3.yaml")
     assert cfg["robot"] == "robot_gen3_2f85.yaml"
     assert cfg["joint_names"] == ["arm_joint_%d" % i for i in range(1, 8)]
     assert cfg["planner"]["enable_graph"] is False
@@ -183,10 +214,10 @@ def test_gen3_yaml_matches_planner_defaults():
     # and the YAML is a bug in whichever was edited alone.
     from rammp_curobo.config import PLANNER_DEFAULTS
 
-    cfg, _ = load_planner_config("gen3.yaml")
+    cfg, _ = load_planner_config("example:gen3.yaml")
     for section in ("planner", "tool"):
         assert cfg[section] == PLANNER_DEFAULTS[section], section
-    assert cfg["joint_names"] == PLANNER_DEFAULTS["joint_names"]
+    assert "joint_names" not in PLANNER_DEFAULTS  # the robot file names the joints
     assert cfg["joint_names"] == ["arm_joint_%d" % i for i in range(1, 8)]
     assert cfg["layers"] == PLANNER_DEFAULTS["layers"]
     # merged, a line deleted from the file reads as its default: `layers` is
@@ -196,7 +227,7 @@ def test_gen3_yaml_matches_planner_defaults():
 
 
 def test_baked_robot_config_is_the_upstream_model():
-    kin = load_yaml_robot("robot_gen3_2f85.yaml")["kinematics"]
+    kin = load_yaml_robot("example:robot_gen3_2f85.yaml")["kinematics"]
     old = load_yaml_robot(DATA / "robot_gen3_2f85_nvidia.yaml")["kinematics"]
     assert kin["base_link"] == "arm_mount" and kin["ee_link"] == "arm_tool_frame"
     assert kin["urdf_path"] == "from_robot_description" and kin["mesh_link_names"] == []
@@ -233,7 +264,7 @@ def test_bake_rebuilds_the_committed_robot_config():
     moves.update(yaml.safe_load((DATA / "robot_gen3_2f85_moves.yaml").read_text()))
     assert set(moves) == set(LINK_MAP)
     got = _bake.build_robot_config(nv_cfg, moves)["robot_cfg"]["kinematics"]
-    want = load_yaml_robot("robot_gen3_2f85.yaml")["kinematics"]
+    want = load_yaml_robot("example:robot_gen3_2f85.yaml")["kinematics"]
     spheres = (got.pop("collision_spheres"), want.pop("collision_spheres"))
     assert got == want  # names, lock_joints, self_collision maps, cspace
     assert list(spheres[0]) == list(spheres[1])
@@ -245,7 +276,7 @@ def test_bake_rebuilds_the_committed_robot_config():
 
 
 def test_sim_kitchen_scene_parses():
-    scene = load_scene(resolve_config("world_sim_kitchen.yaml"))
+    scene = load_scene(resolve_config("example:world_sim_kitchen.yaml"))
     assert scene.base_frame == "arm_mount"
     names = {o.name for o in scene.obstacles}
     assert {"table", "pedestal", "back_wall"} <= names
@@ -256,7 +287,7 @@ def test_sim_kitchen_scene_parses():
 
 
 def test_world_cuboids_padding_and_ignore():
-    scene = load_scene(resolve_config("world_sim_kitchen.yaml"))
+    scene = load_scene(resolve_config("example:world_sim_kitchen.yaml"))
     boxes = world_cuboids(
         scene, padding=0.02, ignore={"bottle"}, no_pad_names={"pedestal"}
     )
@@ -281,7 +312,7 @@ def test_empty_world_only_when_allowed(monkeypatch):
     for name in ("curobo", "curobo.geom"):
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
     monkeypatch.setitem(sys.modules, "curobo.geom.types", geom)
-    scene = load_scene(resolve_config("world_empty.yaml"))
+    scene = load_scene(resolve_config("example:world_empty.yaml"))
     assert scene.base_frame == "arm_mount"
     assert make_world_config(scene, allow_empty=True).cuboid == []
     with pytest.raises(ValueError, match="empty"):
@@ -331,9 +362,10 @@ def test_load_scene_refuses_mis_keyed_world(tmp_path, text, match):
 
 
 def test_packaged_worlds_load():
-    for name in ("world_sim_kitchen.yaml", "world_real_bench.yaml", "world_empty.yaml"):
-        load_scene(resolve_config(name))
-    assert load_scene(resolve_config("world_empty.yaml")).obstacles == []
+    for name in ("world_sim_kitchen.yaml", "world_empty.yaml"):
+        load_scene(resolve_config("example:" + name))
+    load_scene(DATA / "dojo" / "world.yaml")
+    assert load_scene(resolve_config("example:world_empty.yaml")).obstacles == []
 
 
 def test_scene_from_obstacle_dicts():
@@ -437,9 +469,9 @@ def test_yaw_about_world_z_keeps_attitude_level():
 
 
 def test_real_arm_config_loads():
-    cfg, cfg_dir = load_planner_config("gen3_real.yaml")
-    assert cfg["world"] == "world_real_bench.yaml"
-    assert cfg["robot"] == "robot_gen3_2f85.yaml"
+    cfg, cfg_dir = load_planner_config(DATA / "dojo" / "planner.yaml")
+    assert cfg["world"] == "world.yaml"
+    assert cfg["robot"] == "example:robot_gen3_2f85.yaml"
     # inherits the same planner defaults gen3.yaml declares explicitly
     assert cfg["planner"]["enable_graph"] is False
     assert "execution" not in cfg
@@ -469,7 +501,7 @@ def test_legacy_execution_block_is_dropped_with_a_warning(tmp_path, caplog):
     # the packaged config carries no such block, so it must load silently
     caplog.clear()
     with caplog.at_level("WARNING", logger="rammp_curobo"):
-        load_planner_config("gen3.yaml")
+        load_planner_config("example:gen3.yaml")
     assert not [r for r in caplog.records if r.name == "rammp_curobo"]
 
 
@@ -1019,7 +1051,7 @@ def test_only_continuous_joints_are_shifted():
 
 
 def test_meshes_are_stripped_and_missing_files_load():
-    xml = prepare_urdf(read("arm_level.urdf"))
+    xml = prepare_urdf(read("arm_level.urdf"), gen3_spec())
     root = ET.fromstring(xml)
     assert not root.findall(".//visual") and not root.findall(".//collision")
     assert not root.findall("ros2_control")
@@ -1030,13 +1062,13 @@ def test_ros2_control_is_stripped():
     xml = read("arm_level.urdf").replace(
         "</robot>", "<ros2_control name='x' type='system'/></robot>"
     )
-    assert not ET.fromstring(prepare_urdf(xml)).findall("ros2_control")
+    assert not ET.fromstring(prepare_urdf(xml, gen3_spec())).findall("ros2_control")
 
 
 def test_mimic_joints_get_their_leaders_limit_scaled():
     # cuRobo v0.7.8 dereferences <limit> on every moving joint; the 2F-85's
     # mimic joints carry none in the published model.
-    root = ET.fromstring(prepare_urdf(read("arm_level.urdf")))
+    root = ET.fromstring(prepare_urdf(read("arm_level.urdf"), gen3_spec()))
     lead = root.find("joint[@name='arm_robotiq_85_left_knuckle_joint']/limit")
     assert (lead.get("lower"), lead.get("upper")) == ("0.0", "0.8")
     for name, lo, hi in [
@@ -1088,7 +1120,7 @@ def test_limitless_joint_that_mimics_nothing_is_refused():
         '<limit effort="39" velocity="1.3963" /></joint>', "</joint>", 1
     )
     with pytest.raises(ValueError, match="arm_joint_1"):
-        prepare_urdf(xml)
+        prepare_urdf(xml, gen3_spec())
 
 
 def test_foreign_model_is_refused_by_name():
@@ -1117,12 +1149,119 @@ def test_foreign_model_is_refused_by_name():
         ("<robot", "parse"),
     ]:
         with pytest.raises(ValueError, match=why):
-            prepare_urdf(broken)
+            prepare_urdf(broken, gen3_spec())
+
+
+def test_spec_reads_the_names_from_the_robot_file():
+    spec = load_robot_spec(resolve_config("example:robot_gen3_2f85.yaml"))
+    assert spec.root_link == "arm_mount" and spec.ee_link == "arm_tool_frame"
+    assert spec.joint_names == tuple("arm_joint_%d" % i for i in range(1, 8))
+    assert spec.locked_joints == ("arm_robotiq_85_left_knuckle_joint",)
+    assert spec.arm_base_link == "arm_base_link"
+    assert spec.kinematics_reference == EXAMPLE_DIR / "arm_kinematics.json"
+
+
+def test_a_robot_file_missing_fields_is_refused_naming_each(tmp_path):
+    robot = tmp_path / "robot.yaml"
+    robot.write_text("robot_cfg:\n  kinematics:\n    base_link: root\n")
+    with pytest.raises(ValueError) as e:
+        load_robot_spec(robot)
+    for field in (
+        "ee_link",
+        "joint_names",
+        "model_check.arm_base_link",
+        "kinematics_reference",
+    ):
+        assert field in str(e.value)
+    assert str(robot) in str(e.value)
+    assert "kinematics.base_link" not in str(e.value)  # present, so not named
+
+
+def test_a_non_gen3_arm_passes_with_its_own_robot_file():
+    d = DATA / "two_link"
+    spec = load_robot_spec(d / "robot.yaml")
+    assert spec.root_link == "base" and spec.joint_names == ("j1", "j2")
+    assert spec.locked_joints == ()
+    out = prepare_urdf((d / "two_link.urdf").read_text(), spec)
+    assert "<visual" not in out and "<collision" not in out
+
+
+def test_an_arm_base_link_the_model_lacks_is_refused(tmp_path):
+    robot = tmp_path / "robot.yaml"
+    robot.write_text(
+        (DATA / "two_link" / "robot.yaml").read_text().replace("link0", "no_such_link")
+    )
+    (tmp_path / "arm_kinematics.json").write_text("{}")
+    with pytest.raises(ValueError, match="no 'no_such_link' link"):
+        prepare_urdf(read("two_link/two_link.urdf"), load_robot_spec(robot))
+
+
+def test_an_empty_kinematics_reference_is_refused(tmp_path):
+    robot = tmp_path / "robot.yaml"
+    robot.write_text((DATA / "two_link" / "robot.yaml").read_text())
+    (tmp_path / "arm_kinematics.json").write_text("{}")
+    with pytest.raises(ValueError, match="lists no joints"):
+        prepare_urdf(read("two_link/two_link.urdf"), load_robot_spec(robot))
+
+
+def test_a_string_for_joint_names_is_refused(tmp_path):
+    robot = tmp_path / "robot.yaml"
+    robot.write_text(
+        (DATA / "two_link" / "robot.yaml").read_text().replace("[j1, j2]", "j1")
+    )
+    with pytest.raises(ValueError, match="must be a list"):
+        load_robot_spec(robot)
+
+
+def test_prepare_urdf_is_idempotent(caplog):
+    for xml, spec in [
+        (read("arm_level.urdf"), gen3_spec()),
+        (
+            (DATA / "two_link" / "two_link.urdf").read_text(),
+            load_robot_spec(DATA / "two_link" / "robot.yaml"),
+        ),
+    ]:
+        once = prepare_urdf(xml, spec)
+        with caplog.at_level("WARNING", logger="rammp_curobo"):
+            assert prepare_urdf(once, spec) == once
+        assert caplog.text == ""
+
+
+def test_a_reference_next_to_the_robot_file_is_resolved_there(tmp_path):
+    robot = tmp_path / "robot.yaml"
+    robot.write_text(
+        (DATA / "two_link" / "robot.yaml")
+        .read_text()
+        .replace("arm_kinematics.json", "example:arm_kinematics.json")
+    )
+    assert (
+        load_robot_spec(robot).kinematics_reference
+        == EXAMPLE_DIR / "arm_kinematics.json"
+    )
+    robot.write_text((DATA / "two_link" / "robot.yaml").read_text())
+    with pytest.raises(FileNotFoundError, match="arm_kinematics.json"):
+        load_robot_spec(robot)  # not copied here
+
+
+@pytest.mark.parametrize("urdf", ["arm_level.urdf", "arm_tilt30.urdf"])
+def test_gen3_models_pass_on_either_mount(urdf):
+    prepare_urdf(read(urdf), gen3_spec())
+
+
+def test_gen3_urdf_refused_against_another_arms_spec():
+    spec = load_robot_spec(DATA / "two_link" / "robot.yaml")
+    with pytest.raises(ValueError, match="root link"):
+        prepare_urdf(read("arm_level.urdf"), spec)
+
+
+def test_another_arms_urdf_refused_against_the_gen3_spec():
+    with pytest.raises(ValueError, match="root link"):
+        prepare_urdf((DATA / "two_link" / "two_link.urdf").read_text(), gen3_spec())
 
 
 def test_the_tilted_mount_matches_the_kinematic_reference():
     # arm_base_joint is the mount: it may differ, nothing below it may
-    prepare_urdf(read("arm_tilt30.urdf"))
+    prepare_urdf(read("arm_tilt30.urdf"), gen3_spec())
 
 
 def test_kinematic_drift_is_refused_by_name():
@@ -1167,7 +1306,7 @@ def test_kinematic_drift_is_refused_by_name():
     ]:
         assert broken != read("arm_level.urdf")
         with pytest.raises(ValueError, match=why):
-            prepare_urdf(broken)
+            prepare_urdf(broken, gen3_spec())
 
 
 def test_kinematic_reference_limit_differences_are_logged_not_refused(caplog):
@@ -1175,19 +1314,32 @@ def test_kinematic_reference_limit_differences_are_logged_not_refused(caplog):
         'lower="-2.57" upper="2.57"', 'lower="-2.6" upper="2.6"'
     )
     with caplog.at_level("WARNING", logger="rammp_curobo"):
-        prepare_urdf(xml)
+        prepare_urdf(xml, gen3_spec())
     assert "'arm_joint_4' limit" in caplog.text
 
 
 def test_robot_config_takes_the_urdf_path(tmp_path, monkeypatch):
     p = write_urdf(read("arm_level.urdf"), tmp_path)
-    kin = load_robot_config("robot_gen3_2f85.yaml", urdf_path=p)["kinematics"]
+    kin = load_robot_config("example:robot_gen3_2f85.yaml", urdf_path=p)["kinematics"]
     assert kin["urdf_path"] == str(p) and kin["asset_root_path"] == str(tmp_path)
     monkeypatch.chdir(tmp_path)
-    kin = load_robot_config("robot_gen3_2f85.yaml", urdf_path=p.name)["kinematics"]
+    kin = load_robot_config("example:robot_gen3_2f85.yaml", urdf_path=p.name)[
+        "kinematics"
+    ]
     assert Path(kin["urdf_path"]).is_absolute() and kin["urdf_path"] == str(p)
+
+
+def test_robot_config_never_reads_the_cwd(tmp_path, monkeypatch):
+    (tmp_path / "robot.yaml").write_text(
+        resolve_config("example:robot_gen3_2f85.yaml").read_text()
+    )
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FileNotFoundError, match="robot.yaml"):
+        load_robot_config(
+            "robot.yaml", urdf_path=write_urdf(read("arm_level.urdf"), tmp_path)
+        )
 
 
 def test_robot_config_without_a_urdf_is_refused():
     with pytest.raises(ValueError, match="/arm/robot_description"):
-        load_robot_config("robot_gen3_2f85.yaml")
+        load_robot_config("example:robot_gen3_2f85.yaml")

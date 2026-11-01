@@ -13,7 +13,7 @@
                            name: the chair's files are one robot's geometry and
                            ship with that robot, not in the package (issue
                            #19), so the sim runs the checkout's copy
-    /rammp_curobo_control  config:=gen3.yaml, which composes no layers: it
+    /rammp_curobo_control  config:=example:gen3.yaml, which composes no layers: it
                            plans in whatever scene a test pushes it, so the
                            same request can be planned without a layer
 
@@ -43,8 +43,8 @@ def planners():
 
     The chair's config is not packaged (issue #19): it is one robot's geometry,
     so it ships with the robot and the sim runs this checkout's copy, by path.
-    The control planner's gen3.yaml is module config and still ships in the
-    image, so it stays a name.
+    The control planner's gen3.yaml is the image's example robot, so it is
+    named `example:gen3.yaml`.
     """
     return (
         ("rammp_curobo", str(stack.chair_config())),

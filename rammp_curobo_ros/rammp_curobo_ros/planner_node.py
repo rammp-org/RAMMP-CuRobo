@@ -44,8 +44,9 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
 from rammp_curobo import PoseConstraint, ViaPoint
-from rammp_curobo.config import load_planner_config
-from rammp_curobo.urdf_model import prepare_urdf, write_urdf
+from rammp_curobo.config import is_example, load_planner_config, resolve_config
+from rammp_curobo.contract import check_robot_dir
+from rammp_curobo.urdf_model import write_urdf
 from rammp_curobo_interfaces.action import Blend, PlanToJoints, PlanToPose
 from rammp_curobo_interfaces.srv import SetWorld
 from rammp_curobo_ros.conversions import trajectory_from_msg, trajectory_to_msg
@@ -81,6 +82,10 @@ def check_start_joints(start_joints, joint_names):
 
 
 ROBOT_DESCRIPTION_TOPIC = "/arm/robot_description"
+# No `config` = the example robot shipped in the image, planned standalone.
+EXAMPLE_CONFIG = "example:gen3.yaml"
+EXAMPLE_URDF = "example:arm_level.urdf"
+EXAMPLE_MARKER = "(example robot)"
 # What robot_state_publisher latches with: a later subscriber still gets it.
 MODEL_QOS = QoSProfile(
     depth=1,
@@ -101,6 +106,25 @@ def planner_config(config, world):
     if world:
         cfg["world"] = world
     return cfg, cfg_dir
+
+
+def _where(path):
+    return "%s (example, image)" % path if is_example(path) else str(path)
+
+
+def robot_data_summary(config, cfg, cfg_dir, model_source):
+    """One line naming where every piece of robot data came from."""
+    layers = [
+        _where(resolve_config(r, relative_to=cfg_dir, search_cwd=False))
+        for r in cfg.get("layers", [])
+    ]
+    return "robot data: config %s, robot file %s, world %s, layers [%s], model %s" % (
+        _where(resolve_config(config)),
+        _where(resolve_config(cfg["robot"], relative_to=cfg_dir, search_cwd=False)),
+        _where(resolve_config(cfg["world"], relative_to=cfg_dir, search_cwd=False)),
+        ", ".join(layers),
+        model_source,
+    )
 
 
 _HOLD_MODES = (
@@ -189,7 +213,15 @@ class RammpCuroboNode(Node):
         super().__init__("rammp_curobo")
         self._cb = ReentrantCallbackGroup()
 
-        self.config = self.declare_parameter("config", "gen3.yaml").value
+        self.config = self.declare_parameter("config", "").value
+        self.example_mode = not self.config
+        if self.example_mode:
+            self.config = EXAMPLE_CONFIG
+            self.get_logger().warning(
+                "=== NO CONFIG GIVEN: running the EXAMPLE robot from the image "
+                "(Gen3 + 2F-85, level mount, world_sim_kitchen). Not your robot: "
+                "pass config:=/config/robot/curobo/planner.yaml. ==="
+            )
         self.world = self.declare_parameter("world", "").value
         # dynamic_typing: `-p robot_description_timeout_s:=3` is an INTEGER,
         # which a DOUBLE-typed declaration refuses with a traceback.
@@ -228,13 +260,30 @@ class RammpCuroboNode(Node):
 
         self._plan_lock = threading.Lock()
 
-        # The model first: no planner and no servers until a valid one is in.
-        model = self._wait_for_model(timeout_s)
         try:
-            xml = prepare_urdf(model)
-        except ValueError as exc:
-            self.get_logger().fatal("model on %s: %s" % (ROBOT_DESCRIPTION_TOPIC, exc))
+            planner_cfg = planner_config(self.config, self.world)
+        except (OSError, ValueError, KeyError) as exc:
+            self.get_logger().fatal("planner config %s: %s" % (self.config, exc))
             raise SystemExit(1)
+        # The model first: no planner and no servers until a valid one is in.
+        # The example robot brings its own, and waits for nothing.
+        if self.example_mode:
+            model = resolve_config(EXAMPLE_URDF).read_text(encoding="utf-8")
+        else:
+            model = self._wait_for_model(timeout_s)
+        try:
+            xml = check_robot_dir(*planner_cfg, model)
+            summary = robot_data_summary(
+                self.config,
+                *planner_cfg,
+                "example" if self.example_mode else "topic",
+            )
+        except (OSError, ValueError, KeyError) as exc:
+            self.get_logger().fatal(
+                "robot data or the model on %s: %s" % (ROBOT_DESCRIPTION_TOPIC, exc)
+            )
+            raise SystemExit(1)
+        self.get_logger().info(summary)
         # Removed in destroy_node; inside the container it dies with it anyway.
         self._model_dir = tempfile.TemporaryDirectory(prefix="rammp_curobo_")
         urdf_path = write_urdf(xml, self._model_dir.name)
@@ -245,13 +294,11 @@ class RammpCuroboNode(Node):
         self.get_logger().info("Loading cuRobo planner (%s)..." % self.config)
         from rammp_curobo import CuRoboPlanner
 
-        self.planner = CuRoboPlanner(
-            *planner_config(self.config, self.world), urdf_path=urdf_path
-        )
+        self.planner = CuRoboPlanner(*planner_cfg, urdf_path=urdf_path)
         self.get_logger().info(
             "model from %s: base %s, ee %s, joints [%s]"
             % (
-                ROBOT_DESCRIPTION_TOPIC,
+                EXAMPLE_URDF if self.example_mode else ROBOT_DESCRIPTION_TOPIC,
                 self.planner.base_frame,
                 self.planner.ee_link,
                 ", ".join(self.planner.joint_names),
@@ -297,8 +344,9 @@ class RammpCuroboNode(Node):
             self.get_logger().warning(
                 "=== Planning against the SIM world (%s) WITHOUT sim time — "
                 "if these plans are for the real arm, relaunch with "
-                "world:=world_real_bench.yaml (MEASURED first; see "
-                "docs/HARDWARE_BRINGUP.md). ===" % world_name
+                "your robot's config (config:=/config/robot/curobo/planner.yaml; "
+                "its world MEASURED first, see docs/HARDWARE_BRINGUP.md). ==="
+                % world_name
             )
 
         self.get_logger().info(
@@ -345,7 +393,8 @@ class RammpCuroboNode(Node):
 
     def _watch_model(self, model):
         """Keep listening on /arm/robot_description, and log an ERROR each
-        time a model other than `model` (the one in use) arrives.
+        time a model other than `model` (the one in use) arrives. In example
+        mode every published model is ignored: one WARN, the first time.
 
         The model in use never changes: the planner, its spheres' links and
         every plan in flight are built on it. A re-measured mount means a
@@ -353,8 +402,18 @@ class RammpCuroboNode(Node):
         own log. The latched copy of `model` itself is not reported.
         """
 
+        warned = []
+
         def check(msg):
-            if msg.data != model:
+            if self.example_mode:
+                if not warned:
+                    warned.append(True)
+                    self.get_logger().warning(
+                        "a robot model is being published on %s, and this "
+                        "planner is IGNORING it: no config was given, so it "
+                        "plans the example robot." % ROBOT_DESCRIPTION_TOPIC
+                    )
+            elif msg.data != model:
                 self.get_logger().error(
                     "a DIFFERENT model was published on %s; this planner is "
                     "still using the one it started with -- restart the "
@@ -364,6 +423,10 @@ class RammpCuroboNode(Node):
         return self.create_subscription(
             String, ROBOT_DESCRIPTION_TOPIC, check, MODEL_QOS
         )
+
+    def _tag(self, message):
+        """`message` with the example marker on the end in example mode."""
+        return message + " " + EXAMPLE_MARKER if self.example_mode else message
 
     # ---------------------------------------------------------------- planning
     def _plan_to_pose_cb(self, goal_handle):
@@ -379,7 +442,7 @@ class RammpCuroboNode(Node):
         constraint, via, why = constraint_from_goal(goal_handle.request)
         if why is not None:
             result.success = False
-            result.message = "invalid constraint: %s" % why
+            result.message = self._tag("invalid constraint: %s" % why)
             goal_handle.abort()
             return result
         res = self._plan(
@@ -395,9 +458,9 @@ class RammpCuroboNode(Node):
         target = list(goal_handle.request.target_joints)
         if len(target) != len(self.planner.joint_names):
             result.success = False
-            result.message = "%d target joints for %d-joint arm" % (
-                len(target),
-                len(self.planner.joint_names),
+            result.message = self._tag(
+                "%d target joints for %d-joint arm"
+                % (len(target), len(self.planner.joint_names))
             )
             goal_handle.abort()
             return result
@@ -419,7 +482,7 @@ class RammpCuroboNode(Node):
         legs, scales, holds, refs, why = legs_from_goal(goal, self.planner.joint_names)
         if why is not None:
             result.success = False
-            result.message = "invalid legs: %s" % why
+            result.message = self._tag("invalid legs: %s" % why)
             goal_handle.abort()
             return result
         # the first leg's start is the plan's: _plan checks it like any start
@@ -456,12 +519,12 @@ class RammpCuroboNode(Node):
     def _finish_plan(self, goal_handle, result, res, speed="at full speed"):
         if res is None:
             result.success = False
-            result.message = "planner busy — one plan at a time"
+            result.message = self._tag("planner busy — one plan at a time")
             goal_handle.abort()
             return result
         if isinstance(res, str):
             result.success = False
-            result.message = res
+            result.message = self._tag(res)
             self.get_logger().error("Goal rejected — " + res)
             goal_handle.abort()
             return result
@@ -475,11 +538,12 @@ class RammpCuroboNode(Node):
             )
             if res.error:
                 result.message += " — warning: " + res.error
+            result.message = self._tag(result.message)
             result.trajectory = trajectory_to_msg(res.joint_traj)
             self.get_logger().info(result.message)
             goal_handle.succeed()
         else:
-            result.message = "%s: %s" % (res.status, res.error)
+            result.message = self._tag("%s: %s" % (res.status, res.error))
             self.get_logger().error("Plan failed — " + result.message)
             goal_handle.abort()
         return result
@@ -492,16 +556,26 @@ class RammpCuroboNode(Node):
     def _set_world_cb(self, request, response):
         with self._plan_lock:
             try:
-                self.planner.update_world(request.world)
+                # resolved as update_world does: next to the config, or example:
+                path = resolve_config(
+                    request.world,
+                    relative_to=self.planner._config_dir,
+                    search_cwd=False,
+                )
+                self.planner.update_world(path)
                 response.success = True
                 # the layers the config adds to every world are in the reply
-                response.message = "world set to %s (%s)" % (
-                    request.world,
-                    self.planner.world_summary(),
+                response.message = self._tag(
+                    "world set to %s%s (%s)"
+                    % (
+                        request.world,
+                        " (example, image)" if is_example(path) else "",
+                        self.planner.world_summary(),
+                    )
                 )
             except Exception as exc:
                 response.success = False
-                response.message = str(exc)
+                response.message = self._tag(str(exc))
         return response
 
 

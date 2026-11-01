@@ -93,7 +93,12 @@ RUN git clone https://github.com/NVlabs/curobo.git /opt/curobo \
     && python3 -m pip install --no-cache-dir --no-build-isolation /opt/curobo
 
 # --- this repo: pip core + the two ament packages ------------------------
-COPY . /opt/rammp_curobo_src
+# Code and the packaged examples only: no tests, scripts, sim or docs. `make
+# verify` mounts the checkout for those.
+COPY core/pyproject.toml core/setup.py core/COLCON_IGNORE /opt/rammp_curobo_src/core/
+COPY core/rammp_curobo/ /opt/rammp_curobo_src/core/rammp_curobo/
+COPY rammp_curobo_interfaces/ /opt/rammp_curobo_src/rammp_curobo_interfaces/
+COPY rammp_curobo_ros/ /opt/rammp_curobo_src/rammp_curobo_ros/
 RUN python3 -m pip install --no-cache-dir --no-build-isolation \
         /opt/rammp_curobo_src/core \
     && . /opt/ros/humble/setup.sh \
@@ -102,9 +107,8 @@ RUN python3 -m pip install --no-cache-dir --no-build-isolation \
         --packages-select rammp_curobo_interfaces rammp_curobo_ros \
     && rm -rf /opt/rammp_curobo_src/build /opt/rammp_curobo_src/log
 
-# The repo's own configs contain non-ASCII characters (degree signs in
-# world_sim_kitchen.yaml comments, lines 183/202/204). Loading that world decodes
-# the file with the ascii codec and dies:
+# Config files contain non-ASCII characters (degree signs in comments, e.g. in
+# world_sim_kitchen.yaml). Loading one decodes the file with the ascii codec and dies:
 #   UnicodeDecodeError: 'ascii' codec can't decode byte 0xe2
 # LANG=C.UTF-8 alone does not prevent it; UTF-8 mode does. Without this,
 # core/tests/test_smoke.py::test_update_world_guards_and_round_trip fails (22/23).
@@ -131,9 +135,12 @@ RUN chmod +x /entrypoint.sh
 # /root/.cache as a named volume to keep them across container restarts.
 ENTRYPOINT ["/entrypoint.sh"]
 # The node itself is PID 1, so the container's exit code is the node's: 1 when
-# no model arrives on /arm/robot_description. `ros2 launch` exits 0 after its
+# the robot's model never arrives on /arm/robot_description, or at once when
+# /config/robot/curobo/planner.yaml is not mounted (the deployment convention:
+# a bare `docker run` never plans the example robot; `docker run <image> example`
+# does, via entrypoint.sh). `ros2 launch` exits 0 after its
 # only process dies, and `ros2 run` as PID 1 ignores docker stop's SIGTERM
 # (killed after 10 s). The node name (rammp_curobo) and use_sim_time=false are
 # the node's own defaults, as in planner.launch.py, which stays for interactive use.
 CMD ["/opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node", \
-     "--ros-args", "-p", "config:=gen3_real.yaml"]
+     "--ros-args", "-p", "config:=/config/robot/curobo/planner.yaml"]
