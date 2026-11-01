@@ -187,6 +187,21 @@ def test_joint_names_that_are_not_the_robot_files_are_listed(tmp_path):
     assert "<ros2_control" not in check_robot_dir(cfg, cdir, URDF)
 
 
+def test_collision_links_the_model_lacks_are_listed(tmp_path):
+    d = _dir(tmp_path)
+    data = yaml.safe_load((d / "robot.yaml").read_text())
+    kin = data["robot_cfg"]["kinematics"]
+    kin["collision_link_names"][1] = "arm_shoulder_lnik"
+    kin["collision_spheres"]["arm_wrist_lnik"] = [
+        {"center": [0.0, 0.0, 0.0], "radius": 0.05}
+    ]
+    (d / "robot.yaml").write_text(yaml.safe_dump(data))
+    with pytest.raises(RobotDataError) as e:
+        _check(d)
+    assert len(e.value.problems) == 1
+    assert "arm_shoulder_lnik" in str(e.value) and "arm_wrist_lnik" in str(e.value)
+
+
 def test_the_examples_urdf_is_the_fixtures_copy():
     assert (EXAMPLE_DIR / "arm_level.urdf").read_bytes() == (
         DATA / "arm_level.urdf"

@@ -97,7 +97,8 @@ the URDF together and raises **one** `RobotDataError` (a `ValueError`) whose
 pass: a missing file, a missing robot-file field, a world whose `base_frame`
 is not the robot's root link, a layer generated for more padding than
 configured (or an invalid box, a duplicate name, a world over the box cache),
-a URDF missing the root or tool link or a joint the robot file names, a URDF
+a URDF missing the root or tool link, a joint the robot file names or a link
+it puts collision spheres on, a URDF
 whose joints below `arm_base_link` drift from the kinematics reference (1 mm,
 0.1 deg, structure, joint set), a moving joint with no `<limit>` that follows
 no other. The node logs it FATAL ("robot data or the model on /arm/robot_description:

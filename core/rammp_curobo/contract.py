@@ -8,6 +8,8 @@ finds, so a bad deployment is fixed in one pass, not one restart per fault.
 Pure Python: nothing here imports cuRobo, torch or ROS.
 """
 
+import xml.etree.ElementTree as ET
+
 import yaml
 
 from rammp_curobo.config import resolve_config
@@ -74,6 +76,23 @@ def _check_robot_file_fields(cfg, robot_path, spec):
         )
 
 
+def _check_collision_links(robot_path, urdf_xml):
+    """The links the robot file puts collision spheres on, against the model's
+    links: a link the model lacks would otherwise fail inside cuRobo."""
+    with open(robot_path, "r", encoding="utf-8") as f:
+        kin = yaml.safe_load(f)["robot_cfg"]["kinematics"]
+    spheres = kin.get("collision_spheres")
+    named = set(kin.get("collision_link_names") or [])
+    named |= set(spheres) if isinstance(spheres, dict) else set()
+    links = {link.get("name") for link in ET.fromstring(urdf_xml).findall("link")}
+    missing = sorted(named - links)
+    if missing:
+        raise ValueError(
+            "robot file %s puts collision spheres on links the robot model "
+            "does not have: %s" % (robot_path, ", ".join(missing))
+        )
+
+
 def check_robot_dir(cfg, cfg_dir, urdf_xml):
     """Planner config `cfg` (from `cfg_dir`) and the model text `urdf_xml` ->
     the sanitised URDF text, or RobotDataError listing every problem."""
@@ -126,6 +145,8 @@ def check_robot_dir(cfg, cfg_dir, urdf_xml):
     xml = None
     if spec:
         xml = attempt(lambda: prepare_urdf(urdf_xml, spec))
+    if xml:
+        attempt(lambda: _check_collision_links(robot_path, xml))
     if problems:
         raise RobotDataError(cfg_dir, problems)
     return xml
