@@ -482,7 +482,7 @@ class RammpCuroboNode(Node):
         legs, scales, holds, refs, why = legs_from_goal(goal, self.planner.joint_names)
         if why is not None:
             result.success = False
-            result.message = "invalid legs: %s" % why
+            result.message = self._tag("invalid legs: %s" % why)
             goal_handle.abort()
             return result
         # the first leg's start is the plan's: _plan checks it like any start

@@ -13,6 +13,7 @@ rclpy = pytest.importorskip("rclpy", reason="ROS 2 not sourced")
 from std_msgs.msg import String  # noqa: E402
 
 import rammp_curobo  # noqa: E402
+from rammp_curobo_interfaces.action import Blend  # noqa: E402
 from rammp_curobo_interfaces.srv import SetWorld  # noqa: E402
 
 from rammp_curobo_ros import planner_node  # noqa: E402
@@ -122,6 +123,17 @@ def test_results_and_set_world_replies_carry_the_marker(make_node):
         SetWorld.Request(world="example:world_empty.yaml"), SetWorld.Response()
     )
     assert not bad.success and bad.message == "refused " + EXAMPLE_MARKER
+
+
+def test_a_refused_blend_goal_carries_the_marker(make_node):
+    class _Handle:
+        request = Blend.Goal()  # no legs
+
+        def abort(self):
+            pass
+
+    res = make_node()._blend_cb(_Handle())
+    assert not res.success and res.message == "invalid legs: no legs " + EXAMPLE_MARKER
 
 
 def test_set_world_never_reads_the_cwd(make_node, tmp_path, monkeypatch):
