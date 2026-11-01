@@ -22,8 +22,10 @@ else running, for development and demos.
 - The contract — which files a robot supplies, and which fields — is defined
   by the planner: written down in one doc, and enforced at startup by one
   check that lists every problem it finds, not just the first.
-- `docker run ghcr.io/rammp-org/rammp-curobo:<tag>` with no arguments plans,
-  with no `arm_state_publisher`, no deployment checkout and no robot.
+- `docker run ghcr.io/rammp-org/rammp-curobo:<tag> example` plans, with no
+  `arm_state_publisher`, no deployment checkout and no robot. (Changed
+  2026-10-28: a bare `docker run` plans `/config/robot/curobo/planner.yaml`,
+  and stops naming it when nothing is mounted.)
 - The startup log names where each piece came from (example in the image, or
   a path under `/config/robot`), so running the example on a robot is visible
   in its first lines.
