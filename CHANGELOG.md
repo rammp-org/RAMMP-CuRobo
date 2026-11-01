@@ -85,9 +85,7 @@ that first. See `docker/README.md` for the manifest.
   `make verify` mounts the checkout's tests and runs them against the image's
   package.
 
-Added: `docs/ROBOT_DATA.md`; `scripts/behavior_snapshot.py`, which records
-what the planner computes and what it hands cuRobo and compares two records
-(`IDENTICAL`): a named config plans exactly as before this change.
+Added: `docs/ROBOT_DATA.md`.
 
 The version bump (to 2.0.0) happens at release.
 

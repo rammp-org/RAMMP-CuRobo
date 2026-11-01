@@ -1329,6 +1329,17 @@ def test_robot_config_takes_the_urdf_path(tmp_path, monkeypatch):
     assert Path(kin["urdf_path"]).is_absolute() and kin["urdf_path"] == str(p)
 
 
+def test_robot_config_never_reads_the_cwd(tmp_path, monkeypatch):
+    (tmp_path / "robot.yaml").write_text(
+        resolve_config("example:robot_gen3_2f85.yaml").read_text()
+    )
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FileNotFoundError, match="robot.yaml"):
+        load_robot_config(
+            "robot.yaml", urdf_path=write_urdf(read("arm_level.urdf"), tmp_path)
+        )
+
+
 def test_robot_config_without_a_urdf_is_refused():
     with pytest.raises(ValueError, match="/arm/robot_description"):
         load_robot_config("example:robot_gen3_2f85.yaml")

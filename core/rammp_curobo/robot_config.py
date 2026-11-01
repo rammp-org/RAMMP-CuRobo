@@ -100,7 +100,7 @@ def load_robot_config(path, urdf_path=None):
     replaces the YAML's urdf_path, and its directory the asset root.
     """
     # UTF-8 whatever the locale: the baked config has non-ASCII comments
-    with open(resolve_config(path), "r", encoding="utf-8") as f:
+    with open(resolve_config(path, search_cwd=False), "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)["robot_cfg"]
     kin = cfg["kinematics"]
 

@@ -1169,7 +1169,7 @@ def premise(path):
 premise(sys.argv[2])
 for path in sys.argv[2:]:
     cfg, folder = load_planner_config(path)
-    robot = resolve_config(cfg["robot"], relative_to=folder)
+    robot = resolve_config(cfg["robot"], relative_to=folder, search_cwd=False)
     premise(robot)
     ee_link = load_robot_config(robot, urdf_path=sys.argv[1])["kinematics"]["ee_link"]
     scene = load_scene(resolve_config(cfg["world"], relative_to=folder), 'arm_mount')
@@ -1982,7 +1982,7 @@ def test_chair_config_composes_within_the_cache():
     # scripts/mebot_layers.yaml names, so another robot YAML voids both
     inputs = Path(__file__).resolve().parents[2] / "scripts" / "mebot_layers.yaml"
     keep_out = yaml.safe_load(inputs.read_text(encoding="utf-8"))["keep_out"]
-    robot = resolve_config(cfg["robot"], relative_to=folder)
+    robot = resolve_config(cfg["robot"], relative_to=folder, search_cwd=False)
     assert robot == resolve_config(
         keep_out["robot_config"], relative_to=inputs.parent, search_cwd=False
     )
