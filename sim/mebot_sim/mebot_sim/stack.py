@@ -257,11 +257,11 @@ def worlds():
     """What a request can be planned in: {key: (planner, world to push,
     what the planner then sees)}."""
     return {
-        "all": (CHAIR, CHAIR_WORLD, "floor, platform, person"),
+        "all": (CHAIR, CHAIR_WORLD, "floor, platform, seat, person"),
         "no_person": (
             CONTROL,
             str(config("control_floor_platform.yaml")),
-            "floor, platform",
+            "floor, platform, seat",
         ),
         "floor_only": (CONTROL, str(config("control_floor.yaml")), "floor"),
     }

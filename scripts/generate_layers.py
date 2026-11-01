@@ -645,12 +645,19 @@ def _platform(data, primitives, spheres):
 
 # ---------------------------------------------------------------------- person
 def _person_segments(data):
-    """The occupant's three segments in the mebot frame, metres: (name, lo, hi).
+    """The occupant's segments in the mebot frame, metres: (name, lo, hi).
 
     Each size is the one, over every occupant the layer holds, that puts the
     faces it sets furthest out (scripts/mebot_layers.yaml says which): the
     back of the knees takes the shortest thigh, every other face the largest
-    size. The margin then goes on every face.
+    size. The margin then goes on every face. The segments follow the body:
+    hips as wide as the hips up to the lowest elbow, a torso as wide as the
+    shoulders (the upper arms) from there up to the chin (a head length
+    below the top), a head above it, thighs and legs at hip width, and
+    forearms at elbow height out to the fingertips, an elbow-to-fingertip
+    length ahead of the back. The forearms are as wide as the shoulders on
+    the armrest's side, and as the hips on the arm's (`person.arm_side`, +1
+    for +y), where there is no armrest and a forearm rests on the thigh.
     """
     person = data["person"]
     size = {key: row["inches"] * INCH for key, row in person["ansur_in"].items()}
@@ -669,41 +676,88 @@ def _person_segments(data):
     if not 0 <= m < math.inf:
         raise ValueError("person margin_m must be a finite number >= 0, got %s" % m)
     pan, centre = seat["pan_top_z"], seat["centreline_y"]
+    # Three faces are set by a difference or a floor, which the small end of
+    # a size puts furthest out: `<key>_low` is that end, and an occupant of
+    # one size each (the tests') is its own low end.
+    low = {k: size.get(k + "_low", size[k]) for k in size}
     # The backrest face is somewhere in this range. The chest, the knees and
-    # the feet take its front end and the back of the knees its rear end, so
-    # the segments hold the occupant wherever in the range the face is.
-    # Sorted: written front first, the range would shrink every segment.
+    # the feet take its front end and the back and the back of the knees its
+    # rear end, so the segments hold the occupant wherever in the range the
+    # face is. Sorted: written front first, the range would shrink every
+    # segment.
     back_min, back_max = sorted(seat["backrest_face_x"])
     shoulder = size["shoulder_breadth_bideltoid"] / 2
     hip = size["hip_breadth"] / 2
+    head = size["head_breadth"] / 2
     chest_front = back_max + max(size["abdominal_depth"], size["chest_depth"]) + m
-    # thighs, or forearms resting on them or on the armrests
-    lap_height = max(
-        size["thigh_clearance"], size["sitting_elbow_height"] + size["hand_breadth"]
-    )
+    # The chin: the torso goes up to the highest one (the tallest sitter's,
+    # with the shortest head), the shoulders' tops (which rise above the
+    # acromion, ANSUR's shoulder point) and the neck included; the head comes
+    # down to the lowest (the shortest sitter's, with the longest head)
+    chin_high = pan + size["sitting_height"] - low["head_length"]
+    chin_low = pan + low["sitting_height"] - size["head_length"]
+    # below the lowest elbow there are no upper arms: the hips' width
+    elbow_low = pan + low["sitting_elbow_height"]
+    # the forearms' y faces: the hips' on the arm's side, the shoulders' on
+    # the other
+    side = person["arm_side"]
+    reach = {side: hip, -side: shoulder}
+    knees = back_max + size["buttock_knee_length"] + m
+    elbows = pan + size["sitting_elbow_height"]
     return [
         (
-            "torso_head",
-            [seat["backrest_rear_x"] - m, centre - shoulder - m, pan - m],
-            [chest_front, centre + shoulder + m, pan + size["sitting_height"] + m],
+            "hips",
+            [back_min - m, centre - hip - m, pan - m],
+            [chest_front, centre + hip + m, elbow_low - m],
         ),
         (
-            "lap",
-            [chest_front, centre - shoulder - m, pan - m],
+            "torso",
+            [back_min - m, centre - shoulder - m, elbow_low - m],
+            [chest_front, centre + shoulder + m, chin_high + m],
+        ),
+        # The head, above the chin: from the back out to half its length past
+        # the chest's front, which holds it leant forward
+        (
+            "head",
+            [back_min - m, centre - head - m, chin_low - m],
             [
-                back_max + size["buttock_knee_length"] + m,
-                centre + shoulder + m,
-                pan + lap_height + m,
+                chest_front + size["head_length"] / 2,
+                centre + head + m,
+                pan + size["sitting_height"] + m,
             ],
         ),
-        # Lower legs and feet: below the pan, from the back of the knee to the
-        # front of the knee plus a foot. The shorter the thigh, the nearer the
-        # seat the shins hang, so the back face is the shortest thigh's. Its
-        # top is the others' bottom face.
+        # Thighs, from the chest's front to the knees: behind it the torso
+        # holds them
+        (
+            "thighs",
+            [chest_front, centre - hip - m, pan - m],
+            [knees, centre + hip + m, pan + size["thigh_clearance"] + m],
+        ),
+        # Forearms, from the thinnest thighs' top up to a hand breadth over
+        # the elbows: resting on the thighs or on the armrests, or reaching
+        # forward, from the back out to the fingertips (a narrow chest's
+        # forearms start behind a deep chest's front, beside the hips)
+        (
+            "forearms",
+            [back_min - m, centre - reach[-1] - m, pan + low["thigh_clearance"] - m],
+            [
+                back_max + size["elbow_fingertip_length"] + m,
+                centre + reach[1] + m,
+                elbows + size["hand_breadth"] + m,
+            ],
+        ),
+        # Lower legs and feet: below the pan, from half a foot behind the back
+        # of the knee (feet tucked under it) to the front of the knee plus a
+        # foot. The shorter the thigh, the nearer the seat the shins hang, so
+        # the back face is the shortest thigh's. Its top is the others' bottom
+        # face.
         (
             "legs",
             [
-                back_min + size["buttock_popliteal_length"] - m,
+                back_min
+                + size["buttock_popliteal_length"]
+                - size["foot_length"] / 2
+                - m,
                 centre - hip - m,
                 pan - size["popliteal_height"] - m,
             ],
@@ -736,33 +790,69 @@ def subtract(box, cut):
     return pieces
 
 
-def _person(data, spheres):
-    mount = data["mount"]["arm_base_in_mebot"]["position"]
-    reach = data["padding_assumed_m"] + data["keep_out_margin_m"]
-    # The column no person box may enter: the fixed spheres' bounding box, out
-    # to where a padded box would still clear them by the margin. A person
-    # cannot occupy the arm's base, and a padded box there would make every
-    # state a collision. It stops at the column's top: a full-height corridor
-    # would under-size the person exactly where the arm works.
-    column = _snap(
+def _column(data, spheres, margin=None):
+    """The column no person or seat box may enter, ticks: the fixed spheres'
+    bounding box, out to where a padded box would still clear them by
+    `margin` (default keep_out_margin_m). Neither can occupy the arm's base,
+    and a padded box there would make every state a collision. It stops at
+    the column's top: a full-height corridor would under-size them exactly
+    where the arm works."""
+    margin = data["keep_out_margin_m"] if margin is None else margin
+    reach = data["padding_assumed_m"] + margin
+    return _snap(
         [min(c[k] - r for c, r, _ in spheres) - reach for k in range(3)],
         [max(c[k] + r for c, r, _ in spheres) + reach for k in range(3)],
     )
+
+
+def _carved(name, whole, column):
+    """`whole` (ticks) less `column`, as named boxes: `name`, or `name_<k>`
+    for each piece when the column cuts it."""
+    pieces = subtract(whole, column)
+    return [
+        {"name": name if len(pieces) == 1 else "%s_%d" % (name, k), "box": piece}
+        for k, piece in enumerate(pieces)
+    ]
+
+
+def _person(data, spheres):
+    mount = data["mount"]["arm_base_in_mebot"]["position"]
+    column = _column(data, spheres)
     envelope, boxes = [], []
     for name, lo, hi in _person_segments(data):
         whole = _snap(
             [v - o for v, o in zip(lo, mount)], [v - o for v, o in zip(hi, mount)]
         )
         envelope.append((name, whole))
-        pieces = subtract(whole, column)
-        for k, piece in enumerate(pieces):
-            piece_name = name if len(pieces) == 1 else "%s_%d" % (name, k)
-            boxes.append({"name": piece_name, "box": piece})
+        boxes += _carved(name, whole, column)
     envelope_union, _, _ = union_stats([box for _, box in envelope])
     union, total, _ = union_stats([b["box"] for b in boxes])
     return {
         "column": column,
         "envelope": envelope,
+        "boxes": sorted(boxes, key=lambda b: b["name"]),
+        "envelope_union": envelope_union,
+        "union": union,
+        "total": total,
+    }
+
+
+# ------------------------------------------------------------------------ seat
+def _seat(data, spheres):
+    """The seat's parts as the data gives them, mebot frame [lo, hi], placed
+    in arm_mount and carved around the arm's fixed spheres as the person is."""
+    mount = data["mount"]["arm_base_in_mebot"]["position"]
+    column = _column(data, spheres, data["seat"]["keep_out_margin_m"])
+    envelope, boxes = [], []
+    for name, (lo, hi) in sorted(data["seat"]["boxes"].items()):
+        whole = _snap(
+            [v - o for v, o in zip(lo, mount)], [v - o for v, o in zip(hi, mount)]
+        )
+        envelope.append((name, whole))
+        boxes += _carved(name, whole, column)
+    envelope_union, _, _ = union_stats([box for _, box in envelope])
+    union, total, _ = union_stats([b["box"] for b in boxes])
+    return {
         "boxes": sorted(boxes, key=lambda b: b["name"]),
         "envelope_union": envelope_union,
         "union": union,
@@ -877,7 +967,10 @@ def _platform_text(data, layer):
 
 def _person_text(data, layer):
     person = data["person"]
-    rows = sorted(person["ansur_in"].items(), key=lambda item: item[1]["row"])
+    # by row, then name: a size and its `_low` end share a row
+    rows = sorted(
+        person["ansur_in"].items(), key=lambda item: (item[1]["row"], item[0])
+    )
     seat = ("pan_top_z", "backrest_face_x", "backrest_rear_x", "centreline_y")
     meta = _frame_meta(data)
     meta += ["keep_out_margin_m: %s" % data["keep_out_margin_m"], "ansur_in:"]
@@ -901,6 +994,29 @@ def _person_text(data, layer):
         " arm's fixed spheres."
     )
     return _layer_text("person", True, about, meta, layer["boxes"])
+
+
+def _seat_text(data, layer):
+    meta = _frame_meta(data)
+    meta += ["keep_out_margin_m: %s" % data["seat"]["keep_out_margin_m"], "parts:"]
+    meta += [
+        "  %s: [[%s], [%s]]"
+        % (name, ", ".join("%s" % v for v in lo), ", ".join("%s" % v for v in hi))
+        for name, (lo, hi) in sorted(data["seat"]["boxes"].items())
+    ]
+    meta += [
+        "volumes:",
+        "  parts_m3: %s" % _m3(layer["envelope_union"]),
+        "  layer_m3: %s" % _m3(layer["union"]),
+        "  carved_m3: %s" % _m3(layer["envelope_union"] - layer["union"]),
+        "keep_out_clearance_m: %.4f" % layer["clearance_m"],
+    ]
+    about = (
+        "The MEBot's seat: base, backrest and the joystick-side armrest, from the"
+        " RAMMS seat asset's collision hulls, carved around the arm's fixed"
+        " spheres."
+    )
+    return _layer_text("seat", False, about, meta, layer["boxes"])
 
 
 def _floor_text(data, layer):
@@ -965,6 +1081,16 @@ def generate(data, urdf_bytes, perturb=0.0):
             "mount arm_base_joint rpy_deg must be three finite angles, got %s" % tilt
         )
     mount = data["mount"]["arm_base_in_mebot"]
+    # The person's arm side is data the segments read; the mount says where
+    # the arm is. A disagreement would narrow the forearms on the armrest's
+    # side, where they rest wide.
+    side = data["person"]["arm_side"]
+    offset = mount["position"][1] - data["person"]["seat"]["centreline_y"]
+    if side not in (1, -1) or side * offset <= 0:
+        raise ValueError(
+            "person arm_side %r must be +1 or -1, the side of the centreline the"
+            " mount is on (its y is %s)" % (side, mount["position"][1])
+        )
     if any(mount["rpy_deg"]):
         raise ValueError(
             "mount rpy_deg %s is not supported: the boxes are axis-aligned in"
@@ -987,6 +1113,7 @@ def generate(data, urdf_bytes, perturb=0.0):
     result = {
         "platform": _platform(data, primitives, spheres),
         "person": _person(data, spheres),
+        "seat": _seat(data, spheres),
         "floor": _floor(data, primitives),
     }
     pad, gate = data["padding_assumed_m"], data["keep_out"]["min_clearance_m"]
@@ -1013,7 +1140,12 @@ def generate(data, urdf_bytes, perturb=0.0):
                 % (name, nearest, pad, layer["clearance_m"] * 1e3, gate * 1e3)
             )
 
-    texts = {"platform": _platform_text, "person": _person_text, "floor": _floor_text}
+    texts = {
+        "platform": _platform_text,
+        "person": _person_text,
+        "seat": _seat_text,
+        "floor": _floor_text,
+    }
     result["files"] = {}
     for name, text_of in texts.items():
         text = text_of(data, result[name])
@@ -1074,6 +1206,14 @@ def _report(data, result, origin):
             _m3(person["total"] - person["union"]),
         ),
         "  keep-out: %.1f mm" % (person["clearance_m"] * 1e3),
+        "seat: %d boxes; parts %s m3, layer %s m3, carved %s m3"
+        % (
+            len(result["seat"]["boxes"]),
+            _m3(result["seat"]["envelope_union"]),
+            _m3(result["seat"]["union"]),
+            _m3(result["seat"]["envelope_union"] - result["seat"]["union"]),
+        ),
+        "  keep-out: %.1f mm" % (result["seat"]["clearance_m"] * 1e3),
         "floor: top at %s m" % _decimal(floor["boxes"][0]["box"][1][2], 4),
         "  keep-out: %.1f mm" % (floor["clearance_m"] * 1e3),
     ]

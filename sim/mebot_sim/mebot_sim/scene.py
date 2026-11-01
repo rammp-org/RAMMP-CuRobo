@@ -36,6 +36,7 @@ GRIPPER_QUAT = [0.0, 0.0, 1.0, 0.0]
 OVERLAY_RGBA = {
     "platform": [0.15, 0.45, 1.0, 0.2],
     "person": [1.0, 0.55, 0.05, 0.2],
+    "seat": [0.6, 0.3, 0.9, 0.2],
     "floor": [0.55, 0.55, 0.55, 0.2],
 }
 MEBOT_RGBA = [0.25, 0.27, 0.32, 1.0]
@@ -223,6 +224,17 @@ def build(assets, posture, offscreen=(960, 720)):
     world = spec.worldbody
     mebot = world.add_frame(pos=list(-assets.mount), quat=[1.0, 0.0, 0.0, 0.0])
     mebot.attach_body(mebot_spec(assets.urdf).body("mebot"), "mebot/", "")
+    # The seat, which the drive base's URDF does not have: its layer's boxes,
+    # unpadded, are all that is known of it, so they are its true shape here.
+    # Under a mebot/ body, so that an arm meeting it meets the wheelchair
+    seat = world.add_body(name="mebot/seat")
+    for o in assets.layers["seat"].obstacles:
+        seat.add_geom(
+            name="seat/" + o.name,
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=[d / 2 for d in o.dims],
+            pos=list(o.position),
+        )
     for body in spec.bodies:
         if body.name.startswith("mebot/"):
             for geom in body.geoms:

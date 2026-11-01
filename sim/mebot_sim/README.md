@@ -79,7 +79,7 @@ Demo-Software clone or GitHub; cuRobo v0.7.8 on the GPU for the planners.
 | Scenario | What runs                                                                                                                                                                                                                       | Gates  |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
 | S0       | `check_layers`, no planning: MuJoCo's parse of the URDF against the committed platform boxes, and the stand-in at three sizes, in three postures, its back at each end of the backrest's range, against the padded person layer | G0, G1 |
-| S1       | 3 platform pairs, the chair empty. With the floor and the platform, the control planner refuses each or flies it clear; with the floor alone it plans it, and the flight hits the MEBot                                         | G2, G3 |
+| S1       | 3 platform pairs, the chair empty. With the floor, the platform and the seat, the control planner refuses each or flies it clear; with the floor alone it plans it, and the flight hits the MEBot (drive base or seat)          | G2, G3 |
 | S2       | 3 person pairs, the stand-in seated: the chair planner refuses each or flies it clear; the control planner, with the floor and the platform, plans it, and the flight hits the stand-in                                         | G2, G3 |
 | S3       | 8 joint goals from one start on the chair planner: every flight clear, and at least `min_chair_reaches` of them planned and flown                                                                                               | G2, G7 |
 | S4       | a consumer's push to the chair planner, `config/consumer_world.yaml` (8 boxes, no layers); then the S2 requests again                                                                                                           | G4, G2 |
@@ -177,7 +177,7 @@ as the planner summed it up in its reply to the push, its boxes by the
 layers they come from:
 
 ```text
-/rammp_curobo (26 boxes: scene 0 | config layers: platform 16, person 9 | scene layers: floor 1)
+/rammp_curobo (30 boxes: scene 0 | config layers: platform 16, seat 5, person 8 | scene layers: floor 1)
 ```
 
 Then each gate's verdict, the reported numbers, and the result file:
@@ -204,7 +204,7 @@ The suite holds the planners to the layer files, not to what a planner
 config lists. A chair config that drops the person layer is no stale
 request but a regression, and the gates catch it: tried on a scratch copy,
 the person-pair and reach flights hit the stand-in (G2), the push's reply
-lacks `person 8` (G4), and the retract plans (G5).
+lacks `person 8` (G4), and the plan from inside the person plans (G5).
 
 ## Files
 
