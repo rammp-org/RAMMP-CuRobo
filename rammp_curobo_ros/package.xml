@@ -16,7 +16,6 @@
   <depend>trajectory_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>builtin_interfaces</depend>
-  <depend>std_msgs</depend>
   <exec_depend>python3-yaml</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
