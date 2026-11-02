@@ -12,6 +12,13 @@ that heading to the new version and bumps the five places the number lives.
 
 ## [Unreleased]
 
+### Added
+
+- `/reset` (`std_msgs/Empty`, the ROS-wide convention) returns the planner to
+  its launch state: the launch world, with any world a node pushed through
+  `set_world` dropped, and reseeded cuRobo solvers (#54). Core API:
+  `CuRoboPlanner.reset(world=None)`.
+
 ## [1.1.0] — 2026-10-02
 
 ### Added

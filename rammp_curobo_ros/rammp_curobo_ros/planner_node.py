@@ -7,6 +7,9 @@ Actions (node name rammp_curobo):
     /rammp_curobo/plan_to_joints      rammp_curobo_interfaces/PlanToJoints
 Services:
     /rammp_curobo/set_world           rammp_curobo_interfaces/srv/SetWorld
+Subscriptions:
+    /reset                            std_msgs/Empty — back to the launch
+                                      world and fresh cuRobo seeds
 
 World in, plan out. This node NEVER interacts with the arm: it holds no
 driver, no controller client, no gripper client, and no /joint_states
@@ -29,6 +32,7 @@ from rclpy.action import ActionServer
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from std_msgs.msg import Empty
 
 from rammp_curobo import PoseConstraint, ViaPoint
 from rammp_curobo_interfaces.action import PlanToJoints, PlanToPose
@@ -159,6 +163,10 @@ class RammpCuroboNode(Node):
         self.create_service(
             SetWorld, "~/set_world", self._set_world_cb, callback_group=self._cb
         )
+        # The ROS-wide reset convention: a global topic, not ~/reset.
+        self.create_subscription(
+            Empty, "/reset", self._reset_cb, 10, callback_group=self._cb
+        )
 
         # Real-arm misconfiguration tripwire: without sim time this node is
         # presumably planning for the REAL Gen3, and the sim kitchen's
@@ -284,6 +292,18 @@ class RammpCuroboNode(Node):
                 response.success = False
                 response.message = str(exc)
         return response
+
+    def _reset_cb(self, _msg):
+        # Waits out an in-flight plan rather than resetting under it.
+        with self._plan_lock:
+            try:
+                self.planner.reset(self.world or None)
+            except Exception as exc:
+                self.get_logger().error("Reset failed — %s" % exc)
+                return
+        self.get_logger().info(
+            "Planner reset — world %s" % (self.world or self.planner.world_name)
+        )
 
 
 def main(args=None):

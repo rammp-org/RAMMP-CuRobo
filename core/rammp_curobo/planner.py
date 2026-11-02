@@ -438,6 +438,18 @@ class CuRoboPlanner:
             " (ignoring: %s)" % ", ".join(sorted(ignore)) if ignore else "",
         )
 
+    def reset(self, world=None):
+        """Back to a deterministic, as-constructed planning state.
+
+        Restores `world` (default: the configured world), drops any pose
+        cost metric a plan left behind, and reseeds cuRobo's random
+        generators, so the same request plans the same trajectory as it
+        did after construction. The robot model and warmed kernels stay.
+        """
+        self.update_world(self.world_name if world is None else world)
+        self._reset_pose_cost_metric()
+        self._motion_gen.reset(reset_seed=True)
+
     # ----------------------------------------------------------------- queries
     @property
     def scene(self):
