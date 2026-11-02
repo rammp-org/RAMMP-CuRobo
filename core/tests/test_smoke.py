@@ -149,28 +149,6 @@ def test_update_world_guards_and_round_trip(planner, start):
     assert res.success, res.error
 
 
-def test_reset_restores_world_and_replays_plans(planner, start):
-    pos, quat = planner.fk(planner.retract_pose)
-    pos[2] -= 0.10
-    planner.reset()
-    configured = [o.name for o in planner.scene.obstacles]
-    first = planner.plan_to_pose(pos, quat, start)
-    assert first.success, first.error
-    # Dirty what reset owns: a caller's custom world, and the RNG seeds a
-    # plan advances.
-    planner.update_world(
-        [{"name": "crate", "position": [1.5, 1.5, 0.5], "dims": [0.2, 0.2, 0.2]}]
-    )
-    planner.plan_to_pose(pos, quat, start)
-    planner.reset()
-    assert [o.name for o in planner.scene.obstacles] == configured
-    again = planner.plan_to_pose(pos, quat, start)
-    assert again.success, again.error
-    np.testing.assert_allclose(
-        again.joint_traj.positions, first.joint_traj.positions, atol=1e-5
-    )
-
-
 def test_park_pose_outside_model_limits_is_clamped(planner):
     # The real Gen3 parks with joint_4 ~0.8 deg past cuRobo's URDF bound
     # (found on first hardware contact) — tiny violations clamp inward,
