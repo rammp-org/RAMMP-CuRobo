@@ -120,6 +120,8 @@ The planning-side rules still apply throughout:
 - Keep `world_real_bench.yaml` matching reality (step 1) — obstacles are
   measured and edited by hand, or pushed live from another module via
   `/rammp_curobo/set_world`. A plan is only as safe as the world it dodged.
+  Any `std_msgs/Empty` on the global `/reset` topic drops a pushed world back
+  to the launch world file, so re-push after a reset.
 - Cartesian goals only AFTER the world file has been validated against
   reality, and never near surfaces on the first day.
 - Plans come back at full cuRobo time-parameterization. Anything slower is

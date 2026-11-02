@@ -82,7 +82,9 @@ status:
 collision world. Publishing `std_msgs/Empty` on `/reset` puts the planner back
 to its launch state: the launch world (dropping anything a node pushed through
 `set_world`) and freshly reseeded cuRobo solvers. A reset waits for an in-flight
-plan to finish. There is nothing here that can move an arm.
+plan to finish. `/reset` is global, so any node on the graph that publishes it
+drops your pushed world too: if you rely on `set_world`, push it again after a
+reset. There is nothing here that can move an arm.
 
 ## Adopting into a RAMMP module
 
