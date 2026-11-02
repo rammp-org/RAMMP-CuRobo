@@ -1348,3 +1348,65 @@ def test_blend_legs_joins_a_held_leg_and_a_slower_free_one(planner, start):
     # the free leg at half its speed takes twice as long; the overlap shortens
     # only the held leg
     assert traj.duration >= 2 * free.joint_traj.duration - traj.dt
+
+
+def _no_disk(monkeypatch):
+    """A reset restores the world as loaded at boot: a file edited since
+    then must not leak in, so reading one fails the test."""
+
+    def fail(*_a, **_k):
+        raise AssertionError("reset re-read a world or layer file")
+
+    monkeypatch.setattr("rammp_curobo.planner.load_scene", fail)
+    monkeypatch.setattr("rammp_curobo.planner.load_layers", fail)
+
+
+def test_reset_restores_the_boot_world(planner, start, monkeypatch):
+    # Plans after a reset are not pinned: cuRobo is not bit-for-bit
+    # repeatable on the GPU (two reset->plan runs of one request differ by
+    # ~1e-3 rad in about one full-suite run in six).
+    booted = planner.world_boxes
+    pos, quat = planner.fk(planner.retract_pose)
+    pos[2] -= 0.10
+    planner.update_world([FAR])
+    planner.plan_to_pose(pos, quat, start)
+    _no_disk(monkeypatch)
+    planner.reset()
+    assert planner.world_boxes == booted
+    _check_read_back(planner)
+    res = planner.plan_to_pose(pos, quat, start)
+    assert res.success, res.error
+
+
+def test_reset_brings_back_every_layer_loaded_at_boot(chair_planner, monkeypatch):
+    booted = chair_planner.world_boxes
+    layers = {box["layer"] for box in booted}
+    assert {"floor", "person", "platform", "seat"} <= layers, layers
+    # a push drops the world file's floor, and ignore drops the person
+    chair_planner.update_world([FAR], ignore={"person"})
+    pushed = {box["layer"] for box in chair_planner.world_boxes}
+    assert "floor" not in pushed and "person" not in pushed, pushed
+    _no_disk(monkeypatch)
+    chair_planner.reset()
+    assert chair_planner.world_boxes == booted
+    _check_read_back(chair_planner)
+
+
+def test_reset_to_an_empty_boot_world_empties_cuRobo(urdf_level, tmp_path):
+    # update_world refuses an empty world (cuRobo would keep the old one),
+    # so a reset to one has to empty cuRobo's box cache itself.
+    cfg = yaml.safe_load(resolve_config("example:gen3.yaml").read_text())
+    cfg["robot"] = "example:" + cfg["robot"]  # the copy sits in tmp_path
+    cfg["world"] = "example:world_empty.yaml"
+    path = tmp_path / "gen3_empty.yaml"
+    path.write_text(yaml.safe_dump(cfg))
+    empty = CuRoboPlanner.from_config(str(path), urdf_path=urdf_level)
+    pos, _ = empty.fk(empty.retract_pose)
+    empty.update_world([{"name": "block", "position": pos, "dims": [0.3, 0.3, 0.3]}])
+    assert not empty.check_state_valid(empty.retract_pose)[0]
+    empty.reset()
+    assert empty.world_boxes == []
+    checker = empty._motion_gen.world_coll_checker
+    assert int(checker._env_n_obbs[0]) == 0
+    assert not checker._cube_tensor_list[2][0].any()  # every slot disabled
+    assert empty.check_state_valid(empty.retract_pose)[0]

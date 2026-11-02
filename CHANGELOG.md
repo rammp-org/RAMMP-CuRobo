@@ -232,6 +232,17 @@ Layer boxes are in `arm_mount`, like every world.
 
 ### Added
 
+- **`/reset`** (`std_msgs/Empty`, the ROS-wide convention; core:
+  `CuRoboPlanner.reset()`, #54): back to the world loaded at boot. A world
+  pushed through `set_world` is dropped; the start-up scene's own layers (the
+  floor) come back, and so does a layer an `ignore=` push left out; the config
+  layers stay as loaded. Nothing is re-read from disk, so an edit to a world
+  or layer file since boot does not leak in; an empty start-up world
+  (`world_empty.yaml`) is restored too. It also reseeds cuRobo, so one
+  request usually plans the same trajectory again, though not bit for bit
+  (~1e-3 rad). The topic is global, so any node that publishes it drops your
+  pushed world: push it again after a reset. A reset waits for an in-flight
+  plan.
 - **`/rammp_curobo/blend`** (`Blend.action`; core: `CuRoboPlanner.blend_legs`,
   `blend.py`): one trajectory from plans this planner returned (pose legs
   with their own hold, joint legs), each at its own speed scale, passing the
