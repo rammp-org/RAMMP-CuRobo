@@ -103,7 +103,13 @@ status:
 | `BAD_CONSTRAINT`           | a malformed via point, or a hold sent together with a via                                           |
 
 `PlanToPose.action` has the full contract. `/rammp_curobo/set_world` swaps the
-collision world's scene. There is nothing here that can move an arm.
+collision world's scene. Publishing `std_msgs/Empty` on `/reset` puts it back
+to the world loaded at boot: the start-up scene and its layers, with the config
+layers as always, held in memory since boot (an edit to a file since then does
+not leak in). A reset waits for an in-flight plan. `/reset` is global, so any
+node on the graph that publishes it drops your pushed world too: if you rely on
+`set_world`, push it again after a reset. There is nothing here that can move an
+arm.
 
 ### Through several goals without stopping: `/rammp_curobo/blend`
 

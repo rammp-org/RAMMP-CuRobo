@@ -143,6 +143,9 @@ The planning-side rules still apply throughout:
 - Keep dojo's `world.yaml` matching reality (step 1) — obstacles are
   measured and edited by hand, or pushed live from another module via
   `/rammp_curobo/set_world`. A plan is only as safe as the world it dodged.
+  Any `std_msgs/Empty` on the global `/reset` topic drops a pushed world back
+  to the world loaded at boot, so re-push after a reset. A reset does not
+  re-read the file: restart the node to pick up an edit to it.
 - Cartesian goals only AFTER the world file has been validated against
   reality, and never near surfaces on the first day.
 - Plans come back at full cuRobo time-parameterization. Anything slower is

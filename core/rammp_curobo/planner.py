@@ -160,6 +160,7 @@ class CuRoboPlanner:
                 layer.path,
             )
         self._scene = load_scene(world_path, frame=self.base_frame)
+        self._boot_scene = self._scene  # what reset() restores
         # Pure Python, so a bad layer, an overflow or a duplicate box fails
         # here, before any GPU work.
         self._compose(self._scene, allow_empty=True)
@@ -883,6 +884,32 @@ class CuRoboPlanner:
             self.world_summary(),
             " (ignoring: %s)" % ", ".join(names) if names else "",
         )
+
+    def reset(self):
+        """Back to the world loaded at boot: its scene layers and the
+        config's layers as loaded then (no file is re-read, so an edit since
+        boot does not leak in, and a layer an `ignore=` push left out is
+        back). Also drops any pose cost metric a plan left, and reseeds
+        cuRobo's random generators. The world is exact; plans are only
+        repeatable in practice: after a reset one request usually plans the
+        same trajectory again, but cuRobo v0.7.8's finetune solvers keep the
+        last plan's dt (no public call restores it) and its GPU solve is not
+        bit-for-bit repeatable, so plans can differ by ~1e-3 rad. The robot
+        model and the warmed-up kernels stay.
+        """
+        cuboids, sources = self._compose(self._boot_scene, allow_empty=True)
+        if cuboids:
+            self.update_world(self._boot_scene)
+        else:
+            # An empty boot world (world_empty.yaml, no config layers):
+            # update_world refuses one, since cuRobo would keep the old
+            # world, so disable every box in cuRobo's cache in place.
+            self._motion_gen.clear_world_cache()
+            self._scene = self._boot_scene
+            self._world_cuboids, self._world_sources = cuboids, sources
+            log.info("Collision world: %s", self.world_summary())
+        self._reset_pose_cost_metric()
+        self._motion_gen.reset(reset_seed=True)
 
     # ----------------------------------------------------------------- queries
     @property

@@ -8,6 +8,9 @@ Actions (node name rammp_curobo):
     /rammp_curobo/blend               rammp_curobo_interfaces/Blend
 Services:
     /rammp_curobo/set_world           rammp_curobo_interfaces/srv/SetWorld
+Subscriptions:
+    /reset                            std_msgs/Empty — back to the world
+                                      loaded at boot, layers included
 
 World in, plan out. This node NEVER interacts with the arm: it holds no
 driver, no controller client, no gripper client, and no /joint_states
@@ -41,7 +44,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import String
+from std_msgs.msg import Empty, String
 
 from rammp_curobo import PoseConstraint, ViaPoint
 from rammp_curobo.config import is_example, load_planner_config, resolve_config
@@ -333,6 +336,10 @@ class RammpCuroboNode(Node):
         self.create_service(
             SetWorld, "~/set_world", self._set_world_cb, callback_group=self._cb
         )
+        # The ROS-wide reset convention: a global topic, not ~/reset.
+        self.create_subscription(
+            Empty, "/reset", self._reset_cb, 10, callback_group=self._cb
+        )
 
         # Real-arm misconfiguration tripwire: without sim time this node is
         # presumably planning for the REAL Gen3, and the sim kitchen's
@@ -577,6 +584,18 @@ class RammpCuroboNode(Node):
                 response.success = False
                 response.message = self._tag(str(exc))
         return response
+
+    def _reset_cb(self, _msg):
+        # Waits out an in-flight plan rather than resetting under it.
+        with self._plan_lock:
+            try:
+                self.planner.reset()
+            except Exception as exc:
+                self.get_logger().error("Reset failed — %s" % exc)
+                return
+        self.get_logger().info(
+            "Planner reset — collision world: %s" % self.planner.world_summary()
+        )
 
 
 def main(args=None):
