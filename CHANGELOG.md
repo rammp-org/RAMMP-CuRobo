@@ -12,6 +12,20 @@ that heading to the new version and bumps the five places the number lives.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The image runs the fleet's Cyclone DDS config.** It set
+  `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` but no `CYCLONEDDS_URI`, so it ran
+  Cyclone's built-in default, unlike every module built on rammp-base. Two
+  consequences: user data went multicast onto the selected NIC (usually the
+  arm's network), and `ParticipantIndex auto` capped a `--network host` machine
+  at 10 participants, so on a full robot stack the planner could fail with
+  "Failed to find a free participant index". The image now carries
+  rammp-org/RAMMP-docker's `docker/cyclonedds.xml` (`AllowMulticast spdp`,
+  `ParticipantIndex none`; RAMMP-docker#12) at `/etc/cyclonedds/config.xml` and
+  sets `CYCLONEDDS_URI` to it. A deployment that sets its own `CYCLONEDDS_URI`
+  still wins.
+
 ## [2.0.0] — 2026-11-04
 
 The planner now plans against the arm's own model, read at start-up from
