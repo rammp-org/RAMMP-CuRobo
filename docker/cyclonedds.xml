@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  A copy of rammp-org/RAMMP-docker docker/cyclonedds.xml, the config every
+  rammp-base module runs. This image builds FROM l4t-jetpack, not rammp-base,
+  so it carries its own copy. Change RAMMP-docker first, then copy it here.
+  Two comments say "host networking" where the original writes the docker
+  flag: strict XML forbids a double hyphen inside a comment. The settings
+  are identical.
+-->
+<!--
+  Default Cyclone DDS configuration for RAMMP containers.
+
+  Installing ros-humble-rmw-cyclonedds-cpp is not enough to actually use
+  Cyclone: without RMW_IMPLEMENTATION set, ROS 2 silently falls back to Fast
+  DDS. The base image sets both RMW_IMPLEMENTATION and CYCLONEDDS_URI so every
+  module inherits a consistent, working middleware.
+
+  autodetermine="true" makes Cyclone pick the first non-loopback,
+  multicast-capable interface. Run containers with host networking so that
+  interface is the robot's real NIC; on a Docker bridge network, Cyclone will
+  bind the bridge and nodes in other containers will not discover each other.
+
+  Override for a specific robot or bench setup by mounting your own file and
+  pointing CYCLONEDDS_URI at it:
+      docker run -e CYCLONEDDS_URI=file:///cfg/my.xml -v ./my.xml:/cfg/my.xml ...
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface autodetermine="true" priority="default" multicast="default" />
+      </Interfaces>
+      <!--
+        spdp: multicast for participant discovery only; user data goes
+        unicast. With "default", any topic with more than one reader is
+        multicast onto the selected NIC. On a robot that NIC is usually the
+        arm's network, and camera images multicast there (~39 MB/s measured)
+        starve the Kinova's 1 kHz cyclic UDP channel until BaseCyclic Refresh
+        times out. Unicast between processes on the same host never leaves
+        the machine.
+      -->
+      <AllowMulticast>spdp</AllowMulticast>
+    </General>
+    <Discovery>
+      <!--
+        none: each participant binds OS-assigned ports and advertises them in
+        its multicast discovery announcements, so there is no per-host cap.
+        "auto" gives each participant a fixed port slot and Cyclone's default
+        caps those at 10 per host per domain. Every process in every
+        host-networked container counts, so a full robot stack runs out and
+        the next node fails with "Failed to find a free participant index".
+        Fixed slots only matter for unicast discovery through a <Peers> list,
+        which RAMMP does not use.
+      -->
+      <ParticipantIndex>none</ParticipantIndex>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

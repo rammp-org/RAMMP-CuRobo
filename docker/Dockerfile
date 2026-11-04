@@ -127,6 +127,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-humble-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
 ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+# The fleet's Cyclone config (see docker/cyclonedds.xml): user data unicast,
+# off the arm NIC, and ParticipantIndex none, so a host is not capped at 10
+# participants. Without it this was Cyclone's built-in default. A manifest that
+# sets CYCLONEDDS_URI still overrides it.
+COPY docker/cyclonedds.xml /etc/cyclonedds/config.xml
+ENV CYCLONEDDS_URI=file:///etc/cyclonedds/config.xml
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
