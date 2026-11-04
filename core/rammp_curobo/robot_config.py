@@ -7,17 +7,82 @@ carry RAMMP-Kinova's audit-tuned patches — the boosted arm spheres, the
 are patched in memory, and nothing is re-applied at load: the baked YAML is
 what plans, retract_config (the IK seed) included.
 
-The YAML's urdf_path/asset_root_path stay RELATIVE (robot/kinova/...): cuRobo
-resolves them against its own installed content directory, so the URDF and
-meshes are never vendored into this repo. Loading a stock bundled config by
-bare name (e.g. 'kinova_gen3.yml') also works — spheres referenced as a
-`spheres/*.yml` string are inlined the way cuRobo's own loader would.
+The robot model itself is the URDF the arm publishes on
+/arm/robot_description (see urdf_model.py). The baked YAML's urdf_path is the
+sentinel `from_robot_description`; the caller passes the file it wrote the
+URDF to as `urdf_path`, and loading without one is refused. A YAML with a
+real urdf_path (a stock bundled config, e.g. 'kinova_gen3.yml') keeps it,
+resolved by cuRobo against its own content directory — spheres referenced
+as a `spheres/*.yml` string are inlined the way cuRobo's own loader would.
 """
+
+from dataclasses import dataclass
+from pathlib import Path
 
 import yaml
 
+from rammp_curobo.config import resolve_config
 
-def load_robot_config(path):
+URDF_SENTINEL = "from_robot_description"
+
+
+@dataclass(frozen=True)
+class RobotSpec:
+    """The names a robot file gives its arm: what `prepare_urdf` checks a
+    model against. Everything here is read from the file; none is a default."""
+
+    root_link: str  # kinematics.base_link: the frame plans are in
+    ee_link: str
+    joint_names: tuple  # cspace.joint_names, in the file's order
+    locked_joints: tuple  # the keys of lock_joints
+    arm_base_link: str  # model_check.arm_base_link: where the reference starts
+    kinematics_reference: Path  # model_check.kinematics_reference, resolved
+    path: Path  # the robot file
+
+
+def load_robot_spec(path):
+    """Robot file -> RobotSpec, or ValueError naming the file and each field
+    it lacks. `model_check` sits beside `robot_cfg`, which is all cuRobo reads;
+    its `kinematics_reference` resolves next to the file, or via `example:`."""
+    path = Path(path)
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    data = data if isinstance(data, dict) else {}
+    kin = (data.get("robot_cfg") or {}).get("kinematics") or {}
+    check = data.get("model_check") or {}
+    values = {
+        "robot_cfg.kinematics.base_link": kin.get("base_link"),
+        "robot_cfg.kinematics.ee_link": kin.get("ee_link"),
+        "robot_cfg.kinematics.cspace.joint_names": (kin.get("cspace") or {}).get(
+            "joint_names"
+        ),
+        "model_check.arm_base_link": check.get("arm_base_link"),
+        "model_check.kinematics_reference": check.get("kinematics_reference"),
+    }
+    names = values["robot_cfg.kinematics.cspace.joint_names"]
+    if names is not None and not isinstance(names, list):
+        raise ValueError(
+            "robot file %s: cspace.joint_names must be a list, got %r" % (path, names)
+        )
+    missing = [k for k, v in values.items() if not v]
+    if missing:
+        raise ValueError("robot file %s is missing %s" % (path, ", ".join(missing)))
+    return RobotSpec(
+        root_link=str(values["robot_cfg.kinematics.base_link"]),
+        ee_link=str(values["robot_cfg.kinematics.ee_link"]),
+        joint_names=tuple(values["robot_cfg.kinematics.cspace.joint_names"]),
+        locked_joints=tuple(kin.get("lock_joints") or {}),
+        arm_base_link=str(values["model_check.arm_base_link"]),
+        kinematics_reference=resolve_config(
+            values["model_check.kinematics_reference"],
+            relative_to=path.parent,
+            search_cwd=False,
+        ),
+        path=path,
+    )
+
+
+def load_robot_config(path, urdf_path=None):
     """Robot-config YAML -> the robot_cfg dict MotionGenConfig accepts.
 
     retract_config comes from the YAML as-is. It is the IK seed, and the
@@ -25,15 +90,29 @@ def load_robot_config(path):
     elbow family — cuRobo's BUNDLED Gen3 retract lives in the OPPOSITE
     family, and seeding there makes every crossing plan a huge, winding,
     wrist-twisting reconfiguration (RAMMP-Kinova field lesson). Load a
-    stock config by bare name and you inherit that bad seed; bake instead.
+    stock config via example: and you inherit that bad seed; bake instead.
 
     Nothing here rewrites the seed at load time. The planner holds no pose
     of its own to rewrite it with — where the arm belongs is the arm
     layer's business, not the planner's (issue #6).
+
+    `urdf_path` is the arm's model as a file (urdf_model.write_urdf); it
+    replaces the YAML's urdf_path, and its directory the asset root.
     """
-    with open(path, "r") as f:
+    # UTF-8 whatever the locale: the baked config has non-ASCII comments
+    with open(resolve_config(path, search_cwd=False), "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)["robot_cfg"]
     kin = cfg["kinematics"]
+
+    if urdf_path is not None:
+        urdf_path = Path(urdf_path).absolute()
+        kin["urdf_path"] = str(urdf_path)
+        kin["asset_root_path"] = str(urdf_path.parent)
+    elif kin.get("urdf_path") == URDF_SENTINEL:
+        raise ValueError(
+            "robot model required: pass the URDF from /arm/robot_description "
+            "as urdf_path (%s has urdf_path: %s)" % (path, URDF_SENTINEL)
+        )
 
     spheres = kin.get("collision_spheres")
     if isinstance(spheres, str):

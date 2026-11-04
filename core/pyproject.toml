@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rammp-curobo"
-version = "1.1.0"
+version = "2.0.0"
 description = "Pure-Python cuRobo motion-planning core for the RAMMP Kinova Gen3 (no ROS imports)"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
@@ -13,6 +13,7 @@ requires-python = ">=3.10"
 # in the repo README, and a pip resolver must never try to replace them.
 dependencies = [
     "numpy",
+    "scipy",
     "PyYAML",
 ]
 
@@ -23,4 +24,4 @@ test = ["pytest"]
 include = ["rammp_curobo*"]
 
 [tool.setuptools.package-data]
-rammp_curobo = ["configs/*.yaml"]
+rammp_curobo = ["configs/*.yaml", "configs/*.json", "configs/*.urdf"]

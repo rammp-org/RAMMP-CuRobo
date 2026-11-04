@@ -28,8 +28,10 @@ pgrep -af "arm_driver|teleop_socket|trajectory_run|kortex" ; ls /tmp/kinova.lock
 
 Note: `arm_driver` persists joint speed soft-limits (MEDIUM: 25 deg/s) and a
 10-degree following-error threshold on the arm's controller. If a previous
-`arm_driver` session ran, those limits still apply — harmless for our slow
-first runs (an extra speed cap on top of ours), but know they're there.
+`arm_driver` session ran, those limits still apply — harmless for slow first
+runs (an extra speed cap on top of whatever `speed_scale` the executor
+applies; this repo plans at full speed and caps nothing), but know they're
+there.
 
 ## 1. Measure the bench, edit the world
 
@@ -37,9 +39,10 @@ first runs (an extra speed cap on top of ours), but know they're there.
 the arm is bolted nearly flush to a caster-mounted table, e-stop clamped
 at the front edge.)
 
-Edit `core/rammp_curobo/configs/world_real_bench.yaml` (or a copy):
-measure from the arm's base_link origin (+x forward, +z up) and set at
-minimum the real table top height/extents plus anything within reach.
+Edit the bench's `world.yaml` (rammp-deployments `config/robots/dojo/curobo/`; this checkout's fixture copy is `core/tests/data/dojo/world.yaml`):
+measure in `arm_mount`, the root of the arm's URDF (origin at the arm's
+base, +x forward, +z up when the chair is level; on dojo's level mount it is
+the arm's base) and set at minimum the real table top height/extents plus anything within reach.
 **Err tall on the table** — modeled-too-tall costs workspace, never safety.
 The sim kitchen world does NOT exist on the bench; never plan against it
 on hardware (the node warns if you try).
@@ -81,10 +84,30 @@ ros2 topic hz /joint_states     # streaming
 
 ## 3. Planner node — plans only, always
 
+The planner builds its robot model from the URDF that `arm_state_publisher`
+latches on `/arm/robot_description` (the kortex bringup above publishes
+`/robot_description`, which the planner does not read). Start it first, from
+the kinova-gen3-ros2 image or stack, with this robot's mount file:
+
 ```bash
+# terminal 2 — the arm's model (kinova-gen3-ros2):
+ros2 launch kinova_gen3_description description.launch.py \
+    mount_file:=<robot>/mount.yaml
+
+# terminal 3 — the planner:
 source ~/RAMMP-CuRobo/install/setup.zsh    # on top of the two above
-ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml
+ros2 launch rammp_curobo_ros planner.launch.py \
+    config:=<rammp-deployments>/config/robots/dojo/curobo/planner.yaml
 ```
+
+(In the planner container that directory is `/config/robot/curobo/`. With no
+`config` the node plans the example robot, not the bench: it says so in its
+banner. Use the bench's config on hardware.)
+
+Without `arm_state_publisher` the node waits `robot_description_timeout_s`
+(default 30 s), logs a FATAL naming `arm_state_publisher` and exits 1
+(`ros2 launch` itself still exits 0, so read the log). It reads the model
+once: restart the planner if the mount changes.
 
 There is no arming step, because there is nothing to arm: this node has no
 execution surface. Sanity-check a plan of a tiny move from wherever the arm
@@ -92,7 +115,7 @@ is. Read the arm's configuration yourself (the bringup publishes it) and
 hand it to the planner as `start_joints`:
 
 ```bash
-ros2 topic echo /joint_states --once          # note joint_1..7 positions
+ros2 topic echo /joint_states --once          # note the 7 arm joint positions, 1..7
 ros2 action send_goal /rammp_curobo/plan_to_joints \
     rammp_curobo_interfaces/action/PlanToJoints \
     "{target_joints: [<q1+0.15>, <q2>, <q3>, <q4>, <q5>, <q6>, <q7>],
@@ -100,7 +123,7 @@ ros2 action send_goal /rammp_curobo/plan_to_joints \
 ```
 
 Expect `success: true`, a low `goal_mismatch_rad`, and a trajectory whose
-last point is ~0.15 rad from the start on joint_1 and ~0 elsewhere. If the
+last point is ~0.15 rad from the start on `arm_joint_1` and ~0 elsewhere. If the
 plan fails or looks wrong, stop here — a bad plan is a bad plan whoever
 runs it.
 
@@ -117,9 +140,12 @@ holds) on a trivial move before anything larger.
 
 The planning-side rules still apply throughout:
 
-- Keep `world_real_bench.yaml` matching reality (step 1) — obstacles are
+- Keep dojo's `world.yaml` matching reality (step 1) — obstacles are
   measured and edited by hand, or pushed live from another module via
   `/rammp_curobo/set_world`. A plan is only as safe as the world it dodged.
+  Any `std_msgs/Empty` on the global `/reset` topic drops a pushed world back
+  to the world loaded at boot, so re-push after a reset. A reset does not
+  re-read the file: restart the node to pick up an edit to it.
 - Cartesian goals only AFTER the world file has been validated against
   reality, and never near surfaces on the first day.
 - Plans come back at full cuRobo time-parameterization. Anything slower is

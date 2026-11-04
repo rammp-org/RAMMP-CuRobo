@@ -59,20 +59,29 @@ jobs:
       - name: Install the core package
         run: python3 -m pip install --no-build-isolation -e './core[test]'
 
-      # test_offline.py is the gate. test_smoke.py importorskips torch/cuRobo and
-      # additionally needs a live CUDA device, so it SKIPS here by design -- the
-      # runners have no GPU. That half runs on the Jetson via hil.py, and CI
-      # green does not claim otherwise.
+      # test_offline.py, test_layers.py and test_layergen.py are the gate.
+      # test_smoke.py importorskips torch/cuRobo and additionally needs a live
+      # CUDA device, so it SKIPS here by design -- the runners have no GPU. That
+      # half runs on the Jetson via hil.py, and CI green does not claim
+      # otherwise. test_layergen.py checks the committed MEBot layers against
+      # the URDF it fetches from GitHub raw; with CI=true it fails, never skips,
+      # when the fetch does.
       - name: Offline tests
         run: python3 -m pytest core/tests -q
 
       # A guard, not ceremony. The step above passes if test_smoke.py skips and
-      # test_offline.py is somehow empty; this one names the file that must
-      # actually run, and pytest exits 5 ("no tests collected") if it does not.
+      # the offline files are somehow empty; this one names each file that must
+      # actually run, and pytest exits 5 ("no tests collected") if one does not.
+      # One invocation per file: named together, pytest exits 5 only when ALL
+      # of them collect nothing. The default shell (bash -e) stops the step at
+      # the first failing line.
       # Deliberately unpiped -- a pipeline's exit status is the LAST command's,
       # so `pytest ... | tail` reports tail's success and hides pytest's failure.
       - name: The offline suite actually ran
-        run: python3 -m pytest core/tests/test_offline.py -q
+        run: |
+          python3 -m pytest core/tests/test_offline.py -q
+          python3 -m pytest core/tests/test_layers.py -q
+          python3 -m pytest core/tests/test_layergen.py -q
 
   # The IDL regenerates and the node package builds against a stock Humble.
   # This is what catches an interface change that does not compile, without

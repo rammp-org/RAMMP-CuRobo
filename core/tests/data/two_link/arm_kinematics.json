@@ -1,0 +1,5 @@
+{
+ "j1": {"parent": "link0", "child": "link1", "type": "revolute", "xyz": [0.0, 0.0, 0.2], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "mimic": null, "limit": {"effort": 10.0, "lower": -3.0, "upper": 3.0, "velocity": 2.0}},
+ "j2": {"parent": "link1", "child": "link2", "type": "revolute", "xyz": [0.3, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 1.0, 0.0], "mimic": null, "limit": {"effort": 10.0, "lower": -2.0, "upper": 2.0, "velocity": 2.0}},
+ "tool_joint": {"parent": "link2", "child": "tool", "type": "fixed", "xyz": [0.2, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": null, "mimic": null, "limit": null}
+}

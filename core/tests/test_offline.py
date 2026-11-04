@@ -3,13 +3,26 @@
 These run anywhere (CI, a laptop) — no torch, no cuRobo, no ROS.
 """
 
+import importlib.util
 import math
+import os
+import subprocess
+import sys
+import types
+import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import numpy as np
 import pytest
 import yaml
 
-from rammp_curobo.config import PACKAGED_CONFIG_DIR, load_planner_config, resolve_config
+from rammp_curobo.config import (
+    EXAMPLE_DIR,
+    PACKAGED_CONFIG_DIR,
+    is_example,
+    load_planner_config,
+    resolve_config,
+)
 from rammp_curobo.constraints import (
     HOLD_FIXED,
     HOLD_LEVEL,
@@ -26,10 +39,123 @@ from rammp_curobo.geometry import (
     xyzw_to_wxyz,
 )
 from rammp_curobo.retime import scale_trajectory
-from rammp_curobo.scene import load_scene, scene_from_obstacles
+from rammp_curobo.robot_config import load_robot_config, load_robot_spec
 from rammp_curobo.types import Trajectory
+from rammp_curobo.urdf_model import _fill_mimic_limits, prepare_urdf, write_urdf
 from rammp_curobo.validate import start_state_matches, validate_trajectory
-from rammp_curobo.world import world_cuboids
+from rammp_curobo.world import make_world_config, world_cuboids
+
+from core_test_helpers import gen3_spec, load_scene, scene_from_obstacles
+
+DATA = Path(__file__).parent / "data"
+ARM_JOINTS = tuple("arm_joint_%d" % i for i in range(1, 8))
+BAKE = Path(__file__).resolve().parents[2] / "scripts" / "bake_robot_config.py"
+_spec = importlib.util.spec_from_file_location("bake_robot_config", BAKE)
+_bake = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_bake)
+ARM_LINKS = _bake.ARM_LINKS
+LINK_MAP = _bake.LINK_MAP
+
+
+def read(name):
+    return (DATA / name).read_text()
+
+
+def test_example_prefix_resolves_into_the_image():
+    assert resolve_config("example:gen3.yaml") == EXAMPLE_DIR / "gen3.yaml"
+    assert is_example(resolve_config("example:robot_gen3_2f85.yaml"))
+
+
+def test_bare_name_never_falls_back_to_the_image(tmp_path):
+    with pytest.raises(FileNotFoundError) as e:
+        resolve_config("robot_gen3_2f85.yaml", relative_to=tmp_path, search_cwd=False)
+    assert str(tmp_path) in str(e.value)
+    assert "example:robot_gen3_2f85.yaml" in str(e.value)
+
+
+@pytest.mark.parametrize(
+    "ref", ["example:../gen3.yaml", "example:sub/gen3.yaml", "example:nope.yaml"]
+)
+def test_bad_example_reference_lists_the_examples(ref):
+    with pytest.raises(FileNotFoundError) as e:
+        resolve_config(ref)
+    assert "gen3.yaml" in str(e.value) and "robot_gen3_2f85.yaml" in str(e.value)
+
+
+def test_example_config_resolves_its_own_references():
+    cfg, cfg_dir = load_planner_config("example:gen3.yaml")
+    want = EXAMPLE_DIR / "robot_gen3_2f85.yaml"
+    assert resolve_config(cfg["robot"], relative_to=cfg_dir) == want
+
+
+def load_yaml_robot(name_or_path):
+    return yaml.safe_load(resolve_config(name_or_path).read_text())["robot_cfg"]
+
+
+def test_conftest_refuses_only_another_checkouts_core(tmp_path, monkeypatch):
+    # loaded by path: `import conftest` names whichever conftest.py pytest
+    # imported last
+    spec = importlib.util.spec_from_file_location(
+        "wrong_tree_guard", Path(__file__).with_name("conftest.py")
+    )
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+
+    def imported_from(parent):
+        stub = types.ModuleType("rammp_curobo")
+        stub.__file__ = str(parent / "rammp_curobo" / "__init__.py")
+        monkeypatch.setitem(sys.modules, "rammp_curobo", stub)
+        guard.pytest_configure(None)
+
+    here = Path(__file__).resolve().parents[1]
+    with pytest.raises(pytest.UsageError) as exc:
+        imported_from(tmp_path / "core")
+    assert str(exc.value) == (
+        "rammp_curobo is imported from %s, not this checkout (%s); "
+        "run with PYTHONPATH=%s" % (tmp_path / "core", here, here)
+    )
+    # a non-editable install (the image) is not another checkout
+    imported_from(tmp_path / "site-packages")
+
+
+def test_the_gpu_tests_cannot_skip_where_they_must_run():
+    # On the Jetson they are the gate, and a run that skipped them would pass
+    # on the offline tests alone: with RAMMP_CUROBO_GPU=1, which make verify
+    # sets, a skip of test_smoke.py fails. Without it, as in CI, they skip.
+    # The child pytest runs an offline test and test_smoke.py, as a machine
+    # without torch would
+    repo = Path(__file__).resolve().parents[2]
+    env = {k: v for k, v in os.environ.items() if k != "RAMMP_CUROBO_GPU"}
+    env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [str(repo / "core"), env.get("PYTHONPATH")])
+    )
+    code = (
+        "import sys; sys.modules['torch'] = None; import pytest; "
+        "sys.exit(pytest.main(sys.argv[1:]))"
+    )
+    tests = ["core/tests/test_offline.py::test_packaged_configs_exist"]
+    tests += ["core/tests/test_smoke.py"]
+
+    def run(**switch):
+        return subprocess.run(
+            [sys.executable, "-c", code, *tests, "-q", "-p", "no:cacheprovider"],
+            cwd=repo,
+            env=dict(env, **switch),
+            capture_output=True,
+            text=True,
+        )
+
+    skipped = run()
+    assert skipped.returncode == 0, skipped.stdout + skipped.stderr
+    assert "1 passed, 1 skipped" in skipped.stdout
+    # a module that cannot be collected stops the whole run
+    failed = run(RAMMP_CUROBO_GPU="1")
+    assert failed.returncode != 0
+    assert "1 error" in failed.stdout and "passed" not in failed.stdout
+    assert (
+        "RAMMP_CUROBO_GPU=1 skips no GPU test: Skipped: could not import 'torch'"
+        in failed.stdout
+    ), failed.stdout
 
 
 def test_packaged_configs_exist():
@@ -37,18 +163,47 @@ def test_packaged_configs_exist():
         "gen3.yaml",
         "robot_gen3_2f85.yaml",
         "world_sim_kitchen.yaml",
-        "world_real_bench.yaml",
+        "world_empty.yaml",
     ):
         assert (PACKAGED_CONFIG_DIR / name).is_file(), name
 
 
+def test_the_chair_is_not_packaged_and_resolves_to_no_stale_copy():
+    """The chair's five files are ONE robot's geometry, not module config, so
+    they ship with that robot (rammp-deployments, config/robots/<robot>/curobo)
+    and this checkout keeps only a fixture copy under core/tests/data/mebot
+    (issue #19).
+
+    Nothing may leave a packaged copy behind. The planner container bind-mounts
+    config/robots/current, and Docker makes that an empty directory when it
+    starts before set_robot.py has run: a packaged fallback would let a bare
+    layer name resolve against the image and plan the chair against stale
+    geometry, with no warning. Absent, the same start fails instead.
+    """
+    chair = (
+        "planner.yaml",
+        "world.yaml",
+        "layer_mebot_platform.yaml",
+        "layer_mebot_person.yaml",
+        "layer_mebot_floor.yaml",
+    )
+    fixtures = Path(__file__).resolve().parent / "data" / "mebot"
+    for name in chair:
+        assert not (PACKAGED_CONFIG_DIR / name).exists(), name
+        with pytest.raises(FileNotFoundError):
+            resolve_config(name, search_cwd=False)
+        with pytest.raises(FileNotFoundError):
+            resolve_config("example:" + name)
+        assert (fixtures / name).is_file(), name
+
+
 def test_planner_config_loads_and_merges():
-    cfg, cfg_dir = load_planner_config("gen3.yaml")
+    cfg, cfg_dir = load_planner_config("example:gen3.yaml")
     assert cfg["robot"] == "robot_gen3_2f85.yaml"
-    assert cfg["joint_names"] == ["joint_%d" % i for i in range(1, 8)]
+    assert cfg["joint_names"] == ["arm_joint_%d" % i for i in range(1, 8)]
     assert cfg["planner"]["enable_graph"] is False
     assert cfg["planner"]["joint_space_method"] == "auto"
-    assert cfg["execution"]["speed_scale"] == 0.25
+    assert "execution" not in cfg
     assert resolve_config(cfg["world"], relative_to=cfg_dir).is_file()
 
 
@@ -59,31 +214,70 @@ def test_gen3_yaml_matches_planner_defaults():
     # and the YAML is a bug in whichever was edited alone.
     from rammp_curobo.config import PLANNER_DEFAULTS
 
-    cfg, _ = load_planner_config("gen3.yaml")
-    for section in ("planner", "tool", "execution"):
+    cfg, _ = load_planner_config("example:gen3.yaml")
+    for section in ("planner", "tool"):
         assert cfg[section] == PLANNER_DEFAULTS[section], section
-    assert cfg["joint_names"] == PLANNER_DEFAULTS["joint_names"]
+    assert "joint_names" not in PLANNER_DEFAULTS  # the robot file names the joints
+    assert cfg["joint_names"] == ["arm_joint_%d" % i for i in range(1, 8)]
+    assert cfg["layers"] == PLANNER_DEFAULTS["layers"]
+    # merged, a line deleted from the file reads as its default: `layers` is
+    # also read from the file itself, where its comment explains the key
+    text = (PACKAGED_CONFIG_DIR / "gen3.yaml").read_text(encoding="utf-8")
+    assert yaml.safe_load(text)["layers"] == []
 
 
-def test_baked_robot_config_carries_the_patches():
-    path = resolve_config("robot_gen3_2f85.yaml")
-    kin = yaml.safe_load(path.read_text())["robot_cfg"]["kinematics"]
-    spheres = kin["collision_spheres"]
-    assert isinstance(spheres, dict), "spheres must be inlined, not a ref"
-    for link in ("left_inner_finger_pad", "right_inner_finger_pad"):
-        assert all(s["radius"] >= 0.02 for s in spheres[link])
-    assert len(spheres["robotiq_arg2f_base_link"]) == 19  # stock 1 + shell 18
-    assert len(spheres["base_link"]) == 2  # audit-tuned set
-    retract = kin["cspace"]["retract_config"]
-    assert retract == pytest.approx(
-        [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571], abs=1e-6
-    )
-    assert kin["ee_link"] == "tool_frame"
+def test_baked_robot_config_is_the_upstream_model():
+    kin = load_yaml_robot("example:robot_gen3_2f85.yaml")["kinematics"]
+    old = load_yaml_robot(DATA / "robot_gen3_2f85_nvidia.yaml")["kinematics"]
+    assert kin["base_link"] == "arm_mount" and kin["ee_link"] == "arm_tool_frame"
+    assert kin["urdf_path"] == "from_robot_description" and kin["mesh_link_names"] == []
+    assert kin["lock_joints"] == {"arm_robotiq_85_left_knuckle_joint": 0.0}
+    assert kin["cspace"]["joint_names"] == list(ARM_JOINTS)
+    assert kin["cspace"]["retract_config"] == old["cspace"]["retract_config"]
+    for nv, up in LINK_MAP.items():  # moved, not re-tuned
+        if nv in old["collision_spheres"]:
+            assert [s["radius"] for s in kin["collision_spheres"][up]] == [
+                s["radius"] for s in old["collision_spheres"][nv]
+            ]
+    assert set(kin["collision_link_names"]) == {
+        LINK_MAP[n] for n in old["collision_link_names"]
+    }
+    for link in ARM_LINKS:  # identity transforms: centres carry over exactly
+        assert kin["collision_spheres"]["arm_" + link] == old["collision_spheres"][link]
+    # a stale NVIDIA name here matches nothing in cuRobo and is skipped
+    # silently, leaving an adjacent pair always in self collision
+    assert kin["self_collision_ignore"] == {
+        LINK_MAP[k]: [LINK_MAP[x] for x in v]
+        for k, v in old["self_collision_ignore"].items()
+    }
+    assert kin["self_collision_buffer"] == {
+        LINK_MAP[k]: v for k, v in old["self_collision_buffer"].items()
+    }
+
+
+def test_bake_rebuilds_the_committed_robot_config():
+    """The bake's rename / lock / sphere move, re-run offline: CI catches a
+    bake change that `make bake` would only catch by hand, and a hand edit
+    of a gripper sphere (the shell nearest the user)."""
+    nv_cfg = yaml.safe_load((DATA / "robot_gen3_2f85_nvidia.yaml").read_text())
+    moves = {n: np.eye(4) for n in ARM_LINKS}
+    moves.update(yaml.safe_load((DATA / "robot_gen3_2f85_moves.yaml").read_text()))
+    assert set(moves) == set(LINK_MAP)
+    got = _bake.build_robot_config(nv_cfg, moves)["robot_cfg"]["kinematics"]
+    want = load_yaml_robot("example:robot_gen3_2f85.yaml")["kinematics"]
+    spheres = (got.pop("collision_spheres"), want.pop("collision_spheres"))
+    assert got == want  # names, lock_joints, self_collision maps, cspace
+    assert list(spheres[0]) == list(spheres[1])
+    for link, ss in spheres[1].items():
+        assert len(spheres[0][link]) == len(ss), link
+        for a, b in zip(spheres[0][link], ss):
+            assert a["radius"] == b["radius"], link
+            assert np.allclose(a["center"], b["center"], rtol=0, atol=1e-6), link
 
 
 def test_sim_kitchen_scene_parses():
-    scene = load_scene(resolve_config("world_sim_kitchen.yaml"))
-    assert scene.base_frame == "base_link"
+    scene = load_scene(resolve_config("example:world_sim_kitchen.yaml"))
+    assert scene.base_frame == "arm_mount"
     names = {o.name for o in scene.obstacles}
     assert {"table", "pedestal", "back_wall"} <= names
     assert len(scene.obstacles) == 11
@@ -93,7 +287,7 @@ def test_sim_kitchen_scene_parses():
 
 
 def test_world_cuboids_padding_and_ignore():
-    scene = load_scene(resolve_config("world_sim_kitchen.yaml"))
+    scene = load_scene(resolve_config("example:world_sim_kitchen.yaml"))
     boxes = world_cuboids(
         scene, padding=0.02, ignore={"bottle"}, no_pad_names={"pedestal"}
     )
@@ -104,6 +298,74 @@ def test_world_cuboids_padding_and_ignore():
     # the sim kitchen must leave headroom under the 60-box cache for
     # update_world additions (40 keeps a wide margin)
     assert len(boxes) <= 40
+
+
+def test_empty_world_only_when_allowed(monkeypatch):
+    # cuRobo stubbed so CI's offline job runs the guard; test_smoke covers
+    # the real WorldConfig
+    geom = types.ModuleType("curobo.geom.types")
+    # every kind is listed: to_world_config checks what the WorldConfig holds
+    kinds = dict(sphere=[], cylinder=[], capsule=[], mesh=[])
+    geom.WorldConfig = types.SimpleNamespace(
+        from_dict=lambda d: types.SimpleNamespace(cuboid=list(d["cuboid"]), **kinds)
+    )
+    for name in ("curobo", "curobo.geom"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, "curobo.geom.types", geom)
+    scene = load_scene(resolve_config("example:world_empty.yaml"))
+    assert scene.base_frame == "arm_mount"
+    assert make_world_config(scene, allow_empty=True).cuboid == []
+    with pytest.raises(ValueError, match="empty"):
+        make_world_config(scene)
+
+
+@pytest.mark.parametrize(
+    "text, match",
+    [
+        ("base_frame: base_link\ntargets: []\n", "obstacles"),  # missing key
+        (
+            "obstacle:\n  - {name: t, position: [0, 0, 0], dims: [1, 1, 1]}\n",
+            "obstacle",
+        ),
+        ("targets:\n  - {name: cup, position: [0.5, 0, 0]}\n", "obstacles"),
+        ("obstacles:\n", "obstacles: \\[\\]"),  # null
+        ("", "empty"),
+        # the boxes would be applied in arm_mount whatever the file says
+        ("base_frame: base_link\nobstacles: []\n", "'base_link'"),
+        ("obstacles: []\n", "base_frame is None"),
+        ("base_frame: arm_mount\nobstacles: []\nobjects:\n", "'objects' is null"),
+        (
+            "base_frame: arm_mount\nobstacles: []\nobjects: {name: a}\n",
+            "'objects' is dict",
+        ),
+        ("base_frame: arm_mount\nobstacles: []\ntargets: 3\n", "'targets' is int"),
+    ],
+    ids=[
+        "missing",
+        "typo",
+        "only-targets",
+        "null",
+        "empty-file",
+        "base-link-frame",
+        "no-frame",
+        "null-objects",
+        "mapping-objects",
+        "scalar-targets",
+    ],
+)
+def test_load_scene_refuses_mis_keyed_world(tmp_path, text, match):
+    path = tmp_path / "world_bad.yaml"
+    path.write_text(text)
+    with pytest.raises(ValueError, match=match) as e:
+        load_scene(path)
+    assert "world_bad.yaml" in str(e.value)
+
+
+def test_packaged_worlds_load():
+    for name in ("world_sim_kitchen.yaml", "world_empty.yaml"):
+        load_scene(resolve_config("example:" + name))
+    load_scene(DATA / "dojo" / "world.yaml")
+    assert load_scene(resolve_config("example:world_empty.yaml")).obstacles == []
 
 
 def test_scene_from_obstacle_dicts():
@@ -119,6 +381,7 @@ def test_scene_from_obstacle_dicts():
             },
         ]
     )
+    assert scene.base_frame == "arm_mount"  # update_world(list) must not be refused
     boxes = world_cuboids(scene, padding=0.0)
     assert boxes["obj_box"]["dims"] == pytest.approx([0.1, 0.2, 0.3])
     assert boxes["obj_can"]["dims"] == pytest.approx([0.08, 0.08, 0.12])
@@ -206,13 +469,40 @@ def test_yaw_about_world_z_keeps_attitude_level():
 
 
 def test_real_arm_config_loads():
-    cfg, cfg_dir = load_planner_config("gen3_real.yaml")
-    assert cfg["world"] == "world_real_bench.yaml"
-    assert cfg["robot"] == "robot_gen3_2f85.yaml"
+    cfg, cfg_dir = load_planner_config(DATA / "dojo" / "planner.yaml")
+    assert cfg["world"] == "world.yaml"
+    assert cfg["robot"] == "example:robot_gen3_2f85.yaml"
     # inherits the same planner defaults gen3.yaml declares explicitly
     assert cfg["planner"]["enable_graph"] is False
-    assert cfg["execution"]["speed_scale"] == 0.25
+    assert "execution" not in cfg
     assert resolve_config(cfg["world"], relative_to=cfg_dir).is_file()
+
+
+def test_legacy_execution_block_is_dropped_with_a_warning(tmp_path, caplog):
+    # A config copied from <= v1.1.0 gen3.yaml still carries execution:
+    # speed_scale: 0.25, which nothing ever read (issue #22). It must keep
+    # loading, but say out loud that it limits nothing, and not survive into
+    # the config where it could be mistaken for a live setting.
+    path = tmp_path / "old_gen3.yaml"
+    path.write_text(
+        "robot: robot_gen3_2f85.yaml\n"
+        "world: world_sim_kitchen.yaml\n"
+        "execution:\n"
+        "  speed_scale: 0.25\n"
+        "  max_speed_scale: 1.0\n"
+    )
+    with caplog.at_level("WARNING", logger="rammp_curobo"):
+        cfg, _ = load_planner_config(str(path))
+    assert "execution" not in cfg
+    (rec,) = [r for r in caplog.records if r.name == "rammp_curobo"]
+    assert rec.levelname == "WARNING"
+    assert "ignoring the 'execution' block" in rec.getMessage()
+
+    # the packaged config carries no such block, so it must load silently
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="rammp_curobo"):
+        load_planner_config("example:gen3.yaml")
+    assert not [r for r in caplog.records if r.name == "rammp_curobo"]
 
 
 def test_wrap_aware_start_match():
@@ -713,3 +1003,343 @@ def test_a_path_violation_is_reported_before_the_endpoint():
     path = [goal, euler_deg_to_quat_xyzw([8.0, 0.0, 0.0]), goal]
     why = _verify(_StubTrajFk(path), goal, level)
     assert why is not None and "tilt (roll/pitch)" in why
+
+
+class _StubLimits:
+    """Just enough of CuRoboPlanner for _nearest_branch, called unbound:
+    joint a is continuous (no <limit> in the URDF, so +/-6.2832), joint b
+    is not."""
+
+    joint_names = ["a", "b"]
+
+    def joint_limits(self):
+        return {"position": np.array([[-6.2832, -2.0], [6.2832, 2.0]])}
+
+
+def _off_start_branch(final, start):
+    """plan_to_pose's #14 trigger: the plan ends on a 2*pi branch other
+    than the start's."""
+    from rammp_curobo.planner import CuRoboPlanner
+
+    final = [float(v) for v in final]
+    return CuRoboPlanner._nearest_branch(_StubLimits(), final, start) != final
+
+
+def test_a_revolution_back_to_the_same_angle_is_off_branch():
+    # #14: -pi -> +pi through zero is the same physical angle, a full turn
+    assert _off_start_branch([math.pi, 0.0], [-math.pi, 0.0])
+
+
+def test_a_move_the_long_way_round_is_off_branch():
+    # 216 deg the long way instead of 144 deg the short way: the #14 bug
+    # class, not only the pure revolution
+    assert _off_start_branch([1.2 * math.pi, 0.0], [0.0, 0.0])
+
+
+def test_a_direct_move_is_on_branch():
+    assert not _off_start_branch([-math.pi + 0.3, 0.0], [-math.pi, 0.0])
+    assert not _off_start_branch([0.9 * math.pi, 0.0], [0.0, 0.0])
+
+
+def test_a_detour_back_to_the_start_is_on_branch():
+    # an out-and-back detour ends where it began: nothing to shift
+    assert not _off_start_branch([0.4, 0.0], [0.4, 0.0])
+
+
+def test_only_continuous_joints_are_shifted():
+    assert not _off_start_branch([0.0, 1.9], [0.0, -1.9])
+
+
+def test_meshes_are_stripped_and_missing_files_load():
+    xml = prepare_urdf(read("arm_level.urdf"), gen3_spec())
+    root = ET.fromstring(xml)
+    assert not root.findall(".//visual") and not root.findall(".//collision")
+    assert not root.findall("ros2_control")
+    assert root.find("link[@name='arm_mount']") is not None
+
+
+def test_ros2_control_is_stripped():
+    xml = read("arm_level.urdf").replace(
+        "</robot>", "<ros2_control name='x' type='system'/></robot>"
+    )
+    assert not ET.fromstring(prepare_urdf(xml, gen3_spec())).findall("ros2_control")
+
+
+def test_mimic_joints_get_their_leaders_limit_scaled():
+    # cuRobo v0.7.8 dereferences <limit> on every moving joint; the 2F-85's
+    # mimic joints carry none in the published model.
+    root = ET.fromstring(prepare_urdf(read("arm_level.urdf"), gen3_spec()))
+    lead = root.find("joint[@name='arm_robotiq_85_left_knuckle_joint']/limit")
+    assert (lead.get("lower"), lead.get("upper")) == ("0.0", "0.8")
+    for name, lo, hi in [
+        ("arm_robotiq_85_left_inner_knuckle_joint", 0.0, 0.8),  # multiplier 1
+        ("arm_robotiq_85_right_inner_knuckle_joint", -0.8, 0.0),  # multiplier -1
+        ("arm_robotiq_85_left_finger_tip_joint", -0.8, 0.0),
+        ("arm_robotiq_85_right_finger_tip_joint", 0.0, 0.8),
+    ]:
+        lim = root.find("joint[@name='%s']/limit" % name)
+        assert lim is not None, name
+        assert float(lim.get("lower")) == lo and float(lim.get("upper")) == hi, name
+        assert float(lim.get("velocity")) == float(lead.get("velocity")), name
+    # a mimic with a <limit> of its own keeps it
+    right = root.find("joint[@name='arm_robotiq_85_right_knuckle_joint']")
+    assert len(right.findall("limit")) == 1
+
+
+def _mimic_model(mimic, lead_limit='<limit lower="0" upper="0.8" velocity="0.5"/>'):
+    return ET.fromstring(
+        '<robot><joint name="lead" type="revolute">%s</joint>'
+        '<joint name="m" type="revolute">%s</joint></robot>' % (lead_limit, mimic)
+    )
+
+
+def test_mimic_offset_and_multiplier_map_the_range_and_scale_velocity():
+    root = _mimic_model('<mimic joint="lead" multiplier="-2" offset="0.1"/>')
+    _fill_mimic_limits(root)
+    lim = root.find("joint[@name='m']/limit")
+    assert float(lim.get("lower")) == pytest.approx(-1.5)
+    assert float(lim.get("upper")) == pytest.approx(0.1)
+    assert float(lim.get("velocity")) == pytest.approx(1.0)
+
+
+def test_mimic_range_that_excludes_0_is_refused():
+    root = _mimic_model('<mimic joint="lead" offset="1.0"/>')
+    with pytest.raises(ValueError, match=r"'m' range \[1, 1.8\] excludes 0"):
+        _fill_mimic_limits(root)
+
+
+def test_mimic_of_a_limitless_leader_is_refused():
+    root = _mimic_model('<mimic joint="lead"/>', lead_limit="")
+    root.find("joint[@name='lead']").set("type", "fixed")
+    with pytest.raises(ValueError, match="'m' mimics 'lead', which has no <limit>"):
+        _fill_mimic_limits(root)
+
+
+def test_limitless_joint_that_mimics_nothing_is_refused():
+    xml = read("arm_level.urdf").replace(
+        '<limit effort="39" velocity="1.3963" /></joint>', "</joint>", 1
+    )
+    with pytest.raises(ValueError, match="arm_joint_1"):
+        prepare_urdf(xml, gen3_spec())
+
+
+def test_foreign_model_is_refused_by_name():
+    for broken, why in [
+        (read("arm_level.urdf").replace('"arm_mount"', '"base_link"'), "arm_mount"),
+        (
+            read("arm_level.urdf").replace("arm_tool_frame", "tool_frame"),
+            "arm_tool_frame",
+        ),
+        (
+            read("arm_level.urdf").replace(
+                "</robot>",
+                '<link name="world"/><joint name="w" type="fixed"><parent link="world"/>'
+                '<child link="arm_mount"/></joint></robot>',
+            ),
+            "arm_mount",
+        ),
+        (read("arm_level.urdf").replace("arm_joint_4", "joint_4"), "arm_joint_4"),
+        (
+            read("arm_level.urdf").replace(
+                "arm_robotiq_85_left_knuckle_joint", "left_knuckle_joint"
+            ),
+            "arm_robotiq_85_left_knuckle_joint",
+        ),
+        ("", "empty"),
+        ("<robot", "parse"),
+    ]:
+        with pytest.raises(ValueError, match=why):
+            prepare_urdf(broken, gen3_spec())
+
+
+def test_spec_reads_the_names_from_the_robot_file():
+    spec = load_robot_spec(resolve_config("example:robot_gen3_2f85.yaml"))
+    assert spec.root_link == "arm_mount" and spec.ee_link == "arm_tool_frame"
+    assert spec.joint_names == tuple("arm_joint_%d" % i for i in range(1, 8))
+    assert spec.locked_joints == ("arm_robotiq_85_left_knuckle_joint",)
+    assert spec.arm_base_link == "arm_base_link"
+    assert spec.kinematics_reference == EXAMPLE_DIR / "arm_kinematics.json"
+
+
+def test_a_robot_file_missing_fields_is_refused_naming_each(tmp_path):
+    robot = tmp_path / "robot.yaml"
+    robot.write_text("robot_cfg:\n  kinematics:\n    base_link: root\n")
+    with pytest.raises(ValueError) as e:
+        load_robot_spec(robot)
+    for field in (
+        "ee_link",
+        "joint_names",
+        "model_check.arm_base_link",
+        "kinematics_reference",
+    ):
+        assert field in str(e.value)
+    assert str(robot) in str(e.value)
+    assert "kinematics.base_link" not in str(e.value)  # present, so not named
+
+
+def test_a_non_gen3_arm_passes_with_its_own_robot_file():
+    d = DATA / "two_link"
+    spec = load_robot_spec(d / "robot.yaml")
+    assert spec.root_link == "base" and spec.joint_names == ("j1", "j2")
+    assert spec.locked_joints == ()
+    out = prepare_urdf((d / "two_link.urdf").read_text(), spec)
+    assert "<visual" not in out and "<collision" not in out
+
+
+def test_an_arm_base_link_the_model_lacks_is_refused(tmp_path):
+    robot = tmp_path / "robot.yaml"
+    robot.write_text(
+        (DATA / "two_link" / "robot.yaml").read_text().replace("link0", "no_such_link")
+    )
+    (tmp_path / "arm_kinematics.json").write_text("{}")
+    with pytest.raises(ValueError, match="no 'no_such_link' link"):
+        prepare_urdf(read("two_link/two_link.urdf"), load_robot_spec(robot))
+
+
+def test_an_empty_kinematics_reference_is_refused(tmp_path):
+    robot = tmp_path / "robot.yaml"
+    robot.write_text((DATA / "two_link" / "robot.yaml").read_text())
+    (tmp_path / "arm_kinematics.json").write_text("{}")
+    with pytest.raises(ValueError, match="lists no joints"):
+        prepare_urdf(read("two_link/two_link.urdf"), load_robot_spec(robot))
+
+
+def test_a_string_for_joint_names_is_refused(tmp_path):
+    robot = tmp_path / "robot.yaml"
+    robot.write_text(
+        (DATA / "two_link" / "robot.yaml").read_text().replace("[j1, j2]", "j1")
+    )
+    with pytest.raises(ValueError, match="must be a list"):
+        load_robot_spec(robot)
+
+
+def test_prepare_urdf_is_idempotent(caplog):
+    for xml, spec in [
+        (read("arm_level.urdf"), gen3_spec()),
+        (
+            (DATA / "two_link" / "two_link.urdf").read_text(),
+            load_robot_spec(DATA / "two_link" / "robot.yaml"),
+        ),
+    ]:
+        once = prepare_urdf(xml, spec)
+        with caplog.at_level("WARNING", logger="rammp_curobo"):
+            assert prepare_urdf(once, spec) == once
+        assert caplog.text == ""
+
+
+def test_a_reference_next_to_the_robot_file_is_resolved_there(tmp_path):
+    robot = tmp_path / "robot.yaml"
+    robot.write_text(
+        (DATA / "two_link" / "robot.yaml")
+        .read_text()
+        .replace("arm_kinematics.json", "example:arm_kinematics.json")
+    )
+    assert (
+        load_robot_spec(robot).kinematics_reference
+        == EXAMPLE_DIR / "arm_kinematics.json"
+    )
+    robot.write_text((DATA / "two_link" / "robot.yaml").read_text())
+    with pytest.raises(FileNotFoundError, match="arm_kinematics.json"):
+        load_robot_spec(robot)  # not copied here
+
+
+@pytest.mark.parametrize("urdf", ["arm_level.urdf", "arm_tilt30.urdf"])
+def test_gen3_models_pass_on_either_mount(urdf):
+    prepare_urdf(read(urdf), gen3_spec())
+
+
+def test_gen3_urdf_refused_against_another_arms_spec():
+    spec = load_robot_spec(DATA / "two_link" / "robot.yaml")
+    with pytest.raises(ValueError, match="root link"):
+        prepare_urdf(read("arm_level.urdf"), spec)
+
+
+def test_another_arms_urdf_refused_against_the_gen3_spec():
+    with pytest.raises(ValueError, match="root link"):
+        prepare_urdf((DATA / "two_link" / "two_link.urdf").read_text(), gen3_spec())
+
+
+def test_the_tilted_mount_matches_the_kinematic_reference():
+    # arm_base_joint is the mount: it may differ, nothing below it may
+    prepare_urdf(read("arm_tilt30.urdf"), gen3_spec())
+
+
+def test_kinematic_drift_is_refused_by_name():
+    knuckle = '<origin rpy="0 0 0" xyz="0.03060114 0.0 0.05490452" />'
+    assert read("arm_level.urdf").count(knuckle) == 1
+    for broken, why in [
+        # a 2 mm gripper offset: the spheres would sit 2 mm off the links
+        (
+            read("arm_level.urdf").replace(
+                knuckle, '<origin rpy="0 0 0" xyz="0.03260114 0.0 0.05490452" />'
+            ),
+            "'arm_robotiq_85_left_knuckle_joint' is 2.000 mm",
+        ),
+        (
+            read("arm_level.urdf").replace(
+                knuckle, '<origin rpy="0 0 0.0035" xyz="0.03060114 0.0 0.05490452" />'
+            ),
+            "'arm_robotiq_85_left_knuckle_joint' is 0.000 mm / 0.201 deg",
+        ),
+        (
+            read("arm_level.urdf").replace(
+                '<axis xyz="0 -1 0" /><origin rpy="0 0 0" xyz="0.0127 ',
+                '<axis xyz="0 1 0" /><origin rpy="0 0 0" xyz="0.0127 ',
+            ),
+            "'arm_robotiq_85_left_inner_knuckle_joint'.*axis 180",
+        ),
+        (
+            read("arm_level.urdf").replace(
+                "</robot>",
+                '<link name="cam"/><joint name="cam_joint" type="fixed">'
+                '<parent link="arm_bracelet_link"/><child link="cam"/></joint></robot>',
+            ),
+            "extra \\['cam_joint'\\]",
+        ),
+        (
+            read("arm_level.urdf").replace(
+                '<mimic joint="arm_robotiq_85_left_knuckle_joint" /></joint></robot>',
+                "</joint></robot>",
+            ),
+            "'arm_robotiq_85_right_finger_tip_joint' mimic",
+        ),
+    ]:
+        assert broken != read("arm_level.urdf")
+        with pytest.raises(ValueError, match=why):
+            prepare_urdf(broken, gen3_spec())
+
+
+def test_kinematic_reference_limit_differences_are_logged_not_refused(caplog):
+    xml = read("arm_level.urdf").replace(
+        'lower="-2.57" upper="2.57"', 'lower="-2.6" upper="2.6"'
+    )
+    with caplog.at_level("WARNING", logger="rammp_curobo"):
+        prepare_urdf(xml, gen3_spec())
+    assert "'arm_joint_4' limit" in caplog.text
+
+
+def test_robot_config_takes_the_urdf_path(tmp_path, monkeypatch):
+    p = write_urdf(read("arm_level.urdf"), tmp_path)
+    kin = load_robot_config("example:robot_gen3_2f85.yaml", urdf_path=p)["kinematics"]
+    assert kin["urdf_path"] == str(p) and kin["asset_root_path"] == str(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    kin = load_robot_config("example:robot_gen3_2f85.yaml", urdf_path=p.name)[
+        "kinematics"
+    ]
+    assert Path(kin["urdf_path"]).is_absolute() and kin["urdf_path"] == str(p)
+
+
+def test_robot_config_never_reads_the_cwd(tmp_path, monkeypatch):
+    (tmp_path / "robot.yaml").write_text(
+        resolve_config("example:robot_gen3_2f85.yaml").read_text()
+    )
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FileNotFoundError, match="robot.yaml"):
+        load_robot_config(
+            "robot.yaml", urdf_path=write_urdf(read("arm_level.urdf"), tmp_path)
+        )
+
+
+def test_robot_config_without_a_urdf_is_refused():
+    with pytest.raises(ValueError, match="/arm/robot_description"):
+        load_robot_config("example:robot_gen3_2f85.yaml")

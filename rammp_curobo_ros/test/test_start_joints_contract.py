@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover
         allow_module_level=True,
     )
 
-JOINTS = ["joint_%d" % i for i in range(1, 8)]
+JOINTS = ["arm_joint_%d" % i for i in range(1, 8)]
 
 
 def test_correct_length_accepted():

@@ -22,6 +22,7 @@ class Trajectory:
     accelerations: Optional[np.ndarray]  # (N, dof) rad/s^2, or None
     dt: float  # uniform point spacing, s
     speed_scale: float = 1.0  # cumulative retiming applied
+    frame_id: str = ""  # the planning frame, the model's root (arm_mount)
 
     @property
     def n_points(self) -> int:
@@ -58,13 +59,16 @@ class PlanResult:
     success: bool
     joint_traj: Optional[Trajectory]
     timing: float  # planner wall time, s
-    error: Optional[str]  # human-readable, when failed
+    error: Optional[str]  # human-readable, when failed (or a warning on success)
     status: str = ""  # raw cuRobo status string
     validated: bool = False  # library validation ran clean
     final_joints: Optional[np.ndarray] = None  # last trajectory point
     # plan_to_joints via the FK-pose fallback reaches the requested EE pose
     # but not necessarily the exact joint vector — this records the gap.
     goal_mismatch_rad: Optional[float] = None
+    # blend_legs: per junction, how close the tool comes to that waypoint,
+    # m (0 where the trajectory stops on it).
+    corners_m: Optional[List[float]] = None
 
     @classmethod
     def failure(cls, status: str, error: str, timing: float = 0.0) -> "PlanResult":

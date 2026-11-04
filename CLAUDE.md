@@ -6,15 +6,42 @@ joint trajectory out — plus one plan-only showcase (`tour_demo`). Parts:
 `core/` (pip `rammp-curobo`, pure Python, NO ROS imports — keep it that
 way), `rammp_curobo_interfaces/` (rosidl, dependency-free by policy),
 `rammp_curobo_ros/` (ament_python node), `docker/` (the service
-containerized for other RAMMP codebases).
+containerized for other RAMMP codebases), `docs/ROBOT_DATA.md` (the
+robot-data contract), `sim/mebot_sim/` (the MEBot
+wheelchair sim stack, ROS 2 + MuJoCo; not part of the package, and
+COLCON_IGNOREd like `core/`).
 
-**This repo NEVER touches the arm** (issue #6, 2026-08-24): no executor, no
-`/joint_states` subscription, no controller or controller-manager client, no
-gripper client, no `execute` parameter, and no arm-package dependency in
-`package.xml`. `start_joints` is REQUIRED on both plan actions — the caller
-owns the robot and its state. The consumer is `kinova_arm_ros2`, which
-plans here and executes under its own gates; the dependency arrow points
-only that way. Do not add an edge back.
+**The robot model is the arm's own.** No URDF ships for a robot (the one
+example URDF is example mode's, below): with a `config`, the node waits
+(RELIABLE + TRANSIENT_LOCAL, `robot_description_timeout_s`, default 30 s)
+for the URDF `arm_state_publisher` latches on `/arm/robot_description`,
+writes it to a temp file and hands `core` the path
+(`CuRoboPlanner.from_config(..., urdf_path=path)`; `core` stays file-based,
+and loading the baked config without one is refused). No model in time =
+a FATAL naming `arm_state_publisher` and exit 1. The model is read ONCE, at
+startup: a later, different model on the topic is never used (the node logs
+an ERROR each time one arrives), so restart the planner whenever the robot's
+mount changes. Planning is in the model's root (the robot file's
+`base_link`; `arm_mount` for the Gen3: level with the chair, not with
+gravity), with the robot file's `ee_link` and `cspace.joint_names` (the Gen3's:
+`arm_tool_frame`, `arm_joint_1..7`); every returned trajectory is
+stamped `header.frame_id` = the robot file's root link (`arm_mount` for the
+Gen3 example and every RAMMP robot), joint plans included
+(kinova-gen3-ros2's `GoToEEPose` refuses any pose plan not stamped
+`arm_mount` (#47), on every mount).
+
+**This repo NEVER touches the arm** (issue #6, 2026-08-24): outside `sim/`
+there is no executor, no `/joint_states` subscription, no controller or
+controller-manager client, no gripper client, no `execute` parameter, and
+no arm-package dependency in a `package.xml`. `start_joints` is REQUIRED on
+both plan actions — the caller owns the robot and its state. The consumer
+is `kinova_arm_ros2`, which plans here and executes under its own gates;
+the dependency arrow points only that way. Do not add an edge back. The
+sim, `sim/mebot_sim`, is a test kit outside the package: it depends on
+`rammp_arm_interfaces`, its simulated arm serves the driver's names, and
+its client subscribes `/joint_states` and sends `/execute_joint_trajectory`
+goals, to the sim arm only and never on the bench's domain, 0 (see
+Safety). None of it may leave `sim/`.
 
 Removed deliberately, git history has it — don't reintroduce casually: the
 camera-scanning and palm-demo code (2026-08-14), and `executor.py`,
@@ -43,7 +70,121 @@ plus the gripper services (2026-08-24, issue #6).
 
 - cuRobo v0.7.8: WorldConfig cylinders/spheres silently DROPPED (cuboids
   only); `update_world` with zero cuboids silently keeps the old world;
-  more cuboids than `collision_cache_obb` raises. `world.py` guards all.
+  more cuboids than `collision_cache_obb` raises; two boxes of one name
+  collapse into one; a NaN position, zero quaternion or negative dim loads
+  as a box that never collides. `world.py` guards all, in pure Python,
+  before cuRobo is imported.
+- Obstacle layers (issue #19): a planner config's `layers:` are composed
+  into EVERY world, set_world pushes included; a world file's `layers:`
+  last only until the next push. Safety geometry (the chair, the person)
+  belongs in the planner config. Only an `excludable: true` layer may be
+  dropped, by `ignore=`, from Python only (no IDL change).
+- ROBOT DATA IS NOT PACKAGE DATA (issue #19, generalised by the
+  robot-data-outside-image branch; docs/ROBOT_DATA.md is the contract). One
+  image serves any arm, base and site, so the planner config, robot file,
+  kinematics reference, world and layers all ship with the robot:
+  rammp-deployments `config/robots/<robot>/curobo/`, bind-mounted at
+  `/config/robot`, selected with `config:=/config/robot/curobo/planner.yaml`
+  (the profile MUST also override `world` to `""` — a non-empty `world` param
+  replaces whatever the config names). Every reference resolves next to the
+  config that lists it, or absolutely, or as `example:<name>` (the image's
+  copy, logged `(example, image)`); a BARE name never resolves to the image
+  (`resolve_config`; also `update_world`/SetWorld pushes and the generator's
+  `keep_out.robot_config`). Do NOT restore a packaged copy or a bare-name
+  fallback: Docker makes `/config/robot` an empty directory when it starts
+  before `set_robot.py`, and a fallback would plan the chair (or the bench)
+  against stale geometry. `test_the_chair_is_not_packaged_and_resolves_to_no_stale_copy`
+  pins one instance. Robot data is whole or refused, never merged field by
+  field with the example's; only `PLANNER_DEFAULTS` (tuning) defaults per field.
+- The planner's robot names come from the robot file, not from code
+  (`robot_config.load_robot_spec` -> `RobotSpec`): `base_link`, `ee_link`,
+  `cspace.joint_names`, the `lock_joints` keys, and `model_check`
+  (`arm_base_link`, `kinematics_reference`) beside `robot_cfg`. No Gen3 name
+  lives in Python: `PLANNER_DEFAULTS` has no `joint_names`, `urdf_model.py` no
+  constants, `prepare_urdf(xml, spec)` and `load_scene(path, frame)` /
+  `scene_from_obstacles(entries, base_frame)` take what to check against.
+  `check_robot_dir` (`contract.py`) runs the whole directory plus the URDF
+  before cuRobo is imported and raises ONE `RobotDataError` (a ValueError;
+  `.problems` has every problem) — construction-time faults, a missing layer
+  included, are this, not FileNotFoundError. The node loads the planner config
+  BEFORE it waits for a model, so a missing `/config/robot/curobo/planner.yaml`
+  exits 1 at once; `check_robot_dir` needs the URDF, so every other problem
+  is listed only once the model has arrived (FATAL "robot data or the model
+  on /arm/robot_description: ..."). `planner.yaml` may still carry an optional
+  `joint_names` (the robot file's joints, reordered; anything else refused).
+- EXAMPLE MODE: node `config` defaults to `""` (so does `planner.launch.py`).
+  The Dockerfile CMD passes `config:=/config/robot/curobo/planner.yaml`: a bare
+  `docker run` without the robot directory exits 1, never plans the example
+  beside a real arm. Example mode in the image is the entrypoint's `example`
+  verb (`docker run <image> example`; `make image-default` tests both). The node then plans `example:gen3.yaml` on the shipped
+  `example:arm_level.urdf`, standalone, and must never pass for a robot: a
+  startup banner, a WARN if a model is published (ignored), and an
+  `(example robot)` marker on every plan result's `message` and the SetWorld
+  reply. Don't drop a signal, and don't make a named config use the example URDF.
+- THE BENCH IS DOJO'S DATA, not the image's. `gen3_real.yaml` and
+  `world_real_bench.yaml` are gone; dojo's copy is rammp-deployments
+  `config/robots/dojo/curobo/` (`core/tests/data/dojo/` is this checkout's
+  fixture). Hardware docs name the bench by that path, never a packaged name.
+- `core/tests/data/mebot/` is this checkout's FIXTURE copy of the chair's six
+  files — for the tests and the sim, so verifying the chair needs no
+  deployment checkout. The layers in it are GENERATED by
+  `scripts/generate_layers.py` from `scripts/mebot_layers.yaml` and the
+  pinned MEBot URDF: edit the inputs, run `make layers` (on unchanged inputs
+  it must leave no diff) and commit what it writes. Never hand-edit them.
+  `make layers OUTDIR=<robots>/mebot/curobo` writes the robot's copy from the
+  same pinned inputs; `make layers DATA=` without `OUTDIR=` is refused (it
+  would overwrite the fixtures). The bytes match because the generator is
+  deterministic, not because one run writes both: `make layers OUTDIR=` runs
+  it twice, and only the in-repo copy is diff-asserted here (the deployment
+  repo's CI does not check its copy yet). `outputs:` in
+  `mebot_layers.yaml` names the fixture copy, and `stack.layer_files()`
+  follows it — which is why the sim's digest pin in
+  `sim/mebot_sim/config/scenarios.yaml` survived the move untouched.
+- A layer states the padding it was generated for
+  (`meta.padding_assumed_m`); composing it with LESS is REFUSED, naming the
+  layer and the shortfall. NOT because the boxes are undersized — they
+  circumscribe the chair, and each layer carries the containment certificate
+  that proves it (`under_m3: 0.000000`). Padding is margin, not size. What is
+  padding-dependent is what the generator DECIDED at that padding: the person
+  layer is carved back around the arm's base column by
+  `padding_assumed_m + keep_out_margin_m`, so a smaller padding leaves part of
+  the occupant uncovered beside the arm; and a platform merge was only made
+  where the padded box still cleared those spheres. So the set is certified
+  for one padding and no other. MORE is allowed — it only grows the boxes, and
+  growth into the arm's spheres is caught by the keep-out guard, by the box it
+  grew. This is the only part of `meta` anything reads; before #19 only a test
+  held the two in step, which cannot reach a file that ships from another repo.
+- Nothing padded may touch the arm's joint-independent sphere column (the
+  arm_base_link spheres and the arm_shoulder_link ones on the arm_joint_1 axis: z
+  -0.015 .. 0.383 m, radius up to 0.080 m with the buffer), or every state
+  is INVALID_START. The planner refuses a layer box that does; the
+  generator writes no layer within 4 mm of it.
+- The arm's mount on the MEBot is a BEST GUESS: y 0.36 from the seat
+  centreline (just outside the seat base). The RAMMS 0.265 put the base
+  inside the seat and beside a large occupant's thigh, and the arm could not
+  face forward. Fore-aft and height are still the RAMMS values; all three
+  want measuring on flatbot.
+- The SEAT layer (base, backrest, joystick-side armrest; best guesses from
+  the RAMMS seat asset's hull bounds, mirrored with the mount) surrounds the
+  arm's base, so it is carved 35 mm clear of those spheres
+  (`seat.keep_out_margin_m`), not 5 mm like the person. Inside
+  `collision_activation_distance` (0.03) the fixed spheres carry a collision
+  cost no joint can lower, and cuRobo then returns DT_EXCEPTION on nearly
+  every plan (verified 2026-10-27). Don't tighten it below the activation
+  distance. find_pairs' near-miss filter likewise ignores those spheres.
+- The PERSON is fitted to the body (hips, torso to the chin, head, thighs,
+  forearms, legs; 2 cm margin); the forearms are hip-wide on the arm's side
+  (`person.arm_side`, checked against the mount). Each face takes the size
+  that puts it furthest out over the 5th-woman..95th-man range; four take
+  the SMALL end (`*_low`: the highest chin tops the torso, the lowest
+  bottoms the head, the thinnest thighs bottom the forearms, the lowest
+  elbow tops the hips). `test_layergen`'s exhaustive
+  occupant test caught that once; the sim's stand-ins cannot, since they are
+  one humanoid scaled.
+- Worktree tests and `make layers` need `PYTHONPATH=<worktree>/core`: this
+  Jetson's editable install is `~/RAMMP-CuRobo/core`, and
+  `core/tests/conftest.py` and the generator refuse another checkout's
+  `rammp_curobo`. The sim targets set it themselves.
 - Publish/consume ONLY the trimmed interpolated plan — result buffers are
   padded; a stale tail caused violent motion in the field. `validate.py`'s
   continuity check is the tripwire; never bypass it.
@@ -62,13 +203,57 @@ plus the gripper services (2026-08-24, issue #6).
 - Robot config = `configs/robot_gen3_2f85.yaml`, GENERATED by
   `scripts/bake_robot_config.py` (audit-tuned spheres, gripper shell,
   retract_config from that script's `RETRACT_POSE` — the ONLY place that
-  pose is defined). Regenerate, don't hand-edit spheres.
-- retract_config must stay in the bent-elbow family (joint_3 ≈ π) — the
+  pose is defined). Regenerate, don't hand-edit spheres. `make bake` runs
+  it inside a released image (it needs cuRobo's content tree and yourdfpy)
+  and expects no diff. The spheres were audited on NVIDIA's model and are
+  MOVED onto the upstream links through FK of both models, never re-tuned;
+  `test_model_parity.py` pins every sphere and `arm_tool_frame` to NVIDIA's
+  within 1 mm (and 0.1°). A robot's OWN copy of the robot file (the
+  rammp-deployments ones) does not follow a re-bake of the example: re-copy
+  it, deliberately, when the new spheres or seed are wanted.
+- The URDF is sanitised before cuRobo reads it (`urdf_model.prepare_urdf(xml, spec)`):
+  `<visual>`, `<collision>` and `<ros2_control>` are stripped (the mesh
+  paths point at packages this image lacks; the spheres are the collision
+  model), and a model that is not the robot file's (root not its `base_link`,
+  no `ee_link`, a `cspace`/locked joint missing) is refused by name. So is a
+  model whose joints below `model_check.arm_base_link` drift from
+  `model_check.kinematics_reference` (the Gen3's: `configs/arm_kinematics.json`;
+  what the spheres were baked on: 1 mm / 0.1°, structure, joint set; the mount
+  joint may vary, limit differences are only logged).
+- The gripper is locked open by its ACTUATED joint only
+  (`lock_joints: {arm_robotiq_85_left_knuckle_joint: 0.0}`; cuRobo v0.7.8
+  refuses mimic joints in `lock_joints` and folds the five mimics in itself).
+  The 2F-85's mimic joints carry no `<limit>`, so `prepare_urdf` fills them
+  from the joint each follows (kinova-gen3-ros2#48 may add them upstream).
+- Joint limits are the URDF's — what the driver enforces: j2/j4/j6
+  ±2.24/±2.57/±2.09 (the continuous joints parse as ±6.28).
+  `limit_clamp_rad` stays 0.05, so a start from the Gen3 park pose
+  (`arm_joint_4` ≈ -2.674) is REFUSED, naming the joint
+  (kinova-gen3-ros2#49). Don't widen the clamp or the limit to hide it.
+- `joint_limit_margin_rad` (0.1) is cuRobo's `position_limit_clip`: every
+  plan stays that far inside the URDF limits. `joint_limits()` still
+  returns the URDF's (widened back); the constraint re-check enforces the
+  margin. A start inside it is REFUSED by name, never shifted — shifting
+  would put the plan's first point off the arm's measured q.
+- A world file must say `base_frame:` equal to the robot file's root link
+  (`arm_mount` for the Gen3); any other frame, or none, is refused
+  (`load_scene(path, frame)`), since the boxes are applied in that frame.
+- `world_empty.yaml` (no obstacles) is accepted at CONSTRUCTION only: the
+  node applies its `world` parameter to the config before building the
+  planner, and `update_world` still refuses an empty world. The startup log
+  says `Collision world: N boxes (<file>)`.
+- Test fixtures `core/tests/data/arm_level.urdf` / `arm_tilt30.urdf` are
+  rendered by kinova-gen3-ros2's `kinova_gen3_render`; how is in
+  `core/tests/data/README.md`. Re-render, don't hand-edit.
+  `core/rammp_curobo/configs/arm_level.urdf` is the example robot's copy of
+  `arm_level.urdf` (the node's model in example mode); re-render both from
+  the same model, `test_the_examples_urdf_is_the_fixtures_copy` pins them equal.
+- retract_config must stay in the bent-elbow family (arm_joint_3 ≈ π) — the
   stock retract seeds the opposite family and every crossing plan winds.
   It is the IK SEED, read back as `planner.retract_pose`. The planner has
   no home/start pose of its own: `start` is required on every plan call
   and there is no default to fall back on (issue #6).
-- `ee_link` is `tool_frame`: 0.120 m beyond the wrist flange (≈ fingertip
+- `ee_link` is `arm_tool_frame`: 0.120 m beyond the wrist flange (≈ fingertip
   midpoint). Tool corrections (spin 90°, tip 21 mm) are sim-measured and
   ship DISABLED in gen3.yaml until re-measured on the real arm.
 - Sim starts at q=0 (not home). Both sim and real expose the SAME
@@ -89,17 +274,33 @@ the sim-world-without-sim-time tripwire. Hardware sessions still follow
 docs/HARDWARE_BRINGUP.md with a human on the physical e-stop; never drive
 the real arm autonomously from an agent session.
 
+The MEBot sim stack (`sim/mebot_sim`, `make sim`) serves the real arm
+driver's names (`/joint_states`, `/execute_joint_trajectory`), so it never
+runs on the bench's ROS domain, 0: a `ROS_DOMAIN_ID` that is not a plain
+domain from 1 to 232 becomes 88, `/mebot_sim` refuses to start beside
+anything already serving those names, and its client flies nothing unless
+the sim alone serves them. Keep all three.
+
 ## Build / test
 
 ```bash
 python3 -m pip install --user --no-build-isolation -e ./core   # pip quirks: see README
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install --packages-select rammp_curobo_interfaces rammp_curobo_ros
-python3 -m pytest core/tests -q          # offline + GPU smoke
+RAMMP_CUROBO_GPU=1 python3 -m pytest core/tests -q   # offline + GPU smoke
 python3 -m pytest rammp_curobo_ros/test -q -p no:anyio
 ros2 run rammp_curobo_ros tour_demo      # live end-to-end plan check
+make layers                              # regenerate the MEBot layers: no diff
+make verify                              # the image's package vs this checkout's core tests (the image has no tests)
+make sim-test                            # the sim package's tests (Jetson)
+make sim                                 # the MEBot sim suite (Jetson; GPU + ROS)
 ```
 
+`RAMMP_CUROBO_GPU=1` turns a skip of the GPU tests (no CUDA, no torch or
+cuRobo) into a failure, so on the Jetson the core suite cannot pass on its
+offline tests alone; `make verify` sets it, CI does not.
+
 pytest needs the repo-root `pytest.ini` (`-p no:anyio` — user-site anyio
-plugin clashes with system pytest). Style: Ruff v0.3.0 defaults
-(pre-commit), PEP 8, mdformat/gfm for Markdown.
+plugin clashes with system pytest; `-p no:launch_testing -p no:launch_ros`
+— pytest 9 refuses their hooks with ROS on PYTHONPATH). Style: Ruff v0.3.0
+defaults (pre-commit), PEP 8, mdformat/gfm for Markdown.

@@ -8,8 +8,16 @@ the cuRobo install again:
 ```
 in:  /rammp_curobo/plan_to_pose   (geometry_msgs/Pose + start_joints)
      /rammp_curobo/plan_to_joints (7 joint angles    + start_joints)
-out: trajectory_msgs/JointTrajectory — full cuRobo time-parameterization
+out: trajectory_msgs/JointTrajectory — full cuRobo time-parameterization,
+     joint_names (the robot file's), header.frame_id its root
+     link ("arm_mount" for the Gen3 and every RAMMP robot)
+needs: /arm/robot_description (std_msgs/String, latched) from arm_state_publisher
 ```
+
+Poses in and out are `arm_tool_frame` in `arm_mount`, the root of the arm's
+URDF. The container ships no robot, base or site data: a robot supplies its
+own directory (docs/ROBOT_DATA.md) and the model it publishes, read once at
+startup. The one exception is the **example robot** (no `config`; below).
 
 The container holds **no arm driver** and nothing inside it can move an
 arm: executing the returned trajectory is the caller's job, on whatever
@@ -65,6 +73,7 @@ docker build -f docker/Dockerfile -t rammp-curobo:jp6 .
 docker run --rm -it --runtime nvidia --network host --ipc host \
     -e ROS_LOCALHOST_ONLY=1 \
     -v rammp-curobo-cache:/root/.cache \
+    -v ./config/robots/current:/config/robot:ro \
     rammp-curobo:jp6
 ```
 
@@ -73,8 +82,61 @@ docker run --rm -it --runtime nvidia --network host --ipc host \
   (this lab's standard).
 - The cache volume keeps compiled CUDA kernels — without it every cold
   container pays the minutes-long first-plan warmup again.
-- Different world: append the launch invocation with your own args, e.g.
-  `... rammp-curobo:jp6 ros2 launch rammp_curobo_ros planner.launch.py config:=gen3_real.yaml world:=/path/mounted/world.yaml`.
+- **No arguments = the robot's config.** The image's CMD passes
+  `config:=/config/robot/curobo/planner.yaml`, so mount the robot directory at
+  `/config/robot`. Without it the node exits 1 at once with a FATAL naming
+  that file: a bare `docker run` never quietly plans the example robot next to
+  a real arm.
+- **`example` = the example robot.** `docker run ... rammp-curobo:jp6 example`
+  runs the node with no `config`: the shipped example (Gen3 + 2F-85, level
+  mount, kitchen world, a shipped URDF) standalone, with no
+  `arm_state_publisher`, deployment checkout or robot. It says so in a startup
+  banner, a WARN if a model is published (which it then ignores), and an
+  `(example robot)` marker on every plan result and `SetWorld` reply. Further
+  arguments go to the node (`example --ros-args -p robot_description_timeout_s:=5`).
+  `make image-default` checks both behaviours.
+- **The model.** With a `config`, the node waits up to `robot_description_timeout_s`
+  (default 30 s) for `arm_state_publisher` on `/arm/robot_description`
+  (`ros2 launch kinova_gen3_description description.launch.py mount_file:=<robot>/mount.yaml`),
+  in the same ROS domain. A later, different model is never used, and the
+  node logs an ERROR each time one arrives: **restart the container whenever
+  the robot's mount changes.**
+- **Exit codes.** The image's CMD execs the planner node itself (PID 1), not
+  `ros2 launch`, so the container's exit code is the node's: no model in
+  time is a FATAL naming `arm_state_publisher` and a **non-zero exit (1)**,
+  which a restart policy or supervisor sees; `docker stop` exits 0 promptly.
+  The planner config loads before the wait, so a missing or unparseable
+  `planner.yaml` (an unmounted `/config/robot`) exits 1 at once, rather than
+  after a wait for a bind-mount that may come late. The rest of the robot
+  data (a missing file, a world in the wrong frame, a model that is not the
+  robot file's) is checked against the URDF, so it is reported only once the
+  model has arrived, in one FATAL ("robot data or the model on
+  /arm/robot_description: robot data in <dir>: N problems ..."); without
+  `arm_state_publisher` the "no model" FATAL comes first.
+  `check_robot_dir(cfg, cfg_dir, urdf_xml)` runs the same check offline.
+- A different world or parameters: replace the CMD with the node and
+  your own `-p` args, e.g. `... rammp-curobo:jp6 /opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node --ros-args -p config:=/config/robot/curobo/planner.yaml`
+  with the robot's directory mounted (next bullet). A reference in a
+  config to a shipped file is written `example:<name>` (for instance
+  `example:world_empty.yaml`: the arm alone); a bare packaged name such as
+  `gen3_real.yaml` is refused. `ros2 launch rammp_curobo_ros planner.launch.py ...`
+  still works but always exits 0. Under sheppy, see below.
+- A robot's data (the MEBot chair, dojo's bench, any arm). Its planner config,
+  robot file, kinematics reference, world and layer files are NOT in the image:
+  they describe one robot and one site, and ship with that robot, in
+  rammp-deployments `config/robots/<robot>/curobo/` (issue #19,
+  docs/ROBOT_DATA.md). The image holds code and the shipped examples only: no
+  tests, scripts, sim or docs (`make image-contents` asserts it). Mount the
+  robot's directory and name the config by path:
+  `... -v ./config/robots/current:/config/robot:ro rammp-curobo:jp6 /opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node --ros-args -p config:=/config/robot/curobo/planner.yaml`.
+  Set `world` to `""` if your manifest declares one: a non-empty `world`
+  replaces whatever the planner config names.
+  A chair's drive base and the person in it are then in every world,
+  worlds pushed over `/rammp_curobo/set_world` included, and the node's log
+  says so:
+  `Collision world: 30 boxes: scene 0 | config layers: platform 16, seat 5, person 8 | scene layers: floor 1`.
+  The log also says where each piece came from (`(example, image)` or its
+  path). See INTEGRATION.md, "Planning on the MEBot".
 - **Verify the bridge on first start** (the container runs as root; mixed
   root/non-root Fast DDS shared memory is a classic silent-delivery
   failure): from a host shell, `ros2 action list | grep rammp_curobo`
@@ -82,6 +144,42 @@ docker run --rm -it --runtime nvidia --network host --ipc host \
   discovery works but calls hang, run the container with
   `--user $(id -u):$(id -g) -e HOME=/tmp` (move the cache volume to
   `/tmp/.cache`) so DDS shared memory is same-UID as the host nodes.
+
+### Under sheppy (rammp-deployments)
+
+One manifest serves every robot: the planner reads its data from the active
+robot's directory, bind-mounted read-only at `/config/robot`
+(rammp-deployments `config/robots/<robot>/curobo/`), so the manifest names no
+robot's world.
+
+```yaml
+- id: curobo_planner
+  kind: docker
+  ros_node_name: rammp_curobo          # key for the params file sheppy writes
+  container:
+    image: ghcr.io/rammp-org/rammp-curobo:<release>
+    # ... (network, runtime, volumes as today, incl. /config/robot:ro)
+    # sheppy appends --ros-args --params-file only after a command; without
+    # one it replaces the image CMD and the container exits 2.
+    command:
+      - /opt/rammp_curobo/rammp_curobo_ros/lib/rammp_curobo_ros/planner_node
+      - --ros-args
+      - -p
+      - config:=/config/robot/curobo/planner.yaml
+  params:
+    world: ""                          # the robot's planner.yaml names the world
+```
+
+Every profile that runs a planner must point `config` at the robot's
+`planner.yaml`: a profile that leaves `config` out gets the **example robot**
+(Gen3 + kitchen), loudly, not its own. A robot with no `curobo/` directory
+fails at once with exit 1 (no `planner.yaml`), which is the intended loud
+failure.
+
+The planner exits 1 when no model arrives within 30 s
+(`robot_description_timeout_s`; a slow first `arm_state_publisher` start does it), and
+sheppy does not restart it: after fixing `arm_state_publisher`, restart the planner
+(`sheppy restart planner`).
 
 ## Client side (your codebase)
 
@@ -128,6 +226,20 @@ including merging chained plans into one continuous trajectory).
 ## Verify the image (no arm needed)
 
 ```bash
-docker run --rm --runtime nvidia rammp-curobo:jp6 \
-    python3 -m pytest /opt/rammp_curobo_src/core/tests -q
+make verify IMAGE=rammp-curobo:jp6        # from a checkout
 ```
+
+which runs
+
+```bash
+docker run --rm --runtime nvidia -e RAMMP_CUROBO_GPU=1 -v $PWD:/src:ro -w /src \
+    rammp-curobo:jp6 python3 -m pytest /src/core/tests -q -p no:cacheprovider
+```
+
+The image carries no tests, so the checkout is mounted; the tests import the
+image's installed package, so this verifies the image's code against this
+checkout's tests.
+
+`RAMMP_CUROBO_GPU=1` fails the run where the GPU tests would skip (no GPU
+passed through, a torch or cuRobo that does not import), instead of
+passing it on the offline tests alone.
