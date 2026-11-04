@@ -19,17 +19,23 @@ signature or contract changes.
 
 ### Fixed
 
-- **The image runs the fleet's Cyclone DDS config.** It set
+- **The image runs the fleet's Cyclone DDS config** (#60). It set
   `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` but no `CYCLONEDDS_URI`, so it ran
-  Cyclone's built-in default, unlike every module built on rammp-base. Two
-  consequences: user data went multicast onto the selected NIC (usually the
-  arm's network), and `ParticipantIndex auto` capped a `--network host` machine
-  at 10 participants, so on a full robot stack the planner could fail with
-  "Failed to find a free participant index". The image now carries
-  rammp-org/RAMMP-docker's `docker/cyclonedds.xml` (`AllowMulticast spdp`,
-  `ParticipantIndex none`; RAMMP-docker#12) at `/etc/cyclonedds/config.xml` and
-  sets `CYCLONEDDS_URI` to it. A deployment that sets its own `CYCLONEDDS_URI`
-  still wins (#60).
+  Cyclone's built-in defaults. The difference that matters is `AllowMulticast`:
+  the default multicasts user data onto the selected NIC, usually the arm's
+  network, where rammp-org/RAMMP-docker#12 moved the fleet to `spdp` (discovery
+  multicast, user data unicast) because camera traffic there starved the
+  Kinova's 1 kHz cyclic channel. The image now carries RAMMP-docker's
+  `docker/cyclonedds.xml` at `/etc/cyclonedds/config.xml` and sets
+  `CYCLONEDDS_URI` to it. A deployment that sets its own `CYCLONEDDS_URI` still
+  wins.
+
+  Correction: this entry, #60 and the `v2.0.1` tag message said 2.0.0 was
+  capped at 10 participants per host. It was not. Cyclone's built-in default is
+  already `ParticipantIndex none`; the cap came from rammp-base's old config,
+  which set `auto`. Measured on abra: the effective config of 2.0.0 reads
+  `ParticipantIndex none` / `AllowMulticast default`, 2.0.1 reads `none` /
+  `spdp`, and both start 12 participants in one host-network container.
 
 ## [2.0.0] — 2026-11-04
 
