@@ -12,6 +12,11 @@ that heading to the new version and bumps the five places the number lives.
 
 ## [Unreleased]
 
+## [2.0.1] — 2026-11-04
+
+A patch release: the image runs the fleet's Cyclone DDS config (#60). No message,
+signature or contract changes.
+
 ### Fixed
 
 - **The image runs the fleet's Cyclone DDS config.** It set
@@ -24,7 +29,7 @@ that heading to the new version and bumps the five places the number lives.
   rammp-org/RAMMP-docker's `docker/cyclonedds.xml` (`AllowMulticast spdp`,
   `ParticipantIndex none`; RAMMP-docker#12) at `/etc/cyclonedds/config.xml` and
   sets `CYCLONEDDS_URI` to it. A deployment that sets its own `CYCLONEDDS_URI`
-  still wins.
+  still wins (#60).
 
 ## [2.0.0] — 2026-11-04
 
@@ -570,4 +575,5 @@ claim about all of it:
 [1.0.0]: https://github.com/rammp-org/RAMMP-CuRobo/releases/tag/v1.0.0
 [1.1.0]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v1.0.0...v1.1.0
 [2.0.0]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v1.1.0...v2.0.0
-[unreleased]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v2.0.0...HEAD
+[2.0.1]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v2.0.0...v2.0.1
+[unreleased]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v2.0.1...HEAD
