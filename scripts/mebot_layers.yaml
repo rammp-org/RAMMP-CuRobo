@@ -101,8 +101,9 @@ platform:
 # The occupant: any seated adult from the 5th-percentile woman to the
 # 95th-percentile man, plus a margin on every face, as three segments (torso
 # and head, lap, lower legs and feet).
-# A measured occupant is `boxes_in` instead: {name: [lo, hi]} in inches in
-# arm_mount, from the arm's base, clearance included (no margin, no ANSUR).
+# A measured occupant is `boxes` instead: {name: [lo, hi]} in metres,
+# clearance included (no margin, no ANSUR); `frame: arm_mount` when measured
+# from the arm's base (see seat).
 person:
   # ANSUR II 2012 (Gordon et al. 2014), via The Ergonomics Center (NCSU),
   # "Anthropometric Data for U.S. Adults", 11/2024: inches as tabulated
@@ -184,8 +185,9 @@ seat:
   # optimisation finds only paths slower than its largest dt (DT_EXCEPTION),
   # on nearly every plan.
   keep_out_margin_m: 0.035
-  # Parts may also be `boxes_in`: inches in arm_mount, measured from the arm's
-  # base, which a mount change leaves in place. `carve: spheres` carves by a
+  # `frame: arm_mount` gives the boxes in arm_mount, measured from the arm's
+  # base, which a mount change leaves in place (default: the mebot frame,
+  # placed by the mount). `carve: spheres` carves by a
   # cube per fixed sphere instead of one box around them all (more of a part
   # beside a tilted arm survives, in more pieces).
   boxes:
