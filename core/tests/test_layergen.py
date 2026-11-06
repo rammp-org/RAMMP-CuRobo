@@ -2225,3 +2225,75 @@ def test_another_robots_data_needs_an_outdir_unless_checking(tmp_path, capsys):
     assert gen.main(["--data", str(other)]) == 1
     err = capsys.readouterr().err
     assert "--outdir" in err and "overwritten" in err
+
+
+def test_measured_boxes_stay_where_they_were_measured_from_the_arm(data):
+    # `boxes_in` are inches in arm_mount, measured from the arm's base: a new
+    # mount moves the drive base and the mebot-frame parts, not them. The
+    # person given so takes no margin (the measurement includes clearance) and
+    # no ANSUR size.
+    inch = gen.INCH
+    data["person"] = {"boxes_in": {"torso": [[-9, -23, 12.5], [0, -5, 43]]}}
+    data["seat"]["boxes_in"] = {"armrest_far": [[-13.5, -29, 13], [2, -25, 15]]}
+    torso = gen._snap([-9 * inch, -23 * inch, 12.5 * inch], [0, -5 * inch, 43 * inch])
+    armrest = gen._snap(
+        [-13.5 * inch, -29 * inch, 13 * inch], [2 * inch, -25 * inch, 15 * inch]
+    )
+    for position in ([0.505, -0.265, 0.376], [0.32, 0.35, 0.44]):
+        data["mount"]["arm_base_in_mebot"]["position"] = position
+        result = _generate(data, FAR_BOX)
+        assert result["person"]["boxes"] == [{"name": "torso", "box": torso}]
+        seat = {b["name"]: b["box"] for b in result["seat"]["boxes"]}
+        assert seat["armrest_far"] == armrest
+    meta = yaml.safe_load(result["files"][data["outputs"]["person"]])["meta"]
+    assert meta["boxes_in"] == {"torso": [[-9, -23, 12.5], [0, -5, 43]]}
+    meta = yaml.safe_load(result["files"][data["outputs"]["seat"]])["meta"]
+    assert meta["parts_in"] == {"armrest_far": [[-13.5, -29, 13], [2, -25, 15]]}
+
+
+def test_a_carve_by_sphere_keeps_an_armrest_over_the_tilted_arm(data):
+    # flatbot's armrest runs over its arm, tilted 30 degrees forward. The
+    # column's one bounding box covers the armrest's whole height there and
+    # drops its front 15 cm; a cube per sphere takes a strip and a notch.
+    data["mount"]["arm_base_joint"] = {"rpy_deg": [0, 30, 0]}
+    data["seat"]["boxes_in"] = {"armrest_arm": [[-13.5, -2.5, 13], [2, 1.5, 15]]}
+    inch = gen.INCH
+    whole = gen.union_stats(
+        [
+            gen._snap(
+                [-13.5 * inch, -2.5 * inch, 13 * inch],
+                [2 * inch, 1.5 * inch, 15 * inch],
+            )
+        ]
+    )[0]
+
+    def armrest(result):
+        boxes = [b["box"] for b in result["seat"]["boxes"]]
+        return [
+            b["box"]
+            for b in result["seat"]["boxes"]
+            if b["name"].startswith("armrest_arm")
+        ], boxes
+
+    by_column, _ = armrest(_generate(data, FAR_BOX))
+    data["seat"]["carve"] = "spheres"
+    result = _generate(data, FAR_BOX)
+    by_sphere, every = armrest(result)
+    assert gen.union_stats(by_column)[0] < 0.65 * whole
+    assert gen.union_stats(by_sphere)[0] > 0.9 * whole
+    # still clear of the spheres by the seat's margin, padded
+    spheres = gen.keep_out_spheres(data)
+    pad, margin = data["padding_assumed_m"], data["seat"]["keep_out_margin_m"]
+    assert _clearance(every, spheres, pad) >= margin
+    meta = yaml.safe_load(result["files"][data["outputs"]["seat"]])["meta"]
+    assert meta["carve"] == "spheres"
+
+
+def test_a_bad_carve_or_a_box_named_twice_is_refused(data):
+    data["seat"]["carve"] = "cubes"
+    with pytest.raises(ValueError, match="carve must be column or spheres"):
+        _generate(data, FAR_BOX)
+    data["seat"]["carve"] = "column"
+    data["seat"]["boxes_in"] = {"base": [[0, -20, 0], [1, -19, 1]]}
+    with pytest.raises(ValueError, match="box base is in both boxes and boxes_in"):
+        _generate(data, FAR_BOX)
