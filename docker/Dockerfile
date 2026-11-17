@@ -127,10 +127,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-humble-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
 ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-# The fleet's Cyclone config (see docker/cyclonedds.xml): user data unicast,
-# off the arm NIC, and ParticipantIndex none, so a host is not capped at 10
-# participants. Without it this was Cyclone's built-in default. A manifest that
-# sets CYCLONEDDS_URI still overrides it.
+# The fleet's Cyclone config (see docker/cyclonedds.xml). What it changes here
+# is AllowMulticast spdp: user data goes unicast, off the arm NIC, where
+# Cyclone's built-in default multicasts it. ParticipantIndex none is already
+# Cyclone's default; the file states it to match rammp-base. It names no
+# network interface, so a deployment can add one by listing a second file after
+# it in CYCLONEDDS_URI. A manifest that sets CYCLONEDDS_URI to its own file
+# still replaces it.
 COPY docker/cyclonedds.xml /etc/cyclonedds/config.xml
 ENV CYCLONEDDS_URI=file:///etc/cyclonedds/config.xml
 

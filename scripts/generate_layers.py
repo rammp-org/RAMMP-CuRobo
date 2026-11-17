@@ -837,26 +837,87 @@ def _column(data, spheres, margin=None):
     )
 
 
-def _carved(name, whole, column):
-    """`whole` (ticks) less `column`, as named boxes: `name`, or `name_<k>`
-    for each piece when the column cuts it."""
-    pieces = subtract(whole, column)
+def _cubes(data, spheres, margin=None):
+    """The column as one cube per fixed sphere, ticks: each out to where a
+    padded box would still clear that sphere by `margin`. A box outside all of
+    them clears every sphere by it, as outside _column; but the tilted column's
+    single bounding box also covers what lies beside the column's lean, like
+    an armrest above the arm, which these leave."""
+    margin = data["keep_out_margin_m"] if margin is None else margin
+    reach = data["padding_assumed_m"] + margin
+    return [
+        _snap(
+            [c[k] - r - reach for k in range(3)], [c[k] + r + reach for k in range(3)]
+        )
+        for c, r, _ in spheres
+    ]
+
+
+def _cuts(data, section, spheres, margin=None):
+    """What a section's boxes are carved by: the column (default), or, with
+    `carve: spheres`, its per-sphere cubes (_cubes), which leave more of a part
+    beside the tilted column but cut it into more pieces."""
+    carve = section.get("carve", "column")
+    if carve == "column":
+        return [_column(data, spheres, margin)]
+    if carve == "spheres":
+        return _cubes(data, spheres, margin)
+    raise ValueError("carve must be column or spheres, got %r" % (carve,))
+
+
+def _carved(name, whole, cuts):
+    """`whole` (ticks) less each of `cuts`, as named boxes: `name`, or
+    `name_<k>` for each piece when they cut it."""
+    pieces = [whole]
+    for cut in cuts:
+        pieces = [piece for box in pieces for piece in subtract(box, cut)]
     return [
         {"name": name if len(pieces) == 1 else "%s_%d" % (name, k), "box": piece}
         for k, piece in enumerate(pieces)
     ]
 
 
+def _parts(section, mount):
+    """A section's `boxes` ([lo, hi], metres) in arm_mount, as (name, lo, hi),
+    by name. They are in the mebot frame, placed by the mount, unless the
+    section says `frame: arm_mount`: measured from the arm's base, which a
+    mount change leaves where they are."""
+    frame = section.get("frame", "mebot")
+    if frame not in ("mebot", "arm_mount"):
+        raise ValueError("frame must be mebot or arm_mount, got %r" % (frame,))
+    offset = mount if frame == "mebot" else [0.0, 0.0, 0.0]
+    return sorted(
+        (name, [v - o for v, o in zip(lo, offset)], [v - o for v, o in zip(hi, offset)])
+        for name, (lo, hi) in section.get("boxes", {}).items()
+    )
+
+
+def _measured(data):
+    """True when the person is given as boxes, not ANSUR sizes."""
+    return "boxes" in data["person"]
+
+
 def _person(data, spheres):
     mount = data["mount"]["arm_base_in_mebot"]["position"]
     column = _column(data, spheres)
+    cuts = _cuts(data, data["person"], spheres)
+    if _measured(data):
+        # As measured, clearance included: no margin is added.
+        parts = _parts(data["person"], mount)
+    else:
+        parts = [
+            (
+                name,
+                [v - o for v, o in zip(lo, mount)],
+                [v - o for v, o in zip(hi, mount)],
+            )
+            for name, lo, hi in _person_segments(data)
+        ]
     envelope, boxes = [], []
-    for name, lo, hi in _person_segments(data):
-        whole = _snap(
-            [v - o for v, o in zip(lo, mount)], [v - o for v, o in zip(hi, mount)]
-        )
+    for name, lo, hi in parts:
+        whole = _snap(lo, hi)
         envelope.append((name, whole))
-        boxes += _carved(name, whole, column)
+        boxes += _carved(name, whole, cuts)
     envelope_union, _, _ = union_stats([box for _, box in envelope])
     union, total, _ = union_stats([b["box"] for b in boxes])
     return {
@@ -871,17 +932,15 @@ def _person(data, spheres):
 
 # ------------------------------------------------------------------------ seat
 def _seat(data, spheres):
-    """The seat's parts as the data gives them, mebot frame [lo, hi], placed
-    in arm_mount and carved around the arm's fixed spheres as the person is."""
+    """The seat's parts as the data gives them (see _parts), in arm_mount,
+    carved around the arm's fixed spheres as the person is."""
     mount = data["mount"]["arm_base_in_mebot"]["position"]
-    column = _column(data, spheres, data["seat"]["keep_out_margin_m"])
+    cuts = _cuts(data, data["seat"], spheres, data["seat"]["keep_out_margin_m"])
     envelope, boxes = [], []
-    for name, (lo, hi) in sorted(data["seat"]["boxes"].items()):
-        whole = _snap(
-            [v - o for v, o in zip(lo, mount)], [v - o for v, o in zip(hi, mount)]
-        )
+    for name, lo, hi in _parts(data["seat"], mount):
+        whole = _snap(lo, hi)
         envelope.append((name, whole))
-        boxes += _carved(name, whole, column)
+        boxes += _carved(name, whole, cuts)
     envelope_union, _, _ = union_stats([box for _, box in envelope])
     union, total, _ = union_stats([b["box"] for b in boxes])
     return {
@@ -997,8 +1056,53 @@ def _platform_text(data, layer):
     return _layer_text("platform", False, about, meta, layer["boxes"], _data_name(data))
 
 
+def _section_meta(section, key):
+    """A section's `frame` and `carve` when given, then its boxes under `key`."""
+    meta = ["%s: %s" % (k, section[k]) for k in ("frame", "carve") if k in section]
+    return (
+        meta
+        + ["%s:" % key]
+        + [
+            "  %s: [[%s], [%s]]"
+            % (name, ", ".join("%s" % v for v in lo), ", ".join("%s" % v for v in hi))
+            for name, (lo, hi) in sorted(section["boxes"].items())
+        ]
+    )
+
+
+def _placed(section):
+    if section.get("frame") == "arm_mount":
+        return "measured from the arm's base"
+    return "in the MEBot frame, placed by the mount"
+
+
+def _volumes_meta(layer, envelope_key):
+    return [
+        "volumes:",
+        "  %s: %s" % (envelope_key, _m3(layer["envelope_union"])),
+        "  layer_m3: %s" % _m3(layer["union"]),
+        "  carved_m3: %s" % _m3(layer["envelope_union"] - layer["union"]),
+    ]
+
+
 def _person_text(data, layer):
     person = data["person"]
+    if _measured(data):
+        meta = _frame_meta(data)
+        meta += ["keep_out_margin_m: %s" % data["keep_out_margin_m"]]
+        meta += _section_meta(person, "boxes")
+        meta += _volumes_meta(layer, "envelope_m3")
+        meta += [
+            "  overlap_m3: %s" % _m3(layer["total"] - layer["union"]),
+            "keep_out_clearance_m: %.4f" % layer["clearance_m"],
+        ]
+        about = (
+            "The MEBot's occupant as boxes %s, clearance included, carved around"
+            " the arm's fixed spheres." % _placed(person)
+        )
+        return _layer_text(
+            "person", True, about, meta, layer["boxes"], _data_name(data)
+        )
     # by row, then name: a size and its `_low` end share a row
     rows = sorted(
         person["ansur_in"].items(), key=lambda item: (item[1]["row"], item[0])
@@ -1030,24 +1134,21 @@ def _person_text(data, layer):
 
 def _seat_text(data, layer):
     meta = _frame_meta(data)
-    meta += ["keep_out_margin_m: %s" % data["seat"]["keep_out_margin_m"], "parts:"]
-    meta += [
-        "  %s: [[%s], [%s]]"
-        % (name, ", ".join("%s" % v for v in lo), ", ".join("%s" % v for v in hi))
-        for name, (lo, hi) in sorted(data["seat"]["boxes"].items())
-    ]
-    meta += [
-        "volumes:",
-        "  parts_m3: %s" % _m3(layer["envelope_union"]),
-        "  layer_m3: %s" % _m3(layer["union"]),
-        "  carved_m3: %s" % _m3(layer["envelope_union"] - layer["union"]),
-        "keep_out_clearance_m: %.4f" % layer["clearance_m"],
-    ]
-    about = (
-        "The MEBot's seat: base, backrest and the joystick-side armrest, from the"
-        " RAMMS seat asset's collision hulls, carved around the arm's fixed"
-        " spheres."
-    )
+    meta += ["keep_out_margin_m: %s" % data["seat"]["keep_out_margin_m"]]
+    meta += _section_meta(data["seat"], "parts")
+    meta += _volumes_meta(layer, "parts_m3")
+    meta += ["keep_out_clearance_m: %.4f" % layer["clearance_m"]]
+    if "frame" in data["seat"]:
+        about = (
+            "The MEBot's seat: its parts %s, carved around the arm's fixed"
+            " spheres." % _placed(data["seat"])
+        )
+    else:
+        about = (
+            "The MEBot's seat: base, backrest and the joystick-side armrest, from"
+            " the RAMMS seat asset's collision hulls, carved around the arm's"
+            " fixed spheres."
+        )
     return _layer_text("seat", False, about, meta, layer["boxes"], _data_name(data))
 
 
@@ -1116,9 +1217,11 @@ def generate(data, urdf_bytes, perturb=0.0):
     # The person's arm side is data the segments read; the mount says where
     # the arm is. A disagreement would narrow the forearms on the armrest's
     # side, where they rest wide.
-    side = data["person"]["arm_side"]
-    offset = mount["position"][1] - data["person"]["seat"]["centreline_y"]
-    if side not in (1, -1) or side * offset <= 0:
+    side = data["person"].get("arm_side")
+    offset = mount["position"][1] - data["person"].get("seat", {}).get(
+        "centreline_y", 0
+    )
+    if not _measured(data) and (side not in (1, -1) or side * offset <= 0):
         raise ValueError(
             "person arm_side %r must be +1 or -1, the side of the centreline the"
             " mount is on (its y is %s)" % (side, mount["position"][1])
