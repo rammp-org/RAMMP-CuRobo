@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   A copy of rammp-org/RAMMP-docker docker/cyclonedds.xml, the config every
-  rammp-base module runs. This image builds FROM l4t-jetpack, not rammp-base,
-  so it carries its own copy. Change RAMMP-docker first, then copy it here.
+  rammp-base module runs (as of RAMMP-docker v2.2.0-jp6). This image builds
+  FROM l4t-jetpack, not rammp-base, so it carries its own copy. Change
+  RAMMP-docker first, then copy it here.
   Two comments say "host networking" where the original writes the docker
   flag: strict XML forbids a double hyphen inside a comment. The settings
   are identical.
@@ -15,21 +16,28 @@
   DDS. The base image sets both RMW_IMPLEMENTATION and CYCLONEDDS_URI so every
   module inherits a consistent, working middleware.
 
-  autodetermine="true" makes Cyclone pick the first non-loopback,
-  multicast-capable interface. Run containers with host networking so that
-  interface is the robot's real NIC; on a Docker bridge network, Cyclone will
-  bind the bridge and nodes in other containers will not discover each other.
+  No network interface is named here, so Cyclone picks one itself: the first
+  non-loopback, multicast-capable interface. Run containers with
+  host networking so that interface is the robot's real NIC; on a Docker
+  bridge network, Cyclone will bind the bridge and nodes in other containers
+  will not discover each other.
 
-  Override for a specific robot or bench setup by mounting your own file and
-  pointing CYCLONEDDS_URI at it:
-      docker run -e CYCLONEDDS_URI=file:///cfg/my.xml -v ./my.xml:/cfg/my.xml ...
+  The interface is left out on purpose, so a robot can name its own without
+  replacing this file. CYCLONEDDS_URI takes a comma-separated list of files,
+  merged in order: repeated elements such as NetworkInterface accumulate, and
+  a later single value (AllowMulticast, say) overrides this file's:
+      CYCLONEDDS_URI=file:///etc/cyclonedds/config.xml,file:///cfg/iface.xml
+  where iface.xml holds only
+      <CycloneDDS><Domain><General><Interfaces>
+        <NetworkInterface name="eno1" />
+      </Interfaces></General></Domain></CycloneDDS>
+  This needs the base file to name no interface. On images before 2.1.0-jp6,
+  which also autodetermine one, naming the NIC autodetermine picks fails at
+  node creation, and naming any other NIC silently binds both.
 -->
 <CycloneDDS xmlns="https://cdds.io/config">
   <Domain id="any">
     <General>
-      <Interfaces>
-        <NetworkInterface autodetermine="true" priority="default" multicast="default" />
-      </Interfaces>
       <!--
         spdp: multicast for participant discovery only; user data goes
         unicast. With "default", any topic with more than one reader is

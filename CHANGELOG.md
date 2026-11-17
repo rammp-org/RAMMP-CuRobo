@@ -12,6 +12,32 @@ that heading to the new version and bumps the five places the number lives.
 
 ## [Unreleased]
 
+## [2.0.2] — 2026-11-17
+
+A patch release: the image's Cyclone DDS config no longer lists an
+autodetermined network interface, matching rammp-base 2.1.0-jp6 and later
+(rammp-org/RAMMP-docker#16). No message, signature or contract changes.
+
+### Changed
+
+- **`docker/cyclonedds.xml` names no interface.** It drops
+  `<NetworkInterface autodetermine="true" .../>`, which is already Cyclone's
+  default, so on its own nothing changes: the planner still picks the first
+  non-loopback, multicast-capable NIC, with `AllowMulticast spdp` and
+  `ParticipantIndex none` as before. What changes is layering. A deployment
+  can now pin the robot's NIC by listing a one-element file after this one,
+  `CYCLONEDDS_URI=file:///etc/cyclonedds/config.xml,file:///cfg/iface.xml`.
+  With the autodetermine entry present, that either fails at node creation
+  (naming the NIC autodetermine picks) or silently binds two NICs (naming
+  another). rammp-org/rammp-deployments#160 layers flatbot's `eno1` this way.
+  With `ROS_LOCALHOST_ONLY=1`, the planner now binds `lo` only, not `lo` plus a
+  real NIC.
+
+### Added (outside the public surface)
+
+- `scripts/generate_layers.py` builds a chair from measured boxes (`boxes_in`,
+  `carve: spheres`) (#63). Tooling only; not in the image.
+
 ## [2.0.1] — 2026-11-04
 
 A patch release: the image runs the fleet's Cyclone DDS config (#60). No message,
@@ -582,4 +608,5 @@ claim about all of it:
 [1.1.0]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v1.0.0...v1.1.0
 [2.0.0]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v1.1.0...v2.0.0
 [2.0.1]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v2.0.0...v2.0.1
-[unreleased]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v2.0.1...HEAD
+[2.0.2]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v2.0.1...v2.0.2
+[unreleased]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v2.0.2...HEAD
