@@ -146,6 +146,9 @@ A rammp-deployments commit; the image does not change.
   `make layers DATA=<robot>/<inputs>.yaml OUTDIR=<robot>/curobo`
   (`DATA=` without `OUTDIR=` is refused, so a checkout's fixtures are not
   overwritten). The generator takes the robot file from next to its input. Commit what it writes.
+  A chair with no URDF (a 3D scan) is boxed by `scripts/scan_to_boxes.py` into the
+  input's `seat.boxes`; leave out `source` and `mount.arm_base_in_mebot`, and no platform
+  layer is written.
 - **An arm**: bring a robot file with its own spheres, `retract_config`, joint
   names, locked joints and `model_check`, and the kinematics reference JSON
   its spheres were fitted on. Generating spheres for a new arm is not

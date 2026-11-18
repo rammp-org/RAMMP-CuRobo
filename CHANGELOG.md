@@ -12,6 +12,21 @@ that heading to the new version and bumps the five places the number lives.
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/scan_to_boxes.py`**: covers a chair's 3D scan (a closed mesh) with
+  axis-aligned boxes for the generator's `seat.boxes`, cutting out an arm fused
+  into the scan, with `--solid` for volumes written as one box (under the seat,
+  the backrest). Every surface point of the scan is checked to be inside a box.
+  A workstation tool (trimesh); the image does not carry it.
+
+### Changed
+
+- **`scripts/generate_layers.py` runs without a URDF.** Inputs with no `source`
+  and no `mount.arm_base_in_mebot` (a chair given as boxes in `arm_mount`)
+  write no platform layer, and the floor's top is the seat's lowest point. The
+  in-repo fixtures, which keep the URDF, regenerate unchanged.
+
 ## [2.0.2] — 2026-11-17
 
 A patch release: the image's Cyclone DDS config no longer lists an

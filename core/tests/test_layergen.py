@@ -2293,3 +2293,67 @@ def test_a_bad_carve_or_frame_is_refused(data):
     data["seat"]["frame"] = "arm_base"
     with pytest.raises(ValueError, match="frame must be mebot or arm_mount"):
         _generate(data, FAR_BOX)
+
+
+def _without_urdf(data):
+    """A chair given as boxes measured from the arm's base (a scan), with no
+    URDF: no `source`, no `arm_base_in_mebot` and no platform output."""
+    del data["source"]
+    del data["mount"]["arm_base_in_mebot"]
+    del data["outputs"]["platform"]
+    data["person"] = {
+        "frame": "arm_mount",
+        "boxes": {"torso": [[-0.45, -0.55, 0.1], [-0.2, -0.15, 0.9]]},
+    }
+    data["seat"] = {
+        "keep_out_margin_m": 0.035,
+        "frame": "arm_mount",
+        "boxes": {
+            "base": [[-0.6, -0.6, -0.5], [-0.2, -0.15, 0.05]],
+            "armrest": [[-0.5, -0.05, 0.25], [-0.1, 0.05, 0.3]],
+        },
+    }
+    return data
+
+
+def test_a_chair_without_a_urdf_has_no_platform_and_stands_on_its_lowest_box(
+    data, monkeypatch, tmp_path
+):
+    data = _without_urdf(data)
+    result = gen.generate(data, None)
+    assert "platform" not in result
+    assert sorted(result["files"]) == sorted(
+        data["outputs"][layer] for layer in ("person", "seat", "floor")
+    )
+    floor = yaml.safe_load(result["files"][data["outputs"]["floor"]])
+    seat = yaml.safe_load(result["files"][data["outputs"]["seat"]])
+    lowest = min(o["position"][Z] - o["dims"][Z] / 2 for o in seat["obstacles"])
+    assert lowest == pytest.approx(-0.5, abs=2e-4)  # the base's bottom, snapped out
+    (slab,) = floor["obstacles"]
+    assert slab["dims"] == [3.0, 3.0, 0.1]
+    assert slab["position"][Z] + slab["dims"][Z] / 2 == pytest.approx(lowest, abs=1e-9)
+    for text in result["files"].values():
+        assert "arm_base_in_mebot" not in text and "source:" not in text
+    assert "lowest point of the seat" in result["files"][data["outputs"]["floor"]]
+
+    # the CLI fetches nothing and writes the three layers
+    def no_fetch(*args, **kwargs):
+        raise AssertionError("a chair without a URDF fetches nothing")
+
+    monkeypatch.setattr(gen, "fetch_pinned", no_fetch)
+    (tmp_path / "data.yaml").write_text(yaml.safe_dump(data))
+    status = gen.main(
+        ["--data", str(tmp_path / "data.yaml"), "--outdir", str(tmp_path)]
+    )
+    assert status == 0
+    assert sorted(p.name for p in tmp_path.glob("layer_*.yaml")) == sorted(
+        os.path.basename(data["outputs"][layer])
+        for layer in ("person", "seat", "floor")
+    )
+
+
+def test_without_a_urdf_a_section_in_the_mebot_frame_is_refused(data):
+    data = _without_urdf(data)
+    del data["seat"]["frame"]
+    with pytest.raises(ValueError, match="arm_base_in_mebot"):
+        gen.generate(data, None)

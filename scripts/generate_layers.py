@@ -19,6 +19,11 @@ checkout's copy; a robot's own is written with --outdir):
     arm's joint-independent spheres.
   * floor: a slab whose top is the URDF's lowest point.
 
+A chair with no URDF (a scan, boxed by scripts/scan_to_boxes.py) gives no
+`source` and no mount.arm_base_in_mebot: it is all in the seat, measured from
+the arm's base (`frame: arm_mount`), no platform layer is written, and the
+floor's top is the seat's lowest point.
+
 No padded box of any layer may come near those fixed spheres, or the planner
 sees every state as a collision; a layer that does is not written.
 
@@ -885,6 +890,12 @@ def _parts(section, mount):
     frame = section.get("frame", "mebot")
     if frame not in ("mebot", "arm_mount"):
         raise ValueError("frame must be mebot or arm_mount, got %r" % (frame,))
+    if frame == "mebot" and mount is None:
+        raise ValueError(
+            "a section in the mebot frame is placed by mount.arm_base_in_mebot,"
+            " which a chair without a URDF `source` does not have: give it"
+            " `frame: arm_mount`"
+        )
     offset = mount if frame == "mebot" else [0.0, 0.0, 0.0]
     return sorted(
         (name, [v - o for v, o in zip(lo, offset)], [v - o for v, o in zip(hi, offset)])
@@ -897,8 +908,14 @@ def _measured(data):
     return "boxes" in data["person"]
 
 
+def _mount_xyz(data):
+    """arm_base_in_mebot's position, or None for a chair without a URDF."""
+    mount = data["mount"].get("arm_base_in_mebot")
+    return None if mount is None else mount["position"]
+
+
 def _person(data, spheres):
-    mount = data["mount"]["arm_base_in_mebot"]["position"]
+    mount = _mount_xyz(data)
     column = _column(data, spheres)
     cuts = _cuts(data, data["person"], spheres)
     if _measured(data):
@@ -934,7 +951,7 @@ def _person(data, spheres):
 def _seat(data, spheres):
     """The seat's parts as the data gives them (see _parts), in arm_mount,
     carved around the arm's fixed spheres as the person is."""
-    mount = data["mount"]["arm_base_in_mebot"]["position"]
+    mount = _mount_xyz(data)
     cuts = _cuts(data, data["seat"], spheres, data["seat"]["keep_out_margin_m"])
     envelope, boxes = [], []
     for name, lo, hi in _parts(data["seat"], mount):
@@ -952,11 +969,10 @@ def _seat(data, spheres):
 
 
 # ----------------------------------------------------------------------- floor
-def _floor(data, primitives):
+def _floor(data, top):
+    """The slab under the chair, its top at `top` (ticks)."""
     floor = data["floor"]
     half = round(floor["half_extent_m"] / TICK)
-    # Rounded UP: outward for the floor solid, whose top this is.
-    top = _snap_up(min(p["lo"][2] for p in primitives))
     bottom = top - round(floor["thickness_m"] / TICK)
     return {
         "boxes": [{"name": "floor", "box": ((-half, -half, bottom), (half, half, top))}]
@@ -1020,9 +1036,13 @@ def _pin_meta(data):
 
 
 def _frame_meta(data):
-    mount = data["mount"]["arm_base_in_mebot"]
-    return [
-        "arm_base_in_mebot: %s" % _flow(mount, "position", "rpy_deg"),
+    mount = data["mount"].get("arm_base_in_mebot")
+    placed = (
+        []
+        if mount is None
+        else ["arm_base_in_mebot: %s" % _flow(mount, "position", "rpy_deg")]
+    )
+    return placed + [
         "arm_base_joint: %s" % _flow(data["mount"]["arm_base_joint"], "rpy_deg"),
         "grid_m: %s" % data["grid_m"],
         "padding_assumed_m: %s" % data["padding_assumed_m"],
@@ -1153,16 +1173,17 @@ def _seat_text(data, layer):
 
 
 def _floor_text(data, layer):
-    meta = _pin_meta(data) + _frame_meta(data)
+    if "source" in data:
+        meta = _pin_meta(data) + _frame_meta(data) + ["joints: all zero"]
+        lowest = "the pinned URDF's lowest point"
+    else:
+        meta = _frame_meta(data)
+        lowest = "the lowest point of the seat"
     meta += [
-        "joints: all zero",
         "floor: %s" % _flow(data["floor"], "half_extent_m", "thickness_m"),
         "keep_out_clearance_m: %.4f" % layer["clearance_m"],
     ]
-    about = (
-        "The ground under the MEBot: a slab whose top is the pinned URDF's"
-        " lowest point."
-    )
+    about = "The ground under the MEBot: a slab whose top is %s." % lowest
     return _layer_text("floor", False, about, meta, layer["boxes"], _data_name(data))
 
 
@@ -1180,13 +1201,17 @@ def generate(data, urdf_bytes, perturb=0.0):
 
     Every gate runs here, and any failure is a ValueError: a result may be
     written as it is. `perturb` is passed to urdf_primitives.
+
+    Without a `source` there is no URDF (`urdf_bytes` is None): no platform,
+    and the floor's top is the seat's lowest point.
     """
-    digest = hashlib.sha256(urdf_bytes).hexdigest()
-    if digest != data["source"]["sha256"]:
-        raise ValueError(
-            "the URDF's sha256 is %s, not the pinned %s"
-            % (digest, data["source"]["sha256"])
-        )
+    if "source" in data:
+        digest = hashlib.sha256(urdf_bytes).hexdigest()
+        if digest != data["source"]["sha256"]:
+            raise ValueError(
+                "the URDF's sha256 is %s, not the pinned %s"
+                % (digest, data["source"]["sha256"])
+            )
     if data["grid_m"] != TICK:
         raise ValueError(
             "grid_m %s is not supported: the layer files are printed on a %s m"
@@ -1213,20 +1238,28 @@ def generate(data, urdf_bytes, perturb=0.0):
         raise ValueError(
             "mount arm_base_joint rpy_deg must be three finite angles, got %s" % tilt
         )
-    mount = data["mount"]["arm_base_in_mebot"]
+    mount = data["mount"].get("arm_base_in_mebot")
+    if mount is None:
+        # Nothing places the URDF or an ANSUR occupant then.
+        if "source" in data or not _measured(data):
+            raise ValueError(
+                "mount.arm_base_in_mebot is missing: a URDF `source` and an ANSUR"
+                " person are placed by it"
+            )
     # The person's arm side is data the segments read; the mount says where
     # the arm is. A disagreement would narrow the forearms on the armrest's
     # side, where they rest wide.
     side = data["person"].get("arm_side")
-    offset = mount["position"][1] - data["person"].get("seat", {}).get(
-        "centreline_y", 0
-    )
-    if not _measured(data) and (side not in (1, -1) or side * offset <= 0):
-        raise ValueError(
-            "person arm_side %r must be +1 or -1, the side of the centreline the"
-            " mount is on (its y is %s)" % (side, mount["position"][1])
+    if not _measured(data):
+        offset = mount["position"][1] - data["person"].get("seat", {}).get(
+            "centreline_y", 0
         )
-    if any(mount["rpy_deg"]):
+        if side not in (1, -1) or side * offset <= 0:
+            raise ValueError(
+                "person arm_side %r must be +1 or -1, the side of the centreline"
+                " the mount is on (its y is %s)" % (side, mount["position"][1])
+            )
+    if mount is not None and any(mount["rpy_deg"]):
         raise ValueError(
             "mount rpy_deg %s is not supported: the boxes are axis-aligned in"
             " arm_mount, so arm_mount must be square to the chair (an arm tilted"
@@ -1244,13 +1277,17 @@ def generate(data, urdf_bytes, perturb=0.0):
         )
 
     spheres = keep_out_spheres(data)
-    primitives = urdf_primitives(urdf_bytes, mount["position"], perturb)
-    result = {
-        "platform": _platform(data, primitives, spheres),
-        "person": _person(data, spheres),
-        "seat": _seat(data, spheres),
-        "floor": _floor(data, primitives),
-    }
+    result = {}
+    if "source" in data:
+        primitives = urdf_primitives(urdf_bytes, mount["position"], perturb)
+        result["platform"] = _platform(data, primitives, spheres)
+        # Rounded UP: outward for the floor solid, whose top this is.
+        top = _snap_up(min(p["lo"][2] for p in primitives))
+    result["person"] = _person(data, spheres)
+    result["seat"] = _seat(data, spheres)
+    if "source" not in data:
+        top = min(b["box"][0][2] for b in result["seat"]["boxes"])
+    result["floor"] = _floor(data, top)
     pad, gate = data["padding_assumed_m"], data["keep_out"]["min_clearance_m"]
     for name, layer in result.items():
         # The seat's anchors and the floor's sizes are data: a backrest whose
@@ -1283,6 +1320,8 @@ def generate(data, urdf_bytes, perturb=0.0):
     }
     result["files"] = {}
     for name, text_of in texts.items():
+        if name not in result:
+            continue
         text = text_of(data, result[name])
         if not text.isascii():
             raise ValueError("layer %s: the file would hold non-ASCII text" % name)
@@ -1292,17 +1331,47 @@ def generate(data, urdf_bytes, perturb=0.0):
 
 # ------------------------------------------------------------------------- CLI
 def _report(data, result, origin):
-    source = data["source"]
-    platform, person, floor = result["platform"], result["person"], result["floor"]
+    person, floor = result["person"], result["floor"]
+    lines = []
+    if "source" in data:
+        source = data["source"]
+        lines += [
+            "source: %s" % origin,
+            "  %s@%s %s" % (source["repo"], source["commit"], source["path"]),
+        ]
+    lines.append(
+        "keep-out: the arm's fixed spheres from %s; no padded box within %.1f mm"
+        % (_robot_config_path(data), data["keep_out"]["min_clearance_m"] * 1e3)
+    )
+    if "platform" in result:
+        lines += _platform_report(data, result["platform"])
+    lines += [
+        "person: %d boxes; envelope %s m3, layer %s m3, carved %s m3, overlap %s m3"
+        % (
+            len(person["boxes"]),
+            _m3(person["envelope_union"]),
+            _m3(person["union"]),
+            _m3(person["envelope_union"] - person["union"]),
+            _m3(person["total"] - person["union"]),
+        ),
+        "  keep-out: %.1f mm" % (person["clearance_m"] * 1e3),
+        "seat: %d boxes; parts %s m3, layer %s m3, carved %s m3"
+        % (
+            len(result["seat"]["boxes"]),
+            _m3(result["seat"]["envelope_union"]),
+            _m3(result["seat"]["union"]),
+            _m3(result["seat"]["envelope_union"] - result["seat"]["union"]),
+        ),
+        "  keep-out: %.1f mm" % (result["seat"]["clearance_m"] * 1e3),
+        "floor: top at %s m" % _decimal(floor["boxes"][0]["box"][1][2], 4),
+        "  keep-out: %.1f mm" % (floor["clearance_m"] * 1e3),
+    ]
+    return "\n".join(lines)
+
+
+def _platform_report(data, platform):
     kinds = [p["kind"] for p in platform["primitives"]]
     lines = [
-        "source: %s" % origin,
-        "  %s@%s %s" % (source["repo"], source["commit"], source["path"]),
-        "keep-out: the arm's fixed spheres from %s; no padded box within %.1f mm"
-        % (
-            _robot_config_path(data),
-            data["keep_out"]["min_clearance_m"] * 1e3,
-        ),
         "platform: %d primitives (%d box, %d cylinder) -> %d boxes (budget %d)"
         % (
             len(kinds),
@@ -1332,27 +1401,8 @@ def _report(data, result, origin):
             platform["cylinder_boxing_m3"],
         ),
         "  keep-out: %.1f mm" % (platform["clearance_m"] * 1e3),
-        "person: %d boxes; envelope %s m3, layer %s m3, carved %s m3, overlap %s m3"
-        % (
-            len(person["boxes"]),
-            _m3(person["envelope_union"]),
-            _m3(person["union"]),
-            _m3(person["envelope_union"] - person["union"]),
-            _m3(person["total"] - person["union"]),
-        ),
-        "  keep-out: %.1f mm" % (person["clearance_m"] * 1e3),
-        "seat: %d boxes; parts %s m3, layer %s m3, carved %s m3"
-        % (
-            len(result["seat"]["boxes"]),
-            _m3(result["seat"]["envelope_union"]),
-            _m3(result["seat"]["union"]),
-            _m3(result["seat"]["envelope_union"] - result["seat"]["union"]),
-        ),
-        "  keep-out: %.1f mm" % (result["seat"]["clearance_m"] * 1e3),
-        "floor: top at %s m" % _decimal(floor["boxes"][0]["box"][1][2], 4),
-        "  keep-out: %.1f mm" % (floor["clearance_m"] * 1e3),
     ]
-    return "\n".join(lines)
+    return lines
 
 
 def _diff(path, text):
@@ -1427,9 +1477,14 @@ def main(argv=None):
         return 1
     try:
         data = load_data(args.data)
-        urdf, origin = fetch_pinned(
-            data["source"], cache_dir=args.cache, clone=args.clone, offline=args.offline
-        )
+        urdf = origin = None
+        if "source" in data:
+            urdf, origin = fetch_pinned(
+                data["source"],
+                cache_dir=args.cache,
+                clone=args.clone,
+                offline=args.offline,
+            )
         result = generate(data, urdf)
     except (OSError, ValueError) as exc:
         print("generate_layers: %s" % exc, file=sys.stderr)
