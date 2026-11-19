@@ -151,8 +151,9 @@ Jetson one — is tracked in issue #8.
   git-ignored `.sim_ws/`, launches it on its own ROS domain (88 unless you
   choose another from 1 to 232; never 0) and runs its suite: exit 0 only when
   every gate passes. `make sim-test` runs the sim package's own tests. Both
-  need `SIM_OVERLAY` (default `~/rammp_deps_ws/install/setup.bash`) for
-  `rammp_arm_interfaces`. See `sim/mebot_sim/README.md`; after `make layers`
+  build on `SIM_OVERLAY` (default `~/rammp_deps_ws/install/setup.bash`):
+  `make sim` overlays the pinned `rammp_arm_interfaces` from `rammp.repos` on
+  it, and `make sim-test` takes that package from `SIM_OVERLAY` alone. See `sim/mebot_sim/README.md`; after `make layers`
   changes a layer, rerun `ros2 run mebot_sim find_pairs` there and commit the
   `config/scenarios.yaml` it writes.
 

@@ -130,9 +130,10 @@ ros2 service call /rammp_curobo/add_obstacles rammp_arm_interfaces/srv/AddObstac
 
 - **Boxes join the world; nothing is replaced.** The scene, the layers and every
   box added before stay. Calls are anonymous and accumulate.
-- **`/reset` is the only way to remove one.** It returns to the world loaded at
-  boot, dropping every added box, from every caller. A `set_world` push replaces
-  them too, since they joined its scene.
+- **Nothing removes a single box.** `/reset` returns to the world loaded at
+  boot, dropping every added box, from every caller. A `set_world` push
+  replaces them too, since they joined its scene, and so does a planner
+  restart: they are held in memory only.
 - **A name already in the world is refused**, so re-adding the same objects
   needs a reset first. Prefix names with your engine (`perception/mug`) to stay
   clear of other callers'.

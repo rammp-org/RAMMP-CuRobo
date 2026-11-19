@@ -4,6 +4,8 @@ rammp_curobo_ros depends on rammp_arm_interfaces only to SERVE AddObstacles
 (with CollisionBox). Every arm action and service (ExecuteJointTrajectory,
 GoTo*) is importable from that same dependency, so this pins that the
 package's code names nothing else from it. No ROS needed: it reads source.
+A tripwire for static imports, not a sandbox: importlib or a type looked up
+by string (rosidl_runtime_py's get_action) gets past it.
 """
 
 import re
@@ -18,7 +20,8 @@ def _arm_names(text):
     for m in re.finditer(
         r"from\s+rammp_arm_interfaces(?:\.\w+)*\s+import\s+(\([^)]*\)|[^\n]+)", text
     ):
-        listed = m.group(1).strip("()").split(",")
+        body = re.sub(r"#[^\n]*", "", m.group(1))  # trailing comments
+        listed = body.strip().strip("()").split(",")
         names |= {n.split(" as ")[0].strip() for n in listed} - {""}
     # any other spelling (import rammp_arm_interfaces..., a dotted use) is
     # refused outright: it could reach any type
@@ -43,4 +46,6 @@ def test_the_check_sees_a_forbidden_import():
         "from rammp_arm_interfaces.action import (\n    GoToEEPose,\n)\n"
     )
     assert names == {"GoToEEPose"}
+    allowed = "from rammp_arm_interfaces.srv import AddObstacles  # noqa: E402\n"
+    assert _arm_names(allowed)[0] == {"AddObstacles"}
     assert _arm_names("import rammp_arm_interfaces.action\n")[1]
