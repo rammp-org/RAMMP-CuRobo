@@ -49,6 +49,16 @@ PLANNER_DEFAULTS = {
         # trajectory and fails the plan if the worst deviation exceeds this,
         # so "held level" is a checked claim instead of a hope.
         "constraint_tolerance_deg": 2.0,
+        # IK's random seeds per attempt; more find the solutions nearest the
+        # start, which IK ranks first, reliably. None = cuRobo's 32.
+        "num_ik_seeds": None,
+        # Rewind cuRobo's random generators before every plan, so one request
+        # draws the same IK seeds and optimizer noise each time.
+        "reseed_each_plan": False,
+        # Warm up the graph (PRM) planner too, and let cuRobo switch it on for
+        # the rest of a plan once an attempt fails trajopt. Ignored when
+        # enable_graph is on (then it is used from the first attempt).
+        "graph_fallback": False,
         "warmup": True,
     },
     "tool": {

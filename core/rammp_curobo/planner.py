@@ -14,9 +14,10 @@ numpy-backed dataclasses (types.PlanResult / types.Trajectory).
 
 Jetson-specific decisions inherited from RAMMP-Kinova's field notes (do not
 "clean these up" without re-testing on the Orin):
-  * torch linalg is routed to MAGMA and the graph (PRM) planner stays OFF —
-    the Jetson torch wheel's cuSOLVER path lacks cusolverDnXsyevBatched and
-    dies inside torch.svd (DT_EXCEPTION).
+  * the graph (PRM) planner stays OFF unless enable_graph or graph_fallback
+    asks for it: it calls torch.svd, which on the Jetson needs the image's
+    cuSOLVER 11.7 (docker/Dockerfile); JetPack's 11.6 lacks
+    cusolverDnXsyevBatched and every CUDA linalg op dies.
   * plan_to_joints tries native plan_single_js first (verified working on
     the torch 2.10 jp6/cu126 wheel) and falls back to FK-pose planning on
     failure; the graph fallback that killed js planning on older wheels
@@ -103,6 +104,19 @@ class CuRoboPlanner:
         self.no_pad_names = frozenset(p["no_pad_names"] or [])
         self.joint_space_method = str(p["joint_space_method"])
         self.limit_clamp_rad = float(p["limit_clamp_rad"])
+        # .get: a config dict built before these keys existed gets cuRobo's own
+        self.num_ik_seeds = p.get("num_ik_seeds")
+        if self.num_ik_seeds is not None and (
+            isinstance(self.num_ik_seeds, bool)
+            or not isinstance(self.num_ik_seeds, int)
+            or self.num_ik_seeds < 1
+        ):
+            raise ValueError(
+                "num_ik_seeds must be a positive integer (or null for cuRobo's "
+                "32), got %r" % (self.num_ik_seeds,)
+            )
+        self.reseed_each_plan = bool(p.get("reseed_each_plan", False))
+        self.graph_fallback = bool(p.get("graph_fallback", False))
         self.joint_limit_margin_rad = float(p["joint_limit_margin_rad"])
         if not self.joint_limit_margin_rad >= 0.0:
             raise ValueError(
@@ -191,10 +205,6 @@ class CuRoboPlanner:
             import warp.torch  # noqa: F401
         except ImportError:
             pass
-        try:
-            torch.backends.cuda.preferred_linalg_library("magma")
-        except Exception:
-            pass
         from curobo.geom.sdf.world import CollisionCheckerType
         from curobo.types.base import TensorDeviceType
         from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
@@ -229,6 +239,13 @@ class CuRoboPlanner:
                 "mesh": self.collision_cache_mesh,
             },
             collision_activation_distance=self.collision_activation_distance,
+            # at construction, not per plan: warm-up records CUDA graphs for
+            # this many seeds, and replaying them at another count crashes
+            **(
+                {}
+                if self.num_ik_seeds is None
+                else {"num_ik_seeds": int(self.num_ik_seeds)}
+            ),
         )
         self._motion_gen = MotionGen(cfg)
         # cuRobo consumes start states in ITS cspace order, not by name —
@@ -251,7 +268,9 @@ class CuRoboPlanner:
                 )
             else:
                 log.info("Warming up cuRobo (first-run kernel compile)...")
-            self._motion_gen.warmup(enable_graph=self.enable_graph)
+            self._motion_gen.warmup(
+                enable_graph=self.enable_graph or self.graph_fallback
+            )
             log.info("cuRobo warmup complete.")
         if warm_first:
             self._motion_gen.update_world(to_world_config(cuboids))
@@ -420,6 +439,10 @@ class CuRoboPlanner:
         start_state = self._start_state(start)
         goal = Pose(position=self._tensor([xyz]), quaternion=self._tensor([wxyz]))
         try:
+            if self.reseed_each_plan:
+                # the generators AND the graph planner's roadmap, which
+                # otherwise carries over from earlier plans
+                self._motion_gen.reset(reset_seed=True)
             result = self._motion_gen.plan_single(
                 start_state, goal, self._plan_config(constraint, via)
             )
@@ -609,6 +632,8 @@ class CuRoboPlanner:
         if method == "js":
             goal = self._curobo_state(q_goal)
             try:
+                if self.reseed_each_plan:
+                    self._motion_gen.reset(reset_seed=True)
                 result = self._motion_gen.plan_single_js(
                     self._start_state(start), goal, self._plan_config()
                 )
@@ -1442,9 +1467,11 @@ class CuRoboPlanner:
         kw = {}
         if not self.enable_graph:
             # cuRobo silently ENABLES the graph planner after 3 failed
-            # attempts unless this is None — and the graph planner is the
-            # exact thing the Jetson wheel cannot run. Never let it engage.
-            kw["enable_graph_attempt"] = None
+            # attempts unless this is None. It was never warmed up then, and
+            # on a Jetson image without the Dockerfile's cuSOLVER it cannot
+            # run at all. Never let it engage, unless graph_fallback asks for
+            # it after the first failure.
+            kw["enable_graph_attempt"] = 1 if self.graph_fallback else None
 
         metric_kw = self._pose_cost_kwargs(constraint, via)
         if metric_kw is not None:

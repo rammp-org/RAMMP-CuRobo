@@ -27,9 +27,30 @@ that heading to the new version and bumps the five places the number lives.
   calls nothing of the arm's. `rammp.repos` pins it at v2.2.0 (import into `deps/` with
   `vcs import`); CI, the image, `make colcon` and `make sim-build` build it from
   that pin. It needs `ros-humble-control-msgs`.
+- **Repeatable plans: three planner keys, all off by default** (cuRobo's own
+  behaviour unchanged). `num_ik_seeds` (cuRobo's 32 often miss the IK solutions
+  nearest the start, so one request lands on a different goal configuration
+  from call to call; 512 find them; fixed at start-up), `reseed_each_plan`
+  (rewind cuRobo's generators and the graph planner's roadmap before every
+  plan) and `graph_fallback` (warm up the graph planner and switch it on for
+  the rest of a plan after a failed attempt). New config keys: MINOR.
+- **Node parameter `plan_log`**: a JSONL file to append every plan request to,
+  with the collision world it was planned in and the result. `""` (the
+  default) logs nothing.
+- **`bench/`**: `sweep_bench.py` measures how far and how repeatably plans swing
+  the arm on the chair, and replays a `plan_log`; `Dockerfile.x86` builds
+  cuRobo v0.7.8 for an Ampere desktop GPU. Not in the image.
 
 ### Fixed
 
+- **CUDA linear algebra works in the Jetson image**, so the graph planner can
+  run there. The jp6/cu126 torch wheel was built against cuSOLVER 11.7.1.2 and
+  JetPack ships 11.6.4.69, so every CUDA linalg op (svd, inv, eigh, ...) died at
+  first use with an undefined symbol; plain planning never calls one. The image
+  installs NVIDIA's cuSOLVER 11.7.1.2 Tegra package (the build fails if the
+  symbol is still missing), and the planner no longer routes linalg to MAGMA,
+  which the wheel does not have. On x86, whose wheels do have MAGMA, CUDA
+  linalg (only the graph planner's) now uses torch's default backend.
 - **`/reset` works on a profile whose boot world is `world_empty.yaml` with
   config layers.** It restored the boot world through `update_world`, which
   refuses a scene with no boxes of its own, so the reset failed with an ERROR

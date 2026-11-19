@@ -32,6 +32,7 @@ model is read once; a different one published later is reported as an
 ERROR, every time, and never used — restart the planner to take it.
 """
 
+import json
 import logging
 import math
 import tempfile
@@ -232,6 +233,10 @@ class RammpCuroboNode(Node):
                 "pass config:=/config/robot/curobo/planner.yaml. ==="
             )
         self.world = self.declare_parameter("world", "").value
+        # A JSONL file to append every plan_to_pose / plan_to_joints request
+        # and its result to (start, goal, the box world cuRobo was given, the
+        # trajectory): the replay input of bench/sweep_bench.py. "" = off.
+        self.plan_log = self.declare_parameter("plan_log", "").value
         # dynamic_typing: `-p robot_description_timeout_s:=3` is an INTEGER,
         # which a DOUBLE-typed declaration refuses with a traceback.
         timeout = self.declare_parameter(
@@ -316,6 +321,16 @@ class RammpCuroboNode(Node):
         # The core library's INFO logs do not reach the ROS logger, and this
         # line is the operator's proof of which layers are in the world.
         self.get_logger().info("Collision world: %s" % self.planner.world_summary())
+        if self.plan_log:
+            self._log_plan(
+                {
+                    "header": True,
+                    "config": self.config,
+                    "urdf": xml,
+                    "joint_names": self.planner.joint_names,
+                }
+            )
+            self.get_logger().info("logging every plan to %s" % self.plan_log)
         self._model_sub = self._watch_model(model)
 
         ActionServer(
@@ -464,11 +479,19 @@ class RammpCuroboNode(Node):
             result.message = self._tag("invalid constraint: %s" % why)
             goal_handle.abort()
             return result
+        goal = {
+            "position": pos,
+            "quat_xyzw": quat,
+            # replay plans without them: it skips a request that had either
+            "constraint": constraint is not None and constraint.is_active(),
+            "via": via is not None and via.is_active(),
+        }
         res = self._plan(
             lambda q: self.planner.plan_to_pose(
                 pos, quat, start=q, constraint=constraint, via=via
             ),
             goal_handle.request.start_joints,
+            log=("pose", goal),
         )
         return self._finish_plan(goal_handle, result, res)
 
@@ -486,6 +509,7 @@ class RammpCuroboNode(Node):
         res = self._plan(
             lambda q: self.planner.plan_to_joints(target, start=q),
             goal_handle.request.start_joints,
+            log=("joints", {"joints": target}),
         )
         out = self._finish_plan(goal_handle, result, res)
         # _plan returns None (busy) or a string (bad start) as sentinels —
@@ -518,11 +542,13 @@ class RammpCuroboNode(Node):
             out.corner_m = [float(c) for c in res.corners_m]
         return out
 
-    def _plan(self, plan_fn, start_joints):
+    def _plan(self, plan_fn, start_joints, log=None):
         """One library planning call from the caller-supplied start state.
 
         Returns the PlanResult, None if another plan is in flight, or a
-        string explaining why start_joints was unusable.
+        string explaining why start_joints was unusable. `log` = (kind,
+        goal) puts the plan on plan_log, still under the lock, so a world
+        pushed meanwhile is not the one logged.
         """
         why = check_start_joints(start_joints, self.planner.joint_names)
         if why is not None:
@@ -531,9 +557,44 @@ class RammpCuroboNode(Node):
             return None
         try:
             self.get_logger().info("Planning...")
-            return plan_fn([float(v) for v in start_joints])
+            start = [float(v) for v in start_joints]
+            res = plan_fn(start)
+            if log is not None:
+                self._log_result(*log, start, res)
+            return res
         finally:
             self._plan_lock.release()
+
+    def _log_result(self, kind, goal, start, res):
+        """One plan_log line. Nothing here may fail the plan it records."""
+        if not self.plan_log:
+            return
+        try:
+            rec = {
+                "t": time.time(),
+                "kind": kind,
+                "start": start,
+                "goal": goal,
+                "world": self.planner.world_boxes,
+                "success": bool(res.success),
+                "status": str(res.status),
+                "time_s": float(res.timing),
+            }
+            if res.success:
+                rec["positions"] = res.joint_traj.positions.tolist()
+                rec["dt"] = float(res.joint_traj.dt)
+        except Exception as exc:  # a log line is never worth a plan
+            self.get_logger().warning("plan_log: not logged: %r" % exc)
+            return
+        self._log_plan(rec)
+
+    def _log_plan(self, rec):
+        # never let the log break planning
+        try:
+            with open(self.plan_log, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec) + "\n")
+        except (OSError, TypeError, ValueError) as exc:
+            self.get_logger().warning("plan_log %s: %s" % (self.plan_log, exc))
 
     def _finish_plan(self, goal_handle, result, res, speed="at full speed"):
         if res is None:

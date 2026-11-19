@@ -12,3 +12,4 @@ dist/
 *.MOV
 .sim_ws/
 deps/
+bench/out/

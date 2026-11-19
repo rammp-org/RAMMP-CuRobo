@@ -1431,3 +1431,39 @@ def test_reset_to_an_empty_boot_world_empties_cuRobo(urdf_level, tmp_path):
     assert int(checker._env_n_obbs[0]) == 0
     assert not checker._cube_tensor_list[2][0].any()  # every slot disabled
     assert empty.check_state_valid(empty.retract_pose)[0]
+
+
+def test_cuda_linear_algebra_works():
+    # The graph planner's torch.svd. On the Jetson it needs the image's
+    # cuSOLVER 11.7: with JetPack's 11.6 every CUDA linalg op dies at first
+    # use (undefined symbol cusolverDnXsyevBatched_bufferSize).
+    a = torch.randn(7, 7, dtype=torch.float64)
+    u, s, vh = torch.linalg.svd(a.cuda())
+    assert torch.allclose((u * s) @ vh, a.cuda(), atol=1e-9)
+    assert torch.allclose(s.cpu(), torch.linalg.svdvals(a), atol=1e-9)
+    # batched eigh calls cusolverDnXsyevBatched itself, the missing symbol
+    b = torch.randn(4, 7, 7, dtype=torch.float64)
+    sym = b + b.transpose(-1, -2)
+    w, v = torch.linalg.eigh(sym.cuda())
+    assert torch.allclose(w.cpu(), torch.linalg.eigvalsh(sym), atol=1e-9)
+    assert torch.allclose(
+        v @ torch.diag_embed(w) @ v.transpose(-1, -2), sym.cuda(), atol=1e-9
+    )
+
+
+def test_the_graph_planner_warms_up_and_plans(urdf_level, tmp_path):
+    # enable_graph uses the graph from the first attempt, so this plan goes
+    # through it; graph_fallback warms the same path up.
+    cfg = yaml.safe_load(resolve_config("example:gen3.yaml").read_text())
+    cfg["robot"] = "example:" + cfg["robot"]  # the copy sits in tmp_path
+    cfg["world"] = "example:" + cfg["world"]
+    cfg["planner"]["enable_graph"] = True
+    path = tmp_path / "gen3_graph.yaml"
+    path.write_text(yaml.safe_dump(cfg))
+    graph = CuRoboPlanner.from_config(str(path), urdf_path=urdf_level)
+    q_target = list(graph.retract_pose)
+    q_target[0] += 0.4
+    q_target[5] -= 0.3
+    pos, quat = graph.fk(q_target)
+    res = graph.plan_to_pose(pos, quat, list(graph.retract_pose))
+    assert res.success, res.error
