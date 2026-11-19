@@ -103,6 +103,11 @@ class CuRoboPlanner:
         self.no_pad_names = frozenset(p["no_pad_names"] or [])
         self.joint_space_method = str(p["joint_space_method"])
         self.limit_clamp_rad = float(p["limit_clamp_rad"])
+        # .get: a config dict built before these keys existed gets cuRobo's own
+        self.num_trajopt_seeds = p.get("num_trajopt_seeds")
+        self.num_ik_seeds = p.get("num_ik_seeds")
+        self.reseed_each_plan = bool(p.get("reseed_each_plan", False))
+        self.graph_fallback = bool(p.get("graph_fallback", False))
         self.joint_limit_margin_rad = float(p["joint_limit_margin_rad"])
         if not self.joint_limit_margin_rad >= 0.0:
             raise ValueError(
@@ -229,6 +234,16 @@ class CuRoboPlanner:
                 "mesh": self.collision_cache_mesh,
             },
             collision_activation_distance=self.collision_activation_distance,
+            # at construction, not per plan: warm-up records CUDA graphs for
+            # this many seeds, and replaying them at another count crashes
+            **{
+                k: int(v)
+                for k, v in (
+                    ("num_trajopt_seeds", self.num_trajopt_seeds),
+                    ("num_ik_seeds", self.num_ik_seeds),
+                )
+                if v is not None
+            },
         )
         self._motion_gen = MotionGen(cfg)
         # cuRobo consumes start states in ITS cspace order, not by name —
@@ -251,7 +266,9 @@ class CuRoboPlanner:
                 )
             else:
                 log.info("Warming up cuRobo (first-run kernel compile)...")
-            self._motion_gen.warmup(enable_graph=self.enable_graph)
+            self._motion_gen.warmup(
+                enable_graph=self.enable_graph or self.graph_fallback
+            )
             log.info("cuRobo warmup complete.")
         if warm_first:
             self._motion_gen.update_world(to_world_config(cuboids))
@@ -420,6 +437,10 @@ class CuRoboPlanner:
         start_state = self._start_state(start)
         goal = Pose(position=self._tensor([xyz]), quaternion=self._tensor([wxyz]))
         try:
+            if self.reseed_each_plan:
+                # the generators AND the graph planner's roadmap, which
+                # otherwise carries over from earlier plans
+                self._motion_gen.reset(reset_seed=True)
             result = self._motion_gen.plan_single(
                 start_state, goal, self._plan_config(constraint, via)
             )
@@ -609,6 +630,8 @@ class CuRoboPlanner:
         if method == "js":
             goal = self._curobo_state(q_goal)
             try:
+                if self.reseed_each_plan:
+                    self._motion_gen.reset(reset_seed=True)
                 result = self._motion_gen.plan_single_js(
                     self._start_state(start), goal, self._plan_config()
                 )
@@ -1443,8 +1466,9 @@ class CuRoboPlanner:
         if not self.enable_graph:
             # cuRobo silently ENABLES the graph planner after 3 failed
             # attempts unless this is None — and the graph planner is the
-            # exact thing the Jetson wheel cannot run. Never let it engage.
-            kw["enable_graph_attempt"] = None
+            # exact thing the Jetson wheel cannot run. Never let it engage,
+            # unless graph_fallback asks for it after the first failure.
+            kw["enable_graph_attempt"] = 1 if self.graph_fallback else None
 
         metric_kw = self._pose_cost_kwargs(constraint, via)
         if metric_kw is not None:

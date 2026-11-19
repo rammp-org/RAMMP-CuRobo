@@ -165,7 +165,9 @@ def _curobo_stand_in(monkeypatch):
     cuRobo or a GPU. Stand-in modules take the places of cuRobo, torch and
     warp, and MotionGen records in `events`, in order, the world it is built
     with ("built", keys), its warm-up ("warmup",) and each world it loads
-    ("loaded", keys). What only cuRobo computes, a test sets on the returned
+    ("loaded", keys); `config` holds MotionGenConfig's keyword arguments and
+    `warmup_graph` the warm-up's enable_graph. What only cuRobo computes, a
+    test sets on the returned
     namespace: `feasible`, the verdict of every constraint check, and
     `spheres(q)`, FK's collision spheres at controller-order joints q,
     (n, 4). The joint limits are 3.2 rad either way."""
@@ -204,12 +206,17 @@ def _curobo_stand_in(monkeypatch):
 
         def warmup(self, enable_graph):
             stand_in.events.append(("warmup",))
+            stand_in.warmup_graph = enable_graph
 
         def update_world(self, world):
             stand_in.events.append(("loaded", list(world.data["cuboid"])))
 
         def check_constraints(self, state):
             return types.SimpleNamespace(feasible=np.array([stand_in.feasible]))
+
+    def load_config(robot, world, **kwargs):
+        stand_in.config = kwargs
+        return world
 
     def module(name, **attributes):
         stand_in_module = types.ModuleType(name)
@@ -232,9 +239,7 @@ def _curobo_stand_in(monkeypatch):
     module(
         "curobo.wrap.reacher.motion_gen",
         MotionGen=MotionGen,
-        MotionGenConfig=types.SimpleNamespace(
-            load_from_robot_config=lambda robot, world, **_: world
-        ),
+        MotionGenConfig=types.SimpleNamespace(load_from_robot_config=load_config),
         MotionGenPlanConfig=dict,
     )
     limits = {"position": np.array([[-3.2] * 7, [3.2] * 7]), "velocity": np.ones(7)}
@@ -2861,3 +2866,59 @@ def test_bare_layer_name_in_the_image_is_refused_with_the_example_hint(tmp_path)
         load_layers(["gen3.yaml"], relative_to=tmp_path, listed_in="scene.yaml")
     assert "write example:gen3.yaml" in str(exc.value)
     assert str(tmp_path / "gen3.yaml") in str(exc.value)
+
+
+def test_the_seed_counts_reach_motion_gen_at_construction(
+    urdf_level, tmp_path, monkeypatch
+):
+    stand_in = _curobo_stand_in(monkeypatch)
+    CuRoboPlanner.from_config(_chair(tmp_path / "default"), urdf_path=urdf_level)
+    # unset: cuRobo's own counts (32 IK seeds, 4 trajopt goals)
+    assert "num_ik_seeds" not in stand_in.config
+    assert "num_trajopt_seeds" not in stand_in.config
+    # set: at construction, where warm-up records its CUDA graphs for them
+    # (changing the count per plan replays those graphs at the wrong size)
+    CuRoboPlanner.from_config(
+        _chair(
+            tmp_path / "set", "planner: {num_ik_seeds: 512, num_trajopt_seeds: 1}\n"
+        ),
+        urdf_path=urdf_level,
+    )
+    assert stand_in.config["num_ik_seeds"] == 512
+    assert stand_in.config["num_trajopt_seeds"] == 1
+
+
+def test_graph_fallback_warms_the_graph_and_engages_it_after_a_failed_attempt(
+    urdf_level, tmp_path, monkeypatch
+):
+    stand_in = _curobo_stand_in(monkeypatch)
+    off = CuRoboPlanner.from_config(_chair(tmp_path / "off"), urdf_path=urdf_level)
+    assert stand_in.warmup_graph is False
+    # cuRobo would engage the graph after 3 failed attempts on its own
+    assert off._plan_config()["enable_graph_attempt"] is None
+    on = CuRoboPlanner.from_config(
+        _chair(tmp_path / "on", "planner: {graph_fallback: true}\n"),
+        urdf_path=urdf_level,
+    )
+    assert stand_in.warmup_graph is True
+    plan = on._plan_config()
+    assert (plan["enable_graph"], plan["enable_graph_attempt"]) == (False, 1)
+
+
+def test_reseed_each_plan_resets_curobo_before_every_plan(
+    urdf_level, tmp_path, monkeypatch
+):
+    _curobo_stand_in(monkeypatch)
+    planner = CuRoboPlanner.from_config(
+        _chair(tmp_path / "reseed", "planner: {reseed_each_plan: true}\n"),
+        urdf_path=urdf_level,
+    )
+    calls = []
+    ik = "MotionGenStatus.IK_FAIL"
+    planner._motion_gen.reset = lambda reset_seed: calls.append(("reset", reset_seed))
+    planner._motion_gen.plan_single = lambda *_: calls.append("pose") or _failed(ik)
+    planner._motion_gen.plan_single_js = lambda *_: calls.append("js") or _failed(ik)
+    planner.plan_to_pose([0.5, 0.0, 0.5], [0, 0, 0, 1], start=[0.0] * 7)
+    planner.plan_to_joints([0.2] * 7, start=[0.0] * 7, method="js")
+    # the generators AND the graph planner's roadmap, before each plan
+    assert calls == [("reset", True), "pose", ("reset", True), "js"]

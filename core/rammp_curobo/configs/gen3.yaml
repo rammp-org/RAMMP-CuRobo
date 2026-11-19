@@ -69,7 +69,22 @@ planner:
                                       # REFUSED, and so is a goal whose held
                                       # components disagree with the start by more
                                       # than this (the start is part of the hold).
-  warmup: true                       # first-run kernel compile at init, not mid-task
+  num_ik_seeds: null                 # IK's random seeds per attempt (null = cuRobo's
+                                     # 32). IK ranks its solutions nearest the start
+                                     # first, but 32 seeds often miss the nearest
+                                     # one; 512 find it reliably (bench/)
+  num_trajopt_seeds: null            # IK goals trajopt optimises toward per attempt,
+                                     # keeping the best (null = cuRobo's 4). 1 = only
+                                     # the one nearest the start. Both seed counts
+                                     # are fixed at start-up: warm-up records CUDA
+                                     # graphs for them
+  reseed_each_plan: false            # rewind cuRobo's random generators (and clear
+                                     # the graph planner's roadmap) before every
+                                     # plan: one request, one plan, to ~1e-3 rad
+  graph_fallback: false              # warm up the graph planner and switch it on for
+                                     # the rest of a plan once an attempt fails
+                                     # trajopt; Jetson support is unverified
+  warmup: true                      # first-run kernel compile at init, not mid-task
 
 tool:
   # Sim-measured calibrations from RAMMP-Kinova, applied to authored
