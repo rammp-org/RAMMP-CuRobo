@@ -24,7 +24,7 @@ that heading to the new version and bumps the five places the number lives.
   `geometry.quat_xyzw_to_euler_deg`. New service: MINOR.
 - **`rammp_curobo_ros` depends on `rammp_arm_interfaces`**, the shared contract
   in rammp-interfaces-ros2, for `AddObstacles`; it serves that service and
-  calls nothing of the arm's. `rammp.repos` pins it (import into `deps/` with
+  calls nothing of the arm's. `rammp.repos` pins it at v2.2.0 (import into `deps/` with
   `vcs import`); CI, the image, `make colcon` and `make sim-build` build it from
   that pin. It needs `ros-humble-control-msgs`.
 
