@@ -33,11 +33,13 @@ Gen3 example and every RAMMP robot), joint plans included
 **This repo NEVER touches the arm** (issue #6, 2026-08-24): outside `sim/`
 there is no executor, no `/joint_states` subscription, no controller or
 controller-manager client, no gripper client, no `execute` parameter, and
-no dependency on an arm driver or its IDL in a `package.xml`. The one
-arm-side package allowed is the shared contract `rammp_arm_interfaces`
-(rammp-interfaces-ros2, pinned in `rammp.repos`), and only for what the
-planner SERVES (`AddObstacles`, `CollisionBox`): never a client of an arm
-action or service (`ExecuteJointTrajectory`, `GoTo*`). `start_joints` is REQUIRED on
+no driver package (`kinova_arm_ros2`, a driver's own IDL such as
+`kinova_arm_interfaces`) in a `package.xml`. The one arm-side dependency is
+the shared contract `rammp_arm_interfaces` (rammp-interfaces-ros2, pinned
+in `rammp.repos`), and only for what the planner SERVES (`AddObstacles`,
+`CollisionBox`): never a client of an arm action or service
+(`ExecuteJointTrajectory`, `GoTo*`); `test_arm_interfaces_use.py` fails on
+any other name from it. `start_joints` is REQUIRED on
 both plan actions — the caller owns the robot and its state. The consumer
 is `kinova_arm_ros2`, which plans here and executes under its own gates;
 the dependency arrow points only that way. Do not add an edge back. The

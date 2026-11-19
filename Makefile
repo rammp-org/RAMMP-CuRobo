@@ -15,8 +15,8 @@
 #                  only when every gate passes)
 
 IMAGE ?= rammp-curobo:jp6
-# The ROS workspace that provides rammp_arm_interfaces, which the sim's
-# driver stand-in serves; consumed as built.
+# The ROS workspace the sim builds on (sourced first). rammp_arm_interfaces
+# comes from rammp.repos's pin, overlaid on whatever copy this one holds.
 SIM_OVERLAY ?= ~/rammp_deps_ws/install/setup.bash
 # Arguments for the sim's launch, e.g. SIM_ARGS=port:=8766 when the live
 # view's default port is taken.
@@ -142,8 +142,8 @@ endif
 
 # The sim stack (sim/mebot_sim) and the two packages it runs, built into the
 # git-ignored .sim_ws/ as links to these sources. sim/ carries a COLCON_IGNORE
-# so that CI's colcon build needs no rammp_arm_interfaces; here the package is
-# named as a base path instead. The sim and its planners then run from
+# so that CI's colcon build never builds the sim; here the package is named as
+# a base path instead, beside the pinned rammp_arm_interfaces from deps/. The sim and its planners then run from
 # .sim_ws/install/setup.bash, never on the bench's ROS domain: 0, unset or
 # anything else but a domain from 1 to 232 becomes 88.
 sim-build: SHELL := /bin/bash

@@ -283,9 +283,11 @@ they cost. For a caller:
   installs once per machine (add to setup.sh alongside the other pip deps,
   rosdep-stub pattern like `python3-kortex-api`).
 - **The dependency arrow points one way.** Your package depends on
-  `rammp_curobo_interfaces`; this repo depends on nothing of yours. If you
-  find yourself adding your driver's IDL to `rammp_curobo_ros/package.xml`,
-  the design has gone wrong — see issue #6.
+  `rammp_curobo_interfaces` (and `rammp_arm_interfaces` for `add_obstacles`);
+  this repo depends on nothing of yours. It uses the shared
+  `rammp_arm_interfaces` only to serve `AddObstacles`, and calls nothing of
+  the arm's. If you find yourself adding your driver's package or IDL to
+  `rammp_curobo_ros/package.xml`, the design has gone wrong — see issue #6.
 - **No mutual-exclusion problem to solve.** This planner never claims the
   arm, a `/controller_manager`, or a gripper, so it can run alongside any
   driver. Exactly one thing should execute; that thing is not this.
