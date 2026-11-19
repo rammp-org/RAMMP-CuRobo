@@ -197,7 +197,19 @@ plus the gripper services (2026-08-24, issue #6).
 - `enable_graph` stays FALSE on Jetson (`enable_graph_attempt=None` matters:
   cuRobo silently auto-enables the graph after 3 failed attempts). The
   graph planner needs torch.svd/cuSOLVER the Jetson wheels historically
-  lack; linalg is routed to magma at init.
+  lack; linalg is routed to magma at init. `graph_fallback: true` is the one
+  sanctioned way to let it engage (`enable_graph_attempt=1`, after a failed
+  attempt); whether it runs on the Jetson is being verified on abra.
+- Repeatability (bench/, 2026-11-18): one request used to land on a different
+  goal configuration nearly every call. IK already ranks its solutions nearest
+  the start first (base_cfg's null-space term dominates the converged pose
+  error, even at cuRobo's 0.001), so raising that weight, or weighting it per
+  joint, changed nothing; the variance is which solutions IK's 32 random seeds
+  happen to find, then which of 4 trajopt picks. `num_ik_seeds: 512` +
+  `num_trajopt_seeds: 1` + `reseed_each_plan` make it repeatable. Seed counts
+  go to MotionGenConfig at CONSTRUCTION: changing `num_trajopt_seeds` per plan
+  replays warm-up's CUDA graphs at the wrong size and crashes the GPU (illegal
+  memory access).
 - `plan_single_js` WORKS on torch 2.10.0 (verified 2026-08-11, mismatch
   5e-7) — on older wheels it died; `joint_space_method: auto` handles both.
   The FK-pose fallback reaches the POSE but may flip joint families —

@@ -27,6 +27,20 @@ that heading to the new version and bumps the five places the number lives.
   calls nothing of the arm's. `rammp.repos` pins it at v2.2.0 (import into `deps/` with
   `vcs import`); CI, the image, `make colcon` and `make sim-build` build it from
   that pin. It needs `ros-humble-control-msgs`.
+- **Repeatable plans: four planner keys, all off by default** (cuRobo's own
+  behaviour unchanged). `num_ik_seeds` (cuRobo's 32 often miss the IK solution
+  nearest the start, so one request lands on a different goal configuration
+  from call to call; 512 find it), `num_trajopt_seeds` (1 = optimise only toward
+  that nearest goal), `reseed_each_plan` (rewind cuRobo's generators and the
+  graph planner's roadmap before every plan) and `graph_fallback` (warm up the
+  graph planner and switch it on for the rest of a plan after a failed
+  attempt). The seed counts are fixed at start-up. New config keys: MINOR.
+- **Node parameter `plan_log`**: a JSONL file to append every plan request to,
+  with the collision world it was planned in and the result. `""` (the
+  default) logs nothing.
+- **`bench/`**: `sweep_bench.py` measures how far and how repeatably plans swing
+  the arm on the chair, and replays a `plan_log`; `Dockerfile.x86` builds
+  cuRobo v0.7.8 for an Ampere desktop GPU. Not in the image.
 
 ### Fixed
 
