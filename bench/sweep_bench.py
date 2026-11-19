@@ -143,6 +143,8 @@ def replay(args):
 
     lines = [json.loads(x) for x in Path(args.log).read_text().splitlines() if x]
     heads = [x for x in lines if x.get("header")]
+    if not heads:
+        sys.exit("%s has no header line (the node writes one at start-up)" % args.log)
     if len({h["urdf"] for h in heads}) > 1:
         sys.exit(
             "%s holds sessions on different models: split it at its header lines"

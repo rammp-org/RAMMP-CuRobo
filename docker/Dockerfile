@@ -108,7 +108,10 @@ RUN git clone https://github.com/NVlabs/curobo.git /opt/curobo \
 # still missing.
 RUN curl -fsSLo /tmp/cusolver.deb \
         https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/libcusolver-12-6_11.7.1.2-1_arm64.deb \
-    && dpkg -i /tmp/cusolver.deb && rm /tmp/cusolver.deb && ldconfig \
+    && echo "d059b90c4b1e4d9ae62bd4346d52aa8cd7dc4b523d4bba809558d965944c3890  /tmp/cusolver.deb" \
+        > /tmp/cusolver.sha256 \
+    && sha256sum -c /tmp/cusolver.sha256 \
+    && dpkg -i /tmp/cusolver.deb && rm /tmp/cusolver.deb /tmp/cusolver.sha256 && ldconfig \
     && python3 -c "import ctypes; ctypes.CDLL('libcusolver.so.11').cusolverDnXsyevBatched_bufferSize"
 
 # --- this repo: pip core + the two ament packages ------------------------

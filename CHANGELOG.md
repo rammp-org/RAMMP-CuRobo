@@ -49,7 +49,8 @@ that heading to the new version and bumps the five places the number lives.
   first use with an undefined symbol; plain planning never calls one. The image
   installs NVIDIA's cuSOLVER 11.7.1.2 Tegra package (the build fails if the
   symbol is still missing), and the planner no longer routes linalg to MAGMA,
-  which the wheel does not have.
+  which the wheel does not have. On x86, whose wheels do have MAGMA, CUDA
+  linalg (only the graph planner's) now uses torch's default backend.
 - **`/reset` works on a profile whose boot world is `world_empty.yaml` with
   config layers.** It restored the boot world through `update_world`, which
   refuses a scene with no boxes of its own, so the reset failed with an ERROR

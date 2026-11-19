@@ -35,8 +35,9 @@ planner:
                                      # successes into failures (v0.7.8 discards the
                                      # valid trajectory when all attempts fail)
   enable_finetune: true              # false = ~2x faster planning, less smooth
-  enable_graph: false                # KEEP OFF on Jetson: the PRM planner needs a
-                                     # cuSOLVER newer than JetPack ships (torch.svd)
+  enable_graph: false                # the PRM planner from the first attempt; it needs
+                                     # the image's cuSOLVER 11.7 (torch.svd), which a
+                                     # bare JetPack host lacks
   collision_cache_obb: 60            # headroom for live set_world/update_world
                                      # additions (cache overflow raises)
   collision_cache_mesh: 10
@@ -80,7 +81,8 @@ planner:
                                      # plan: one request, one plan, to ~1e-3 rad
   graph_fallback: false              # warm up the graph planner and switch it on for
                                      # the rest of a plan once an attempt fails
-                                     # trajopt; Jetson support is unverified
+                                     # trajopt; on the Jetson it needs the image's
+                                     # cuSOLVER 11.7 (verified on an Orin)
   warmup: true                       # first-run kernel compile at init, not mid-task
 
 tool:

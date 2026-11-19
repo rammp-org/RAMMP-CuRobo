@@ -1441,6 +1441,14 @@ def test_cuda_linear_algebra_works():
     u, s, vh = torch.linalg.svd(a.cuda())
     assert torch.allclose((u * s) @ vh, a.cuda(), atol=1e-9)
     assert torch.allclose(s.cpu(), torch.linalg.svdvals(a), atol=1e-9)
+    # batched eigh calls cusolverDnXsyevBatched itself, the missing symbol
+    b = torch.randn(4, 7, 7, dtype=torch.float64)
+    sym = b + b.transpose(-1, -2)
+    w, v = torch.linalg.eigh(sym.cuda())
+    assert torch.allclose(w.cpu(), torch.linalg.eigvalsh(sym), atol=1e-9)
+    assert torch.allclose(
+        v @ torch.diag_embed(w) @ v.transpose(-1, -2), sym.cuda(), atol=1e-9
+    )
 
 
 def test_the_graph_planner_warms_up_and_plans(urdf_level, tmp_path):
