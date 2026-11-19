@@ -2881,6 +2881,13 @@ def test_the_ik_seed_count_reaches_motion_gen_at_construction(
         urdf_path=urdf_level,
     )
     assert stand_in.config["num_ik_seeds"] == 512
+    # refused before any GPU work: cuRobo would take any of these
+    for bad in ("0", "-4", "true", "512.5", "'512'"):
+        with pytest.raises(ValueError, match="num_ik_seeds must be a positive"):
+            CuRoboPlanner.from_config(
+                _chair(tmp_path / ("bad" + bad), "planner: {num_ik_seeds: %s}\n" % bad),
+                urdf_path=urdf_level,
+            )
 
 
 def test_graph_fallback_warms_the_graph_and_engages_it_after_a_failed_attempt(

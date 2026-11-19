@@ -479,22 +479,19 @@ class RammpCuroboNode(Node):
             result.message = self._tag("invalid constraint: %s" % why)
             goal_handle.abort()
             return result
+        goal = {
+            "position": pos,
+            "quat_xyzw": quat,
+            # replay plans without them: it skips a request that had either
+            "constraint": constraint is not None and constraint.is_active(),
+            "via": via is not None and via.is_active(),
+        }
         res = self._plan(
             lambda q: self.planner.plan_to_pose(
                 pos, quat, start=q, constraint=constraint, via=via
             ),
             goal_handle.request.start_joints,
-        )
-        self._log_result(
-            "pose",
-            goal_handle.request.start_joints,
-            {
-                "position": pos,
-                "quat_xyzw": quat,
-                "constraint": constraint is not None,
-                "via": via is not None,
-            },
-            res,
+            log=("pose", goal),
         )
         return self._finish_plan(goal_handle, result, res)
 
@@ -512,9 +509,7 @@ class RammpCuroboNode(Node):
         res = self._plan(
             lambda q: self.planner.plan_to_joints(target, start=q),
             goal_handle.request.start_joints,
-        )
-        self._log_result(
-            "joints", goal_handle.request.start_joints, {"joints": target}, res
+            log=("joints", {"joints": target}),
         )
         out = self._finish_plan(goal_handle, result, res)
         # _plan returns None (busy) or a string (bad start) as sentinels —
@@ -547,11 +542,13 @@ class RammpCuroboNode(Node):
             out.corner_m = [float(c) for c in res.corners_m]
         return out
 
-    def _plan(self, plan_fn, start_joints):
+    def _plan(self, plan_fn, start_joints, log=None):
         """One library planning call from the caller-supplied start state.
 
         Returns the PlanResult, None if another plan is in flight, or a
-        string explaining why start_joints was unusable.
+        string explaining why start_joints was unusable. `log` = (kind,
+        goal) puts the plan on plan_log, still under the lock, so a world
+        pushed meanwhile is not the one logged.
         """
         why = check_start_joints(start_joints, self.planner.joint_names)
         if why is not None:
@@ -560,27 +557,35 @@ class RammpCuroboNode(Node):
             return None
         try:
             self.get_logger().info("Planning...")
-            return plan_fn([float(v) for v in start_joints])
+            start = [float(v) for v in start_joints]
+            res = plan_fn(start)
+            if log is not None:
+                self._log_result(*log, start, res)
+            return res
         finally:
             self._plan_lock.release()
 
-    def _log_result(self, kind, start, goal, res):
-        """One plan_log line; a sentinel res (busy, bad start) is skipped."""
-        if not self.plan_log or not hasattr(res, "success"):
+    def _log_result(self, kind, goal, start, res):
+        """One plan_log line. Nothing here may fail the plan it records."""
+        if not self.plan_log:
             return
-        rec = {
-            "t": time.time(),
-            "kind": kind,
-            "start": [float(v) for v in start],
-            "goal": goal,
-            "world": self.planner.world_boxes(),
-            "success": bool(res.success),
-            "status": str(res.status),
-            "time_s": float(res.timing),
-        }
-        if res.success:
-            rec["positions"] = res.joint_traj.positions.tolist()
-            rec["dt"] = float(res.joint_traj.dt)
+        try:
+            rec = {
+                "t": time.time(),
+                "kind": kind,
+                "start": start,
+                "goal": goal,
+                "world": self.planner.world_boxes,
+                "success": bool(res.success),
+                "status": str(res.status),
+                "time_s": float(res.timing),
+            }
+            if res.success:
+                rec["positions"] = res.joint_traj.positions.tolist()
+                rec["dt"] = float(res.joint_traj.dt)
+        except Exception as exc:  # a log line is never worth a plan
+            self.get_logger().warning("plan_log: not logged: %r" % exc)
+            return
         self._log_plan(rec)
 
     def _log_plan(self, rec):

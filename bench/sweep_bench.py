@@ -142,8 +142,27 @@ def replay(args):
     from rammp_curobo.world import to_world_config
 
     lines = [json.loads(x) for x in Path(args.log).read_text().splitlines() if x]
-    head = next(x for x in lines if x.get("header"))
-    reqs = [x for x in lines if x.get("kind") == "pose"]
+    heads = [x for x in lines if x.get("header")]
+    if len({h["urdf"] for h in heads}) > 1:
+        sys.exit(
+            "%s holds sessions on different models: split it at its header lines"
+            % args.log
+        )
+    head = heads[0]
+    poses = [x for x in lines if x.get("kind") == "pose"]
+    # planned without a hold or via here, so not comparable with the live plan
+    reqs = [
+        x for x in poses if not (x["goal"].get("constraint") or x["goal"].get("via"))
+    ]
+    print(
+        "replaying %d pose requests; skipped %d with a hold or via, %d joint requests"
+        % (
+            len(reqs),
+            len(poses) - len(reqs),
+            sum(x.get("kind") == "joints" for x in lines),
+        ),
+        flush=True,
+    )
     cfg, cfg_dir = load_planner_config(args.config)
     cfg["layers"] = []
     cfg["world"] = "example:world_empty.yaml"
@@ -169,7 +188,10 @@ def replay(args):
                     b["name"]: {"dims": b["dims"], "pose": b["pose"]}
                     for b in r["world"]
                 }
-                planner._motion_gen.update_world(to_world_config(boxes))
+                if boxes:
+                    planner._motion_gen.update_world(to_world_config(boxes))
+                else:  # an empty-world session: update_world would keep the last
+                    planner._motion_gen.clear_world_cache()
                 res = planner.plan_to_pose(
                     r["goal"]["position"], r["goal"]["quat_xyzw"], start=r["start"]
                 )

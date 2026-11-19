@@ -31,8 +31,9 @@ change it for another GPU.
 
 Start the planner node with `plan_log:=/some/file.jsonl` and it appends every
 `plan_to_pose` / `plan_to_joints` request with the collision world it was
-planned in and the result. Replay that under a condition with the robot's own
-planner config:
+planned in and the result. Replay re-plans its `plan_to_pose` requests (not
+joint requests, and not those with a hold or via, which it reports skipping)
+under a condition, with the robot's own planner config:
 
 ```bash
 docker run --rm --gpus all -v "$PWD":/work -v <robots>/<robot>:/robot:ro rammp-curobo-bench:x86 \

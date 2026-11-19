@@ -81,7 +81,7 @@ planner:
   graph_fallback: false              # warm up the graph planner and switch it on for
                                      # the rest of a plan once an attempt fails
                                      # trajopt; Jetson support is unverified
-  warmup: true                      # first-run kernel compile at init, not mid-task
+  warmup: true                       # first-run kernel compile at init, not mid-task
 
 tool:
   # Sim-measured calibrations from RAMMP-Kinova, applied to authored

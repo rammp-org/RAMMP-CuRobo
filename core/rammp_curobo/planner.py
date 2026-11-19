@@ -105,6 +105,15 @@ class CuRoboPlanner:
         self.limit_clamp_rad = float(p["limit_clamp_rad"])
         # .get: a config dict built before these keys existed gets cuRobo's own
         self.num_ik_seeds = p.get("num_ik_seeds")
+        if self.num_ik_seeds is not None and (
+            isinstance(self.num_ik_seeds, bool)
+            or not isinstance(self.num_ik_seeds, int)
+            or self.num_ik_seeds < 1
+        ):
+            raise ValueError(
+                "num_ik_seeds must be a positive integer (or null for cuRobo's "
+                "32), got %r" % (self.num_ik_seeds,)
+            )
         self.reseed_each_plan = bool(p.get("reseed_each_plan", False))
         self.graph_fallback = bool(p.get("graph_fallback", False))
         self.joint_limit_margin_rad = float(p["joint_limit_margin_rad"])
