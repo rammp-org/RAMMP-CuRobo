@@ -58,9 +58,11 @@ you the next release's reviewability.**
 - `main` → `dev` (a back-merge, after a promotion that was squashed, or after a
   hotfix): **merge commit**, same reason.
 
-A ruleset on `main` enforces this — the squash button is not offered on a PR
-targeting it. `dev` is deliberately left unrestricted, because a back-merge into
-it needs a merge commit while ordinary feature work wants a squash.
+Two rulesets enforce this. On a PR into `main` the squash button is not
+offered; on a PR into `dev` only squash is (ruleset `dev: features squash`). A
+back-merge into `dev` is the one exception: a repository admin merges it with a
+merge commit, bypassing that ruleset from the PR (admins may bypass it on pull
+requests only).
 
 ## What CI actually gates
 
