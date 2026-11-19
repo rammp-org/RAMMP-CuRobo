@@ -35,10 +35,13 @@ test:                      ## Core tests (offline everywhere, GPU on the Jetson)
 	python3 -m pytest core/tests -q
 	python3 -m pytest rammp_curobo_ros/test -q -p no:anyio
 
+# deps/ holds rammp.repos's pinned rammp-interfaces-ros2 (rammp_arm_interfaces,
+# which the node serves AddObstacles from); git-ignored, re-imported each time.
 colcon:                    ## Build the interfaces and the node
+	mkdir -p deps && vcs import deps < rammp.repos
 	. /opt/ros/humble/setup.sh && \
 	  colcon build --symlink-install \
-	    --packages-select rammp_curobo_interfaces rammp_curobo_ros
+	    --packages-select rammp_arm_interfaces rammp_curobo_interfaces rammp_curobo_ros
 
 # arm64 only: the base image is nvcr.io/nvidia/l4t-jetpack, which has no x86
 # variant. An x86-64 CUDA image is tracked in issue #8.
@@ -145,9 +148,11 @@ endif
 # anything else but a domain from 1 to 232 becomes 88.
 sim-build: SHELL := /bin/bash
 sim-build:                 ## Build the sim stack into .sim_ws/ (Jetson)
+	mkdir -p deps && vcs import deps < rammp.repos
 	. /opt/ros/humble/setup.bash && . $(SIM_OVERLAY) && \
 	  colcon --log-base .sim_ws/log build --symlink-install \
-	    --base-paths rammp_curobo_interfaces rammp_curobo_ros sim/mebot_sim \
+	    --base-paths deps/rammp-interfaces-ros2/rammp_arm_interfaces \
+	      rammp_curobo_interfaces rammp_curobo_ros sim/mebot_sim \
 	    --build-base .sim_ws/build --install-base .sim_ws/install
 
 # The sim package's own tests: the domain rule, the scene, flights, contacts,

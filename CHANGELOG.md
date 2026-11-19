@@ -15,12 +15,18 @@ that heading to the new version and bumps the five places the number lives.
 ### Added
 
 - **`/rammp_curobo/add_obstacles`: boxes into the collision world over ROS, no
-  file** (#53). `AddObstacles.srv` carries `CollisionBox[]` (name, pose, dims)
-  in `frame_id` `arm_mount`; the boxes join the current world, nothing is
-  replaced, and `/reset` (or a `set_world` push) is how they leave. A repeated
-  name, another frame or a non-unit orientation refuses the call whole. In the
-  library, `CuRoboPlanner.add_obstacles(obstacles)`, and
-  `geometry.quat_xyzw_to_euler_deg`. New service and message: MINOR.
+  file** (#53). `rammp_arm_interfaces/srv/AddObstacles` carries
+  `CollisionBox[]` (name, pose, dims) in `frame_id` `arm_mount`; the boxes join
+  the current world, nothing is replaced, and `/reset` (or a `set_world` push)
+  is how they leave. A repeated name, another frame, a non-unit orientation or
+  a dim of 0 refuses the call whole. In the library,
+  `CuRoboPlanner.add_obstacles(obstacles)`, and
+  `geometry.quat_xyzw_to_euler_deg`. New service: MINOR.
+- **`rammp_curobo_ros` depends on `rammp_arm_interfaces`**, the shared contract
+  in rammp-interfaces-ros2, for `AddObstacles`; it serves that service and
+  calls nothing of the arm's. `rammp.repos` pins it (import into `deps/` with
+  `vcs import`); CI, the image, `make colcon` and `make sim-build` build it from
+  that pin. It needs `ros-humble-control-msgs`.
 
 ### Fixed
 

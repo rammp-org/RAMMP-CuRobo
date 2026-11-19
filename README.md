@@ -87,9 +87,10 @@ python3 -m pip install "warp-lang==1.5.1"  # v0.7.8 needs warp 1.5.x
 ```bash
 git clone <this-repo> ~/RAMMP-CuRobo && cd ~/RAMMP-CuRobo
 python3 -m pip install --user --no-build-isolation -e ./core
+mkdir -p deps && vcs import deps < rammp.repos   # rammp_arm_interfaces, pinned
 source /opt/ros/humble/setup.zsh
 colcon build --symlink-install \
-    --packages-select rammp_curobo_interfaces rammp_curobo_ros
+    --packages-select rammp_arm_interfaces rammp_curobo_interfaces rammp_curobo_ros
 ```
 
 ### 4. Arm driver workspace (only for executing on this bench)

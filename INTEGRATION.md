@@ -114,13 +114,16 @@ arm.
 ### Obstacles from another container: `/rammp_curobo/add_obstacles`
 
 `set_world` takes a path, which the planner's container must be able to read.
-`add_obstacles` (`AddObstacles.srv`) carries the boxes in the request instead:
-each a `CollisionBox` (name, `geometry_msgs/Pose` of its centre, full extents
-in `dims`), with `frame_id` the planning frame, `arm_mount`; any other frame is
-refused, as nothing here transforms.
+`add_obstacles` carries the boxes in the request instead: each a
+`CollisionBox` (name, `geometry_msgs/Pose` of its centre, full extents in
+`dims`), with `frame_id` the planning frame, `arm_mount`; any other frame is
+refused, as nothing here transforms. The types are the shared contract's,
+`rammp_arm_interfaces/srv/AddObstacles` and `rammp_arm_interfaces/msg/CollisionBox`
+from rammp-interfaces-ros2 (the release `rammp.repos` pins, or later), not
+`rammp_curobo_interfaces`'.
 
 ```text
-ros2 service call /rammp_curobo/add_obstacles rammp_curobo_interfaces/srv/AddObstacles \
+ros2 service call /rammp_curobo/add_obstacles rammp_arm_interfaces/srv/AddObstacles \
   "{frame_id: arm_mount, boxes: [{name: mug, pose: {position: {x: 0.5, y: 0.1, z: 0.05},
     orientation: {w: 1.0}}, dims: {x: 0.08, y: 0.08, z: 0.1}}]}"
 ```

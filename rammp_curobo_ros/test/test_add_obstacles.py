@@ -14,8 +14,8 @@ rclpy = pytest.importorskip("rclpy", reason="ROS 2 not sourced")
 from geometry_msgs.msg import Point, Pose, Quaternion, Vector3  # noqa: E402
 
 import rammp_curobo  # noqa: E402
-from rammp_curobo_interfaces.msg import CollisionBox  # noqa: E402
-from rammp_curobo_interfaces.srv import AddObstacles  # noqa: E402
+from rammp_arm_interfaces.msg import CollisionBox  # noqa: E402
+from rammp_arm_interfaces.srv import AddObstacles  # noqa: E402
 
 from rammp_curobo_ros import planner_node  # noqa: E402
 

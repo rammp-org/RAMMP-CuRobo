@@ -103,12 +103,16 @@ jobs:
 
       # core/ carries a COLCON_IGNORE -- it is a pip package, not an ament one --
       # so --packages-select here matches what the Dockerfile and hil.py build.
+      # rammp_arm_interfaces (AddObstacles) comes from rammp.repos's pin, and
+      # needs control_msgs, which ros-base lacks.
       - name: Build the interfaces and the node
         shell: bash
         run: |
+          apt-get update -qq && apt-get install -y -qq ros-humble-control-msgs
+          mkdir -p deps && vcs import deps < rammp.repos
           . /opt/ros/humble/setup.sh
           colcon build --symlink-install \
-            --packages-select rammp_curobo_interfaces rammp_curobo_ros
+            --packages-select rammp_arm_interfaces rammp_curobo_interfaces rammp_curobo_ros
 
       # test_start_joints_contract.py skips itself on ImportError when the
       # message packages are not on PYTHONPATH. That is right for a laptop and
@@ -122,7 +126,8 @@ jobs:
           . install/setup.sh
           python3 -c "
           from rammp_curobo_interfaces.action import PlanToJoints, PlanToPose
-          from rammp_curobo_interfaces.srv import AddObstacles, SetWorld
+          from rammp_curobo_interfaces.srv import SetWorld
+          from rammp_arm_interfaces.srv import AddObstacles
           print('IDL OK:', PlanToPose, PlanToJoints, SetWorld, AddObstacles)
           "
 
