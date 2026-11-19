@@ -32,6 +32,7 @@ model is read once; a different one published later is reported as an
 ERROR, every time, and never used — restart the planner to take it.
 """
 
+import json
 import logging
 import math
 import tempfile
@@ -232,6 +233,10 @@ class RammpCuroboNode(Node):
                 "pass config:=/config/robot/curobo/planner.yaml. ==="
             )
         self.world = self.declare_parameter("world", "").value
+        # A JSONL file to append every plan_to_pose / plan_to_joints request
+        # and its result to (start, goal, the box world cuRobo was given, the
+        # trajectory): the replay input of bench/sweep_bench.py. "" = off.
+        self.plan_log = self.declare_parameter("plan_log", "").value
         # dynamic_typing: `-p robot_description_timeout_s:=3` is an INTEGER,
         # which a DOUBLE-typed declaration refuses with a traceback.
         timeout = self.declare_parameter(
@@ -316,6 +321,16 @@ class RammpCuroboNode(Node):
         # The core library's INFO logs do not reach the ROS logger, and this
         # line is the operator's proof of which layers are in the world.
         self.get_logger().info("Collision world: %s" % self.planner.world_summary())
+        if self.plan_log:
+            self._log_plan(
+                {
+                    "header": True,
+                    "config": self.config,
+                    "urdf": xml,
+                    "joint_names": self.planner.joint_names,
+                }
+            )
+            self.get_logger().info("logging every plan to %s" % self.plan_log)
         self._model_sub = self._watch_model(model)
 
         ActionServer(
@@ -470,6 +485,17 @@ class RammpCuroboNode(Node):
             ),
             goal_handle.request.start_joints,
         )
+        self._log_result(
+            "pose",
+            goal_handle.request.start_joints,
+            {
+                "position": pos,
+                "quat_xyzw": quat,
+                "constraint": constraint is not None,
+                "via": via is not None,
+            },
+            res,
+        )
         return self._finish_plan(goal_handle, result, res)
 
     def _plan_to_joints_cb(self, goal_handle):
@@ -486,6 +512,9 @@ class RammpCuroboNode(Node):
         res = self._plan(
             lambda q: self.planner.plan_to_joints(target, start=q),
             goal_handle.request.start_joints,
+        )
+        self._log_result(
+            "joints", goal_handle.request.start_joints, {"joints": target}, res
         )
         out = self._finish_plan(goal_handle, result, res)
         # _plan returns None (busy) or a string (bad start) as sentinels —
@@ -534,6 +563,33 @@ class RammpCuroboNode(Node):
             return plan_fn([float(v) for v in start_joints])
         finally:
             self._plan_lock.release()
+
+    def _log_result(self, kind, start, goal, res):
+        """One plan_log line; a sentinel res (busy, bad start) is skipped."""
+        if not self.plan_log or not hasattr(res, "success"):
+            return
+        rec = {
+            "t": time.time(),
+            "kind": kind,
+            "start": [float(v) for v in start],
+            "goal": goal,
+            "world": self.planner.world_boxes(),
+            "success": bool(res.success),
+            "status": str(res.status),
+            "time_s": float(res.timing),
+        }
+        if res.success:
+            rec["positions"] = res.joint_traj.positions.tolist()
+            rec["dt"] = float(res.joint_traj.dt)
+        self._log_plan(rec)
+
+    def _log_plan(self, rec):
+        # never let the log break planning
+        try:
+            with open(self.plan_log, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec) + "\n")
+        except (OSError, TypeError, ValueError) as exc:
+            self.get_logger().warning("plan_log %s: %s" % (self.plan_log, exc))
 
     def _finish_plan(self, goal_handle, result, res, speed="at full speed"):
         if res is None:
