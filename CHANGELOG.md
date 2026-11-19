@@ -12,6 +12,16 @@ that heading to the new version and bumps the five places the number lives.
 
 ## [Unreleased]
 
+### Added
+
+- **`/rammp_curobo/add_obstacles`: boxes into the collision world over ROS, no
+  file** (#53). `AddObstacles.srv` carries `CollisionBox[]` (name, pose, dims)
+  in `frame_id` `arm_mount`; the boxes join the current world, nothing is
+  replaced, and `/reset` (or a `set_world` push) is how they leave. A repeated
+  name, another frame or a non-unit orientation refuses the call whole. In the
+  library, `CuRoboPlanner.add_obstacles(obstacles)`, and
+  `geometry.quat_xyzw_to_euler_deg`. New service and message: MINOR.
+
 ## [2.0.2] — 2026-11-17
 
 A patch release: the image's Cyclone DDS config no longer lists an

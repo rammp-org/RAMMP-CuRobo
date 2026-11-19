@@ -174,6 +174,27 @@ def test_check_state_valid(planner):
     assert not ok
 
 
+def test_an_added_box_collides_in_curobo_and_reset_removes_it(planner):
+    q = planner.retract_pose
+    assert planner.check_state_valid(q)[0]
+    booted = planner.world_boxes
+    pos, _ = planner.fk(q)  # around the tool: the arm reaches into it
+    try:
+        planner.add_obstacles(
+            [{"name": "probe", "position": list(pos), "dims": [0.1, 0.1, 0.1]}]
+        )
+        added = [b for b in planner.world_boxes if b not in booted]
+        assert [(b["name"], b["layer"]) for b in added] == [("probe", "scene")]
+        assert len(planner.world_boxes) == len(booted) + 1
+        _check_read_back(planner)
+        ok, detail = planner.check_state_valid(q)
+        assert not ok and "probe" in detail
+    finally:
+        planner.reset()
+    assert planner.world_boxes == booted
+    assert planner.check_state_valid(q)[0]
+
+
 def test_update_world_guards_and_round_trip(planner, start):
     before = planner.world_boxes
     with pytest.raises(ValueError, match="empty"):

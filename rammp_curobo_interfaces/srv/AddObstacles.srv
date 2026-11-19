@@ -1,0 +1,16 @@
+# Add boxes to the planner's collision world. They JOIN the world, they do
+# not replace it: the boxes already there (the scene, any added before, the
+# robot's layers) all stay. Calls are anonymous and accumulate; nothing here
+# removes a box. Publishing std_msgs/Empty on /reset is the way back to the
+# world loaded at boot, and a SetWorld push replaces the boxes added since.
+#
+# Refused whole, and the world before it stays: a frame that is not the
+# planning frame, a name already in the world (reset first to re-add one), a
+# non-unit orientation, a dim that is not a finite number > 0, or more boxes
+# than the collision cache holds. Cylinders and spheres: send their
+# bounding box (cuRobo v0.7.8 collides with boxes only).
+string frame_id                 # the planning frame, arm_mount on RAMMP's robots
+CollisionBox[] boxes
+---
+bool success
+string message                  # the world it made, or why it was refused

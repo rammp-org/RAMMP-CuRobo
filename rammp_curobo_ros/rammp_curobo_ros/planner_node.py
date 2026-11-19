@@ -8,6 +8,7 @@ Actions (node name rammp_curobo):
     /rammp_curobo/blend               rammp_curobo_interfaces/Blend
 Services:
     /rammp_curobo/set_world           rammp_curobo_interfaces/srv/SetWorld
+    /rammp_curobo/add_obstacles       rammp_curobo_interfaces/srv/AddObstacles
 Subscriptions:
     /reset                            std_msgs/Empty — back to the world
                                       loaded at boot, layers included
@@ -51,8 +52,12 @@ from rammp_curobo.config import is_example, load_planner_config, resolve_config
 from rammp_curobo.contract import check_robot_dir
 from rammp_curobo.urdf_model import write_urdf
 from rammp_curobo_interfaces.action import Blend, PlanToJoints, PlanToPose
-from rammp_curobo_interfaces.srv import SetWorld
-from rammp_curobo_ros.conversions import trajectory_from_msg, trajectory_to_msg
+from rammp_curobo_interfaces.srv import AddObstacles, SetWorld
+from rammp_curobo_ros.conversions import (
+    obstacles_from_msg,
+    trajectory_from_msg,
+    trajectory_to_msg,
+)
 
 
 def check_start_joints(start_joints, joint_names):
@@ -336,6 +341,12 @@ class RammpCuroboNode(Node):
         self.create_service(
             SetWorld, "~/set_world", self._set_world_cb, callback_group=self._cb
         )
+        self.create_service(
+            AddObstacles,
+            "~/add_obstacles",
+            self._add_obstacles_cb,
+            callback_group=self._cb,
+        )
         # The ROS-wide reset convention: a global topic, not ~/reset.
         self.create_subscription(
             Empty, "/reset", self._reset_cb, 10, callback_group=self._cb
@@ -579,6 +590,25 @@ class RammpCuroboNode(Node):
                         " (example, image)" if is_example(path) else "",
                         self.planner.world_summary(),
                     )
+                )
+            except Exception as exc:
+                response.success = False
+                response.message = self._tag(str(exc))
+        return response
+
+    def _add_obstacles_cb(self, request, response):
+        with self._plan_lock:
+            try:
+                if request.frame_id != self.planner.base_frame:
+                    raise ValueError(
+                        "frame_id is %r, expected %r (the planning frame)"
+                        % (request.frame_id, self.planner.base_frame)
+                    )
+                self.planner.add_obstacles(obstacles_from_msg(request.boxes))
+                response.success = True
+                response.message = self._tag(
+                    "added %d boxes (%s)"
+                    % (len(request.boxes), self.planner.world_summary())
                 )
             except Exception as exc:
                 response.success = False

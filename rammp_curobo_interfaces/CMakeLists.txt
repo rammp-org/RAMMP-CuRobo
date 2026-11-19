@@ -15,7 +15,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/PlanToJoints.action"
   "action/Blend.action"
   "srv/SetWorld.srv"
+  "srv/AddObstacles.srv"
   "msg/ApproachVia.msg"
+  "msg/CollisionBox.msg"
   DEPENDENCIES geometry_msgs trajectory_msgs
 )
 

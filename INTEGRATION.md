@@ -111,6 +111,36 @@ node on the graph that publishes it drops your pushed world too: if you rely on
 `set_world`, push it again after a reset. There is nothing here that can move an
 arm.
 
+### Obstacles from another container: `/rammp_curobo/add_obstacles`
+
+`set_world` takes a path, which the planner's container must be able to read.
+`add_obstacles` (`AddObstacles.srv`) carries the boxes in the request instead:
+each a `CollisionBox` (name, `geometry_msgs/Pose` of its centre, full extents
+in `dims`), with `frame_id` the planning frame, `arm_mount`; any other frame is
+refused, as nothing here transforms.
+
+```text
+ros2 service call /rammp_curobo/add_obstacles rammp_curobo_interfaces/srv/AddObstacles \
+  "{frame_id: arm_mount, boxes: [{name: mug, pose: {position: {x: 0.5, y: 0.1, z: 0.05},
+    orientation: {w: 1.0}}, dims: {x: 0.08, y: 0.08, z: 0.1}}]}"
+```
+
+- **Boxes join the world; nothing is replaced.** The scene, the layers and every
+  box added before stay. Calls are anonymous and accumulate.
+- **`/reset` is the only way to remove one.** It returns to the world loaded at
+  boot, dropping every added box, from every caller. A `set_world` push replaces
+  them too, since they joined its scene.
+- **A name already in the world is refused**, so re-adding the same objects
+  needs a reset first. Prefix names with your engine (`perception/mug`) to stay
+  clear of other callers'.
+- **A call is refused whole** (the world before it stays): a wrong frame, a
+  repeated name, a non-unit orientation, a dim not > 0, or more boxes than the
+  cache's free slots (the reply's summary says how many are in use).
+- **Boxes only.** Send a cylinder's or a sphere's bounding box; cuRobo v0.7.8
+  collides with nothing else. To reach for an object, don't add it.
+
+In Python the same is `planner.add_obstacles([{'name', 'position', 'dims', 'rpy_deg'}])`.
+
 ### Through several goals without stopping: `/rammp_curobo/blend`
 
 Plan each leg with `plan_to_pose` / `plan_to_joints`, each from the last point

@@ -191,6 +191,61 @@ def test_update_world_refuses_before_reaching_curobo(
 
 
 @pytest.fixture
+def world_sent(cpu_planner, monkeypatch):
+    """cpu_planner with cuRobo's world calls stubbed: returns the list of
+    worlds sent to cuRobo, each as the box keys it held."""
+    geom = types.ModuleType("curobo.geom.types")
+    kinds = dict(sphere=[], cylinder=[], capsule=[], mesh=[])
+    geom.WorldConfig = types.SimpleNamespace(
+        from_dict=lambda d: types.SimpleNamespace(cuboid=list(d["cuboid"]), **kinds)
+    )
+    for name in ("curobo", "curobo.geom"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, "curobo.geom.types", geom)
+    sent = []
+    cpu_planner._motion_gen = types.SimpleNamespace(
+        update_world=lambda wc: sent.append(set(wc.cuboid)),
+        reset=lambda reset_seed: None,
+    )
+    cpu_planner._reset_pose_cost_metric = lambda: None
+    return sent
+
+
+def _box(name, x=0.5):
+    return {"name": name, "position": [x, 0, 0.3], "dims": [0.1, 0.1, 0.1]}
+
+
+def test_add_obstacles_adds_to_the_world_without_replacing_it(cpu_planner, world_sent):
+    before = {o.name for o in cpu_planner.scene.obstacles}
+    assert before  # the kitchen: something to keep
+    cpu_planner.add_obstacles([_box("mug")])
+    cpu_planner.add_obstacles([_box("bowl", x=0.6), _box("jar", x=0.7)])
+    assert {o.name for o in cpu_planner.scene.obstacles} == before | {
+        "mug",
+        "bowl",
+        "jar",
+    }
+    assert {"mug", "bowl", "jar"} <= world_sent[-1] and before <= world_sent[-1]
+
+
+def test_add_obstacles_refuses_a_name_already_in_the_world(cpu_planner, world_sent):
+    cpu_planner.add_obstacles([_box("mug")])
+    with pytest.raises(ValueError, match="mug"):
+        cpu_planner.add_obstacles([_box("cup"), _box("mug", x=0.6)])
+    # refused whole: neither box of the refused call is in the world
+    assert len(world_sent) == 1
+    assert "cup" not in {o.name for o in cpu_planner.scene.obstacles}
+
+
+def test_reset_drops_added_obstacles(cpu_planner, world_sent):
+    boot = [o.name for o in cpu_planner.scene.obstacles]
+    cpu_planner.add_obstacles([_box("mug")])
+    cpu_planner.reset()
+    assert [o.name for o in cpu_planner.scene.obstacles] == boot
+    assert "mug" not in world_sent[-1]
+
+
+@pytest.fixture
 def blend_planner(cpu_planner, monkeypatch):
     """cpu_planner whose plan_to_joints legs are straight minimum-jerk moves
     at the joint limits, whose "tool" is at the first three joints, tilted

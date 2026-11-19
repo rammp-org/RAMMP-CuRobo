@@ -32,6 +32,7 @@ from rammp_curobo.constraints import (
 )
 from rammp_curobo.geometry import (
     euler_deg_to_quat_xyzw,
+    quat_xyzw_to_euler_deg,
     spin_about_tool,
     tip_to_tool,
     tool_axis,
@@ -449,6 +450,25 @@ def test_quaternion_round_trip_and_tool_math():
     # spinning about tool z never moves the tool axis
     spun = spin_about_tool(wxyz, 90.0)
     assert tool_axis(spun) == pytest.approx([0, 0, -1], abs=1e-9)
+
+
+@pytest.mark.parametrize(
+    "rpy",
+    [[0, 0, 0], [180, 0, 0], [30, -45, 120], [10, 90, -20], [-70, -90, 35]],
+)
+def test_quat_to_euler_is_the_inverse_of_euler_to_quat(rpy):
+    # pitch +-90 included: there the angles are not unique, the rotation is
+    q = euler_deg_to_quat_xyzw(rpy)
+    back = euler_deg_to_quat_xyzw(quat_xyzw_to_euler_deg(q))
+    assert abs(np.dot(back, q)) == pytest.approx(1.0, abs=1e-9)
+
+
+@pytest.mark.parametrize(
+    "q", [(0, 0, 0, 0), (0, 0, 0, 2), (0, 0, 0.5, 0.5), (0, 0, 0, math.nan)]
+)
+def test_quat_to_euler_refuses_a_non_unit_quaternion(q):
+    with pytest.raises(ValueError, match="unit quaternion"):
+        quat_xyzw_to_euler_deg(q)
 
 
 def test_yaw_about_world_z_keeps_attitude_level():

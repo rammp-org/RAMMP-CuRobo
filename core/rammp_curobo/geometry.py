@@ -33,6 +33,26 @@ def euler_deg_to_quat_xyzw(rpy_deg):
     )
 
 
+def quat_xyzw_to_euler_deg(q):
+    """(x, y, z, w) quaternion -> roll/pitch/yaw (degrees), the inverse of
+    euler_deg_to_quat_xyzw. Refuses anything not a unit quaternion to
+    within 1e-3 (a zero or NaN one would load as a box that never
+    collides); within that it is normalised. At pitch +-90 deg, where roll
+    and yaw are one angle, yaw is 0."""
+    n = math.sqrt(sum(float(v) ** 2 for v in q))
+    if not (math.isfinite(n) and abs(n - 1.0) <= 1e-3):
+        raise ValueError("expected a unit quaternion (x, y, z, w), got %r" % (q,))
+    x, y, z, w = (float(v) / n for v in q)
+    sp = max(-1.0, min(1.0, 2 * (w * y - z * x)))
+    if abs(sp) > 1 - 1e-9:
+        return [math.degrees(2 * math.atan2(x, w)), math.copysign(90.0, sp), 0.0]
+    return [
+        math.degrees(math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))),
+        math.degrees(math.asin(sp)),
+        math.degrees(math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))),
+    ]
+
+
 def xyzw_to_wxyz(q):
     x, y, z, w = q
     return [w, x, y, z]

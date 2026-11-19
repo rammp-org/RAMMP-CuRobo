@@ -7,6 +7,7 @@ from builtin_interfaces.msg import Duration as DurationMsg
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from rammp_curobo import Trajectory
+from rammp_curobo.geometry import quat_xyzw_to_euler_deg
 
 
 def duration_msg(seconds):
@@ -81,3 +82,24 @@ def trajectory_from_msg(msg, joint_names, frame_id=""):
         ),
         None,
     )
+
+
+def obstacles_from_msg(boxes):
+    """CollisionBox[] -> the planner's obstacle dicts (rpy_deg from the
+    quaternion, which must be a unit one)."""
+    out = []
+    for b in boxes:
+        p, q, d = b.pose.position, b.pose.orientation, b.dims
+        try:
+            rpy = quat_xyzw_to_euler_deg((q.x, q.y, q.z, q.w))
+        except ValueError as exc:
+            raise ValueError("box %r: %s" % (b.name, exc)) from None
+        out.append(
+            {
+                "name": b.name,
+                "position": [p.x, p.y, p.z],
+                "rpy_deg": rpy,
+                "dims": [d.x, d.y, d.z],
+            }
+        )
+    return out
