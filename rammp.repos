@@ -7,6 +7,5 @@ repositories:
   rammp-interfaces-ros2:
     type: git
     url: https://github.com/rammp-org/rammp-interfaces-ros2.git
-    # rammp-interfaces-ros2#38 (AddObstacles, CollisionBox); move to the
-    # release tag that carries it once cut.
-    version: 4146c632756fcd7fe68fc686ec984cb33c4dc16e
+    # v2.2.0: AddObstacles, CollisionBox (rammp-interfaces-ros2#38)
+    version: v2.2.0
