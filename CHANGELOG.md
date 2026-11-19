@@ -22,6 +22,13 @@ that heading to the new version and bumps the five places the number lives.
   library, `CuRoboPlanner.add_obstacles(obstacles)`, and
   `geometry.quat_xyzw_to_euler_deg`. New service and message: MINOR.
 
+### Fixed
+
+- **`/reset` works on a profile whose boot world is `world_empty.yaml` with
+  config layers.** It restored the boot world through `update_world`, which
+  refuses a scene with no boxes of its own, so the reset failed with an ERROR
+  and the pushed world stayed. It now installs the boot world directly.
+
 ## [2.0.2] — 2026-11-17
 
 A patch release: the image's Cyclone DDS config no longer lists an

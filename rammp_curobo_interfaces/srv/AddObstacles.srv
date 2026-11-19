@@ -6,7 +6,7 @@
 #
 # Refused whole, and the world before it stays: a frame that is not the
 # planning frame, a name already in the world (reset first to re-add one), a
-# non-unit orientation, a dim that is not a finite number > 0, or more boxes
+# non-unit orientation, a dim that is not a number > 0, or more boxes
 # than the collision cache holds. Cylinders and spheres: send their
 # bounding box (cuRobo v0.7.8 collides with boxes only).
 string frame_id                 # the planning frame, arm_mount on RAMMP's robots

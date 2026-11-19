@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from rammp_curobo import CuRoboPlanner
+from rammp_curobo.config import load_planner_config
 
 DATA = Path(__file__).parent / "data"
 
@@ -190,10 +191,9 @@ def test_update_world_refuses_before_reaching_curobo(
     assert len(sent) == 1 and cpu_planner.scene.base_frame == "arm_mount"
 
 
-@pytest.fixture
-def world_sent(cpu_planner, monkeypatch):
-    """cpu_planner with cuRobo's world calls stubbed: returns the list of
-    worlds sent to cuRobo, each as the box keys it held."""
+def _stub_world(planner, monkeypatch):
+    """Stub cuRobo's world calls on `planner`: returns the list of worlds
+    sent to cuRobo, each as the box keys it held."""
     geom = types.ModuleType("curobo.geom.types")
     kinds = dict(sphere=[], cylinder=[], capsule=[], mesh=[])
     geom.WorldConfig = types.SimpleNamespace(
@@ -203,12 +203,17 @@ def world_sent(cpu_planner, monkeypatch):
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
     monkeypatch.setitem(sys.modules, "curobo.geom.types", geom)
     sent = []
-    cpu_planner._motion_gen = types.SimpleNamespace(
+    planner._motion_gen = types.SimpleNamespace(
         update_world=lambda wc: sent.append(set(wc.cuboid)),
         reset=lambda reset_seed: None,
     )
-    cpu_planner._reset_pose_cost_metric = lambda: None
+    planner._reset_pose_cost_metric = lambda: None
     return sent
+
+
+@pytest.fixture
+def world_sent(cpu_planner, monkeypatch):
+    return _stub_world(cpu_planner, monkeypatch)
 
 
 def _box(name, x=0.5):
@@ -235,6 +240,34 @@ def test_add_obstacles_refuses_a_name_already_in_the_world(cpu_planner, world_se
     # refused whole: neither box of the refused call is in the world
     assert len(world_sent) == 1
     assert "cup" not in {o.name for o in cpu_planner.scene.obstacles}
+
+
+@pytest.mark.parametrize("dims", [[0, 0.1, 0.1], [0.1, -0.1, 0.1]])
+def test_add_obstacles_refuses_a_box_without_size(cpu_planner, world_sent, dims):
+    # padding would turn a 0 into a 4 cm box: a sizeless detection is a
+    # caller's bug, not a small obstacle
+    with pytest.raises(ValueError, match="dims"):
+        cpu_planner.add_obstacles([dict(_box("mug"), dims=dims)])
+    assert not world_sent
+
+
+def test_reset_drops_added_obstacles_from_an_empty_boot_scene_with_layers(
+    monkeypatch, urdf_level
+):
+    # A chair profile with world_empty.yaml: the boot scene has no boxes of
+    # its own, only the config's layers. update_world refuses such a scene
+    # on a push, but reset must still restore it -- it is the only way an
+    # engine has to take added boxes out.
+    monkeypatch.setattr(CuRoboPlanner, "_init_curobo", lambda self, warmup: None)
+    cfg, cfg_dir = load_planner_config(str(DATA / "mebot" / "planner.yaml"))
+    cfg["world"] = "example:world_empty.yaml"
+    chair = CuRoboPlanner(cfg, cfg_dir, urdf_path=urdf_level)
+    chair._fixed_spheres = np.empty((0, 4))
+    sent = _stub_world(chair, monkeypatch)
+    chair.add_obstacles([_box("mug")])
+    chair.reset()
+    assert chair.scene.obstacles == []
+    assert "mug" not in sent[-1] and any(k.startswith("person/") for k in sent[-1])
 
 
 def test_reset_drops_added_obstacles(cpu_planner, world_sent):

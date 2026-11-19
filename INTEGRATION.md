@@ -136,6 +136,9 @@ ros2 service call /rammp_curobo/add_obstacles rammp_curobo_interfaces/srv/AddObs
 - **A call is refused whole** (the world before it stays): a wrong frame, a
   repeated name, a non-unit orientation, a dim not > 0, or more boxes than the
   cache's free slots (the reply's summary says how many are in use).
+- **Send the object's own size.** Each side is padded by the planner's
+  `world_padding` (2 cm by default), as every scene box is; a margin of your
+  own doubles it.
 - **Boxes only.** Send a cylinder's or a sphere's bounding box; cuRobo v0.7.8
   collides with nothing else. To reach for an object, don't add it.
 
