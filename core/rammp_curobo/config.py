@@ -49,12 +49,8 @@ PLANNER_DEFAULTS = {
         # trajectory and fails the plan if the worst deviation exceeds this,
         # so "held level" is a checked claim instead of a hope.
         "constraint_tolerance_deg": 2.0,
-        # How many of IK's goals (ranked nearest the start first) trajopt
-        # optimises toward per attempt; the best of them is kept. None =
-        # cuRobo's 4. 1 = only the nearest.
-        "num_trajopt_seeds": None,
-        # IK's random seeds per attempt; more find the solution nearest the
-        # start more reliably. None = cuRobo's 32.
+        # IK's random seeds per attempt; more find the solutions nearest the
+        # start, which IK ranks first, reliably. None = cuRobo's 32.
         "num_ik_seeds": None,
         # Rewind cuRobo's random generators before every plan, so one request
         # draws the same IK seeds and optimizer noise each time.

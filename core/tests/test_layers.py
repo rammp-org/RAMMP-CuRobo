@@ -2868,24 +2868,19 @@ def test_bare_layer_name_in_the_image_is_refused_with_the_example_hint(tmp_path)
     assert str(tmp_path / "gen3.yaml") in str(exc.value)
 
 
-def test_the_seed_counts_reach_motion_gen_at_construction(
+def test_the_ik_seed_count_reaches_motion_gen_at_construction(
     urdf_level, tmp_path, monkeypatch
 ):
     stand_in = _curobo_stand_in(monkeypatch)
     CuRoboPlanner.from_config(_chair(tmp_path / "default"), urdf_path=urdf_level)
-    # unset: cuRobo's own counts (32 IK seeds, 4 trajopt goals)
-    assert "num_ik_seeds" not in stand_in.config
-    assert "num_trajopt_seeds" not in stand_in.config
-    # set: at construction, where warm-up records its CUDA graphs for them
-    # (changing the count per plan replays those graphs at the wrong size)
+    assert "num_ik_seeds" not in stand_in.config  # unset: cuRobo's own 32
+    # set: at construction, where warm-up records its CUDA graphs for it
+    # (changing a seed count per plan replays those graphs at the wrong size)
     CuRoboPlanner.from_config(
-        _chair(
-            tmp_path / "set", "planner: {num_ik_seeds: 512, num_trajopt_seeds: 1}\n"
-        ),
+        _chair(tmp_path / "set", "planner: {num_ik_seeds: 512}\n"),
         urdf_path=urdf_level,
     )
     assert stand_in.config["num_ik_seeds"] == 512
-    assert stand_in.config["num_trajopt_seeds"] == 1
 
 
 def test_graph_fallback_warms_the_graph_and_engages_it_after_a_failed_attempt(

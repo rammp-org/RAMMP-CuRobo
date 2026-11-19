@@ -72,12 +72,9 @@ planner:
   num_ik_seeds: null                 # IK's random seeds per attempt (null = cuRobo's
                                      # 32). IK ranks its solutions nearest the start
                                      # first, but 32 seeds often miss the nearest
-                                     # one; 512 find it reliably (bench/)
-  num_trajopt_seeds: null            # IK goals trajopt optimises toward per attempt,
-                                     # keeping the best (null = cuRobo's 4). 1 = only
-                                     # the one nearest the start. Both seed counts
-                                     # are fixed at start-up: warm-up records CUDA
-                                     # graphs for them
+                                     # ones; 512 find them reliably (bench/).
+                                     # Fixed at start-up: warm-up records CUDA
+                                     # graphs for it
   reseed_each_plan: false            # rewind cuRobo's random generators (and clear
                                      # the graph planner's roadmap) before every
                                      # plan: one request, one plan, to ~1e-3 rad

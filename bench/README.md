@@ -18,8 +18,8 @@ jittered by 3 mrad per joint every rep.
 ```bash
 docker build -f bench/Dockerfile.x86 -t rammp-curobo-bench:x86 bench  # cuRobo v0.7.8, sm_86
 bench/run.sh bench/out base
-bench/run.sh bench/out candidate --set num_ik_seeds=512 --set num_trajopt_seeds=1 \
-    --set reseed_each_plan=true --set graph_fallback=true
+bench/run.sh bench/out candidate --set num_ik_seeds=512 --set reseed_each_plan=true \
+    --set graph_fallback=true
 python3 bench/sweep_bench.py report bench/out/*.jsonl --baseline base   # numpy + PyYAML
 ```
 

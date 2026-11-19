@@ -104,7 +104,6 @@ class CuRoboPlanner:
         self.joint_space_method = str(p["joint_space_method"])
         self.limit_clamp_rad = float(p["limit_clamp_rad"])
         # .get: a config dict built before these keys existed gets cuRobo's own
-        self.num_trajopt_seeds = p.get("num_trajopt_seeds")
         self.num_ik_seeds = p.get("num_ik_seeds")
         self.reseed_each_plan = bool(p.get("reseed_each_plan", False))
         self.graph_fallback = bool(p.get("graph_fallback", False))
@@ -236,14 +235,11 @@ class CuRoboPlanner:
             collision_activation_distance=self.collision_activation_distance,
             # at construction, not per plan: warm-up records CUDA graphs for
             # this many seeds, and replaying them at another count crashes
-            **{
-                k: int(v)
-                for k, v in (
-                    ("num_trajopt_seeds", self.num_trajopt_seeds),
-                    ("num_ik_seeds", self.num_ik_seeds),
-                )
-                if v is not None
-            },
+            **(
+                {}
+                if self.num_ik_seeds is None
+                else {"num_ik_seeds": int(self.num_ik_seeds)}
+            ),
         )
         self._motion_gen = MotionGen(cfg)
         # cuRobo consumes start states in ITS cspace order, not by name —

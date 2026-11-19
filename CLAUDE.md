@@ -205,11 +205,13 @@ plus the gripper services (2026-08-24, issue #6).
   the start first (base_cfg's null-space term dominates the converged pose
   error, even at cuRobo's 0.001), so raising that weight, or weighting it per
   joint, changed nothing; the variance is which solutions IK's 32 random seeds
-  happen to find, then which of 4 trajopt picks. `num_ik_seeds: 512` +
-  `num_trajopt_seeds: 1` + `reseed_each_plan` make it repeatable. Seed counts
-  go to MotionGenConfig at CONSTRUCTION: changing `num_trajopt_seeds` per plan
-  replays warm-up's CUDA graphs at the wrong size and crashes the GPU (illegal
-  memory access).
+  happen to find. `num_ik_seeds: 512` + `reseed_each_plan` make it
+  repeatable with no lost plans. Trajopt keeps its 4 goals: optimising toward
+  only the nearest (`num_trajopt_seeds` 1) failed 2 of 80 pairs every time
+  (FINETUNE_TRAJOPT_FAIL at that goal), and the graph planner did not rescue
+  them. Seed counts go to MotionGenConfig at CONSTRUCTION: changing one per
+  plan replays warm-up's CUDA graphs at the wrong size and crashes the GPU
+  (illegal memory access).
 - `plan_single_js` WORKS on torch 2.10.0 (verified 2026-08-11, mismatch
   5e-7) — on older wheels it died; `joint_space_method: auto` handles both.
   The FK-pose fallback reaches the POSE but may flip joint families —
