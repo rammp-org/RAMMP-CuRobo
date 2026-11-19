@@ -14,9 +14,10 @@ numpy-backed dataclasses (types.PlanResult / types.Trajectory).
 
 Jetson-specific decisions inherited from RAMMP-Kinova's field notes (do not
 "clean these up" without re-testing on the Orin):
-  * torch linalg is routed to MAGMA and the graph (PRM) planner stays OFF —
-    the Jetson torch wheel's cuSOLVER path lacks cusolverDnXsyevBatched and
-    dies inside torch.svd (DT_EXCEPTION).
+  * the graph (PRM) planner stays OFF unless enable_graph or graph_fallback
+    asks for it: it calls torch.svd, which on the Jetson needs the image's
+    cuSOLVER 11.7 (docker/Dockerfile); JetPack's 11.6 lacks
+    cusolverDnXsyevBatched and every CUDA linalg op dies.
   * plan_to_joints tries native plan_single_js first (verified working on
     the torch 2.10 jp6/cu126 wheel) and falls back to FK-pose planning on
     failure; the graph fallback that killed js planning on older wheels
@@ -203,10 +204,6 @@ class CuRoboPlanner:
             # crashes in its mesh collision checker otherwise.
             import warp.torch  # noqa: F401
         except ImportError:
-            pass
-        try:
-            torch.backends.cuda.preferred_linalg_library("magma")
-        except Exception:
             pass
         from curobo.geom.sdf.world import CollisionCheckerType
         from curobo.types.base import TensorDeviceType
@@ -1470,9 +1467,10 @@ class CuRoboPlanner:
         kw = {}
         if not self.enable_graph:
             # cuRobo silently ENABLES the graph planner after 3 failed
-            # attempts unless this is None — and the graph planner is the
-            # exact thing the Jetson wheel cannot run. Never let it engage,
-            # unless graph_fallback asks for it after the first failure.
+            # attempts unless this is None. It was never warmed up then, and
+            # on a Jetson image without the Dockerfile's cuSOLVER it cannot
+            # run at all. Never let it engage, unless graph_fallback asks for
+            # it after the first failure.
             kw["enable_graph_attempt"] = 1 if self.graph_fallback else None
 
         metric_kw = self._pose_cost_kwargs(constraint, via)

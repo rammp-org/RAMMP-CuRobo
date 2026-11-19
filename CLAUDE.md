@@ -194,12 +194,17 @@ plus the gripper services (2026-08-24, issue #6).
 - Publish/consume ONLY the trimmed interpolated plan — result buffers are
   padded; a stale tail caused violent motion in the field. `validate.py`'s
   continuity check is the tripwire; never bypass it.
-- `enable_graph` stays FALSE on Jetson (`enable_graph_attempt=None` matters:
-  cuRobo silently auto-enables the graph after 3 failed attempts). The
-  graph planner needs torch.svd/cuSOLVER the Jetson wheels historically
-  lack; linalg is routed to magma at init. `graph_fallback: true` is the one
-  sanctioned way to let it engage (`enable_graph_attempt=1`, after a failed
-  attempt); whether it runs on the Jetson is being verified on abra.
+- The graph (PRM) planner engages only when configured: `enable_graph` (from
+  the first attempt) or `graph_fallback` (`enable_graph_attempt=1`, after a
+  failed attempt). Otherwise `enable_graph_attempt=None`, which matters:
+  cuRobo silently auto-enables the graph after 3 failed attempts, and it was
+  never warmed up then. It calls torch.svd, and on the Jetson EVERY CUDA linalg
+  op needs the image's cuSOLVER 11.7.1.2 (docker/Dockerfile): the jp6/cu126
+  torch 2.10 wheel was built against it, JetPack r36.4 ships 11.6.4.69, which
+  lacks `cusolverDnXsyevBatched_bufferSize`, and the soname match hides it from
+  ldd (found on abra, 2026-11-18). The wheel has no MAGMA: the old
+  `preferred_linalg_library("magma")` was a no-op that broke svd once cuSOLVER
+  loaded, so it is gone. `test_cuda_linear_algebra_works` is the gate.
 - Repeatability (bench/, 2026-11-18): one request used to land on a different
   goal configuration nearly every call. IK already ranks its solutions nearest
   the start first (base_cfg's null-space term dominates the converged pose

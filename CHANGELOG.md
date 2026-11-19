@@ -43,6 +43,13 @@ that heading to the new version and bumps the five places the number lives.
 
 ### Fixed
 
+- **CUDA linear algebra works in the Jetson image**, so the graph planner can
+  run there. The jp6/cu126 torch wheel was built against cuSOLVER 11.7.1.2 and
+  JetPack ships 11.6.4.69, so every CUDA linalg op (svd, inv, eigh, ...) died at
+  first use with an undefined symbol; plain planning never calls one. The image
+  installs NVIDIA's cuSOLVER 11.7.1.2 Tegra package (the build fails if the
+  symbol is still missing), and the planner no longer routes linalg to MAGMA,
+  which the wheel does not have.
 - **`/reset` works on a profile whose boot world is `world_empty.yaml` with
   config layers.** It restored the boot world through `update_world`, which
   refuses a scene with no boxes of its own, so the reset failed with an ERROR

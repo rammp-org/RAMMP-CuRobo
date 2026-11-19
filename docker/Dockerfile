@@ -92,6 +92,25 @@ RUN git clone https://github.com/NVlabs/curobo.git /opt/curobo \
         "numpy==1.26.4" "warp-lang==1.5.1" ninja \
     && python3 -m pip install --no-cache-dir --no-build-isolation /opt/curobo
 
+# --- cuSOLVER the torch wheel was built against ---------------------------
+# The jp6/cu126 torch 2.10 wheel links cuSOLVER 11.7.1.2 (CUDA 12.6.3), but
+# l4t-jetpack r36.4 ships 11.6.4.69, which lacks cusolverDnXsyevBatched_
+# bufferSize. The sonames match, so ldd and the import are clean, and EVERY
+# CUDA linalg op (svd, inv, eigh, lstsq, cholesky, det) dies at first use with
+# "undefined symbol ... libcusolver.so.11". Plain planning never calls one; the
+# graph planner does (torch.svd in its warm-up), so graph_fallback needs this.
+# NVIDIA's Tegra deb upgrades the library in place (verified on abra,
+# 2026-11-18: GPU svd matches the CPU to ~1e-5; the pip nvidia-cusolver-cu12
+# wheel loads but fails with CUSOLVER_STATUS_EXECUTION_FAILED). Runtime only,
+# so it sits after the cuRobo build and leaves that layer cached. The symbol
+# lookup is the build-time gate (no GPU here to run an op): it loads the
+# library by soname, as torch does, and fails the build if the symbol is
+# still missing.
+RUN curl -fsSLo /tmp/cusolver.deb \
+        https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/libcusolver-12-6_11.7.1.2-1_arm64.deb \
+    && dpkg -i /tmp/cusolver.deb && rm /tmp/cusolver.deb && ldconfig \
+    && python3 -c "import ctypes; ctypes.CDLL('libcusolver.so.11').cusolverDnXsyevBatched_bufferSize"
+
 # --- this repo: pip core + the two ament packages ------------------------
 # Code and the packaged examples only: no tests, scripts, sim or docs. `make
 # verify` mounts the checkout for those.
