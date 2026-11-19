@@ -12,6 +12,29 @@ that heading to the new version and bumps the five places the number lives.
 
 ## [Unreleased]
 
+### Added
+
+- **`/rammp_curobo/add_obstacles`: boxes into the collision world over ROS, no
+  file** (#53). `rammp_arm_interfaces/srv/AddObstacles` carries
+  `CollisionBox[]` (name, pose, dims) in `frame_id` `arm_mount`; the boxes join
+  the current world, nothing is replaced, and `/reset` (or a `set_world` push)
+  is how they leave. A repeated name, another frame, a non-unit orientation or
+  a dim of 0 refuses the call whole. In the library,
+  `CuRoboPlanner.add_obstacles(obstacles)`, and
+  `geometry.quat_xyzw_to_euler_deg`. New service: MINOR.
+- **`rammp_curobo_ros` depends on `rammp_arm_interfaces`**, the shared contract
+  in rammp-interfaces-ros2, for `AddObstacles`; it serves that service and
+  calls nothing of the arm's. `rammp.repos` pins it at v2.2.0 (import into `deps/` with
+  `vcs import`); CI, the image, `make colcon` and `make sim-build` build it from
+  that pin. It needs `ros-humble-control-msgs`.
+
+### Fixed
+
+- **`/reset` works on a profile whose boot world is `world_empty.yaml` with
+  config layers.** It restored the boot world through `update_world`, which
+  refuses a scene with no boxes of its own, so the reset failed with an ERROR
+  and the pushed world stayed. It now installs the boot world directly.
+
 ## [2.0.2] — 2026-11-17
 
 A patch release: the image's Cyclone DDS config no longer lists an

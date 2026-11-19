@@ -99,13 +99,19 @@ COPY core/pyproject.toml core/setup.py core/COLCON_IGNORE /opt/rammp_curobo_src/
 COPY core/rammp_curobo/ /opt/rammp_curobo_src/core/rammp_curobo/
 COPY rammp_curobo_interfaces/ /opt/rammp_curobo_src/rammp_curobo_interfaces/
 COPY rammp_curobo_ros/ /opt/rammp_curobo_src/rammp_curobo_ros/
-RUN python3 -m pip install --no-cache-dir --no-build-isolation \
+# rammp_arm_interfaces (AddObstacles) at rammp.repos's pin, built alongside.
+COPY rammp.repos /opt/rammp_curobo_src/
+RUN apt-get update && apt-get install -y --no-install-recommends python3-vcstool \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m pip install --no-cache-dir --no-build-isolation \
         /opt/rammp_curobo_src/core \
     && . /opt/ros/humble/setup.sh \
     && cd /opt/rammp_curobo_src \
+    && mkdir -p deps && vcs import deps < rammp.repos \
     && colcon build --install-base /opt/rammp_curobo \
-        --packages-select rammp_curobo_interfaces rammp_curobo_ros \
-    && rm -rf /opt/rammp_curobo_src/build /opt/rammp_curobo_src/log
+        --packages-select rammp_arm_interfaces rammp_curobo_interfaces rammp_curobo_ros \
+    && rm -rf /opt/rammp_curobo_src/build /opt/rammp_curobo_src/log \
+        /opt/rammp_curobo_src/deps
 
 # Config files contain non-ASCII characters (degree signs in comments, e.g. in
 # world_sim_kitchen.yaml). Loading one decodes the file with the ascii codec and dies:

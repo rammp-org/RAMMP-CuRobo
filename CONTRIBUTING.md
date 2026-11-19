@@ -151,8 +151,9 @@ Jetson one — is tracked in issue #8.
   git-ignored `.sim_ws/`, launches it on its own ROS domain (88 unless you
   choose another from 1 to 232; never 0) and runs its suite: exit 0 only when
   every gate passes. `make sim-test` runs the sim package's own tests. Both
-  need `SIM_OVERLAY` (default `~/rammp_deps_ws/install/setup.bash`) for
-  `rammp_arm_interfaces`. See `sim/mebot_sim/README.md`; after `make layers`
+  build on `SIM_OVERLAY` (default `~/rammp_deps_ws/install/setup.bash`):
+  `make sim` overlays the pinned `rammp_arm_interfaces` from `rammp.repos` on
+  it, and `make sim-test` takes that package from `SIM_OVERLAY` alone. See `sim/mebot_sim/README.md`; after `make layers`
   changes a layer, rerun `ros2 run mebot_sim find_pairs` there and commit the
   `config/scenarios.yaml` it writes.
 
@@ -255,8 +256,10 @@ physical e-stop. Never drive the real arm autonomously from an agent session.
 Nothing in this repo can move the arm, and that is the safety model — one
 execution authority, not two with different rules. `kinova_arm_ros2` owns
 execution and its own gates. Do not add an edge back: no executor, no
-`/joint_states` subscription, no controller client, no arm-package dependency in
-`package.xml`. The one exception is a test kit, the MEBot sim
+`/joint_states` subscription, no controller client, no driver package in
+`package.xml`. `rammp_arm_interfaces` is a dependency only for the service the
+planner serves, `AddObstacles` (`test_arm_interfaces_use.py` enforces it). The
+one exception is a test kit, the MEBot sim
 (`sim/mebot_sim`): its client reads `/joint_states` and flies
 `/execute_joint_trajectory` on the sim's own arm only, never on the bench's ROS
 domain, 0, and never beside a real driver (see its README's Safety). Keep all

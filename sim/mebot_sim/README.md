@@ -41,9 +41,10 @@ make sim SIM_ARGS=port:=8766              # launch arguments, e.g. another live-
 make sim-test                             # the package's own tests: no ROS graph, no GPU
 ```
 
-`make sim` builds `rammp_curobo_interfaces`, `rammp_curobo_ros` and this
-package into the git-ignored `.sim_ws/`, with `SIM_OVERLAY` (default
-`~/rammp_deps_ws/install/setup.bash`) providing `rammp_arm_interfaces`, and
+`make sim` builds `rammp_arm_interfaces` (at `rammp.repos`'s pin),
+`rammp_curobo_interfaces`, `rammp_curobo_ros` and this package into the
+git-ignored `.sim_ws/`, on top of `SIM_OVERLAY` (default
+`~/rammp_deps_ws/install/setup.bash`), and
 launches `suite.launch.py`: the stack, with `run_suite` beside it. The
 launch ends when `run_suite` does, and exits with its verdict. A run takes
 about three minutes, the build and the planners' warm-up included.

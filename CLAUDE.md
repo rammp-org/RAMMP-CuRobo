@@ -33,7 +33,13 @@ Gen3 example and every RAMMP robot), joint plans included
 **This repo NEVER touches the arm** (issue #6, 2026-08-24): outside `sim/`
 there is no executor, no `/joint_states` subscription, no controller or
 controller-manager client, no gripper client, no `execute` parameter, and
-no arm-package dependency in a `package.xml`. `start_joints` is REQUIRED on
+no driver package (`kinova_arm_ros2`, a driver's own IDL such as
+`kinova_arm_interfaces`) in a `package.xml`. The one arm-side dependency is
+the shared contract `rammp_arm_interfaces` (rammp-interfaces-ros2, pinned
+in `rammp.repos`), and only for what the planner SERVES (`AddObstacles`,
+`CollisionBox`): never a client of an arm action or service
+(`ExecuteJointTrajectory`, `GoTo*`); `test_arm_interfaces_use.py` fails on
+any other name from it. `start_joints` is REQUIRED on
 both plan actions — the caller owns the robot and its state. The consumer
 is `kinova_arm_ros2`, which plans here and executes under its own gates;
 the dependency arrow points only that way. Do not add an edge back. The
@@ -286,7 +292,8 @@ the sim alone serves them. Keep all three.
 ```bash
 python3 -m pip install --user --no-build-isolation -e ./core   # pip quirks: see README
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-select rammp_curobo_interfaces rammp_curobo_ros
+mkdir -p deps && vcs import deps < rammp.repos   # pinned rammp_arm_interfaces
+colcon build --symlink-install --packages-select rammp_arm_interfaces rammp_curobo_interfaces rammp_curobo_ros
 RAMMP_CUROBO_GPU=1 python3 -m pytest core/tests -q   # offline + GPU smoke
 python3 -m pytest rammp_curobo_ros/test -q -p no:anyio
 ros2 run rammp_curobo_ros tour_demo      # live end-to-end plan check

@@ -11,3 +11,4 @@ dist/
 *.npz
 *.MOV
 .sim_ws/
+deps/

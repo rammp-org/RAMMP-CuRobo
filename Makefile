@@ -15,8 +15,9 @@
 #                  only when every gate passes)
 
 IMAGE ?= rammp-curobo:jp6
-# The ROS workspace that provides rammp_arm_interfaces, which the sim's
-# driver stand-in serves; consumed as built.
+# The ROS workspace the sim builds on (sourced first). `make sim` overlays
+# rammp.repos's pinned rammp_arm_interfaces on whatever copy this one holds;
+# `make sim-test` sources only this one, so it takes this one's copy.
 SIM_OVERLAY ?= ~/rammp_deps_ws/install/setup.bash
 # Arguments for the sim's launch, e.g. SIM_ARGS=port:=8766 when the live
 # view's default port is taken.
@@ -35,10 +36,13 @@ test:                      ## Core tests (offline everywhere, GPU on the Jetson)
 	python3 -m pytest core/tests -q
 	python3 -m pytest rammp_curobo_ros/test -q -p no:anyio
 
+# deps/ holds rammp.repos's pinned rammp-interfaces-ros2 (rammp_arm_interfaces,
+# which the node serves AddObstacles from); git-ignored, re-imported each time.
 colcon:                    ## Build the interfaces and the node
+	mkdir -p deps && vcs import deps < rammp.repos
 	. /opt/ros/humble/setup.sh && \
 	  colcon build --symlink-install \
-	    --packages-select rammp_curobo_interfaces rammp_curobo_ros
+	    --packages-select rammp_arm_interfaces rammp_curobo_interfaces rammp_curobo_ros
 
 # arm64 only: the base image is nvcr.io/nvidia/l4t-jetpack, which has no x86
 # variant. An x86-64 CUDA image is tracked in issue #8.
@@ -139,15 +143,18 @@ endif
 
 # The sim stack (sim/mebot_sim) and the two packages it runs, built into the
 # git-ignored .sim_ws/ as links to these sources. sim/ carries a COLCON_IGNORE
-# so that CI's colcon build needs no rammp_arm_interfaces; here the package is
-# named as a base path instead. The sim and its planners then run from
+# so that CI's colcon build never builds the sim; here the package is named as
+# a base path instead, beside the pinned rammp_arm_interfaces from deps/. The
+# sim and its planners then run from
 # .sim_ws/install/setup.bash, never on the bench's ROS domain: 0, unset or
 # anything else but a domain from 1 to 232 becomes 88.
 sim-build: SHELL := /bin/bash
 sim-build:                 ## Build the sim stack into .sim_ws/ (Jetson)
+	mkdir -p deps && vcs import deps < rammp.repos
 	. /opt/ros/humble/setup.bash && . $(SIM_OVERLAY) && \
 	  colcon --log-base .sim_ws/log build --symlink-install \
-	    --base-paths rammp_curobo_interfaces rammp_curobo_ros sim/mebot_sim \
+	    --base-paths deps/rammp-interfaces-ros2/rammp_arm_interfaces \
+	      rammp_curobo_interfaces rammp_curobo_ros sim/mebot_sim \
 	    --build-base .sim_ws/build --install-base .sim_ws/install
 
 # The sim package's own tests: the domain rule, the scene, flights, contacts,

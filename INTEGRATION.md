@@ -111,6 +111,43 @@ node on the graph that publishes it drops your pushed world too: if you rely on
 `set_world`, push it again after a reset. There is nothing here that can move an
 arm.
 
+### Obstacles from another container: `/rammp_curobo/add_obstacles`
+
+`set_world` takes a path, which the planner's container must be able to read.
+`add_obstacles` carries the boxes in the request instead: each a
+`CollisionBox` (name, `geometry_msgs/Pose` of its centre, full extents in
+`dims`), with `frame_id` the planning frame, `arm_mount`; any other frame is
+refused, as nothing here transforms. The types are the shared contract's,
+`rammp_arm_interfaces/srv/AddObstacles` and `rammp_arm_interfaces/msg/CollisionBox`
+from rammp-interfaces-ros2 (the release `rammp.repos` pins, or later), not
+`rammp_curobo_interfaces`'.
+
+```text
+ros2 service call /rammp_curobo/add_obstacles rammp_arm_interfaces/srv/AddObstacles \
+  "{frame_id: arm_mount, boxes: [{name: mug, pose: {position: {x: 0.5, y: 0.1, z: 0.05},
+    orientation: {w: 1.0}}, dims: {x: 0.08, y: 0.08, z: 0.1}}]}"
+```
+
+- **Boxes join the world; nothing is replaced.** The scene, the layers and every
+  box added before stay. Calls are anonymous and accumulate.
+- **Nothing removes a single box.** `/reset` returns to the world loaded at
+  boot, dropping every added box, from every caller. A `set_world` push
+  replaces them too, since they joined its scene, and so does a planner
+  restart: they are held in memory only.
+- **A name already in the world is refused**, so re-adding the same objects
+  needs a reset first. Prefix names with your engine (`perception/mug`) to stay
+  clear of other callers'.
+- **A call is refused whole** (the world before it stays): a wrong frame, a
+  repeated name, a non-unit orientation, a dim not > 0, or more boxes than the
+  cache's free slots (the reply's summary says how many are in use).
+- **Send the object's own size.** Each side is padded by the planner's
+  `world_padding` (2 cm by default), as every scene box is; a margin of your
+  own doubles it.
+- **Boxes only.** Send a cylinder's or a sphere's bounding box; cuRobo v0.7.8
+  collides with nothing else. To reach for an object, don't add it.
+
+In Python the same is `planner.add_obstacles([{'name', 'position', 'dims', 'rpy_deg'}])`.
+
 ### Through several goals without stopping: `/rammp_curobo/blend`
 
 Plan each leg with `plan_to_pose` / `plan_to_joints`, each from the last point
@@ -247,9 +284,11 @@ they cost. For a caller:
   installs once per machine (add to setup.sh alongside the other pip deps,
   rosdep-stub pattern like `python3-kortex-api`).
 - **The dependency arrow points one way.** Your package depends on
-  `rammp_curobo_interfaces`; this repo depends on nothing of yours. If you
-  find yourself adding your driver's IDL to `rammp_curobo_ros/package.xml`,
-  the design has gone wrong — see issue #6.
+  `rammp_curobo_interfaces` (and `rammp_arm_interfaces` for `add_obstacles`);
+  this repo depends on nothing of yours. It uses the shared
+  `rammp_arm_interfaces` only to serve `AddObstacles`, and calls nothing of
+  the arm's. If you find yourself adding your driver's package or IDL to
+  `rammp_curobo_ros/package.xml`, the design has gone wrong — see issue #6.
 - **No mutual-exclusion problem to solve.** This planner never claims the
   arm, a `/controller_manager`, or a gripper, so it can run alongside any
   driver. Exactly one thing should execute; that thing is not this.

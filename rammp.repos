@@ -1,0 +1,11 @@
+# The shared RAMMP interfaces this repo builds against, pinned (REVIEW_RULES
+# M2: a tag or a commit, never a branch). rammp_curobo_ros serves
+# rammp_arm_interfaces/srv/AddObstacles. Import with
+#   mkdir -p deps && vcs import deps < rammp.repos
+# (CI, the image and `make colcon` all do).
+repositories:
+  rammp-interfaces-ros2:
+    type: git
+    url: https://github.com/rammp-org/rammp-interfaces-ros2.git
+    # v2.2.0: AddObstacles, CollisionBox (rammp-interfaces-ros2#38)
+    version: v2.2.0

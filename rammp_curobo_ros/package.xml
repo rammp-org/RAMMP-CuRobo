@@ -14,6 +14,7 @@
   <depend>rclpy</depend>
   <depend>rcl_interfaces</depend>
   <depend>rammp_curobo_interfaces</depend>
+  <depend>rammp_arm_interfaces</depend>
   <depend>std_msgs</depend>
   <depend>trajectory_msgs</depend>
   <depend>geometry_msgs</depend>

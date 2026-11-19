@@ -41,7 +41,13 @@ from rammp_curobo import constraints
 from rammp_curobo.constraints import PoseConstraint, ViaPoint
 from rammp_curobo.resample import resample_quintic
 from rammp_curobo.robot_config import load_robot_config
-from rammp_curobo.scene import Scene, load_layers, load_scene, scene_from_obstacles
+from rammp_curobo.scene import (
+    Obstacle,
+    Scene,
+    load_layers,
+    load_scene,
+    scene_from_obstacles,
+)
 from rammp_curobo.types import PlanResult, Trajectory
 from rammp_curobo.validate import validate_trajectory
 from rammp_curobo.world import (
@@ -872,17 +878,51 @@ class CuRoboPlanner:
                 frame=self.base_frame,
             )
         cuboids, sources = self._compose(scene, ignore=ignore)
+        self._install(scene, cuboids, sources)
+        names = [ignore] if isinstance(ignore, str) else sorted(ignore)
+        log.info(
+            "Collision world: %s%s",
+            self.world_summary(),
+            " (ignoring: %s)" % ", ".join(names) if names else "",
+        )
+
+    def _install(self, scene, cuboids, sources):
         self._check_fixed_spheres(cuboids, sources, scene)
         self._motion_gen.update_world(to_world_config(cuboids))
         # only now that cuRobo holds it: a refused world leaves the planner
         # describing the world cuRobo kept
         self._scene = scene
         self._world_cuboids, self._world_sources = cuboids, sources
-        names = [ignore] if isinstance(ignore, str) else sorted(ignore)
-        log.info(
-            "Collision world: %s%s",
-            self.world_summary(),
-            " (ignoring: %s)" % ", ".join(names) if names else "",
+
+    def add_obstacles(self, obstacles):
+        """Add boxes to the current scene: the world keeps everything it
+        had and gains these. reset() drops them, as does any update_world,
+        which replaces the scene they joined.
+
+        obstacles: dicts in the scene YAML's obstacle schema ({'name',
+        'position', 'dims', optional 'rpy_deg'}), in the planning frame.
+        Refused whole, as update_world refuses, so the world installed
+        before stays: a name already in the world among the reasons.
+        Composed without `ignore`: a layer the last update_world left out
+        is back. A dim of 0 is refused here, though a scene file may hold
+        one: padded, it would be a 4 cm box, where a box without a size is
+        a caller's bug.
+        """
+        added = [Obstacle(dict(o)) for o in obstacles]
+        for o in added:
+            if not all(d > 0 for d in o.dims):
+                raise ValueError(
+                    "box %r: 'dims' must be greater than 0, got %r" % (o.name, o.dims)
+                )
+        s = self._scene
+        self.update_world(
+            Scene(
+                s.base_frame,
+                list(s.obstacles) + added,
+                s.targets,
+                s.objects,
+                s.layers,
+            )
         )
 
     def reset(self):
@@ -899,7 +939,12 @@ class CuRoboPlanner:
         """
         cuboids, sources = self._compose(self._boot_scene, allow_empty=True)
         if cuboids:
-            self.update_world(self._boot_scene)
+            # Not update_world: it refuses a scene with no boxes of its own,
+            # which the boot scene of world_empty.yaml + config layers is.
+            # It was accepted at boot, and the layers make the world
+            # non-empty, so cuRobo replaces what it holds.
+            self._install(self._boot_scene, cuboids, sources)
+            log.info("Collision world: %s", self.world_summary())
         else:
             # An empty boot world (world_empty.yaml, no config layers):
             # update_world refuses one, since cuRobo would keep the old
