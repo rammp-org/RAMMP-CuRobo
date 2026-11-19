@@ -12,10 +12,22 @@ that heading to the new version and bumps the five places the number lives.
 
 ## [Unreleased]
 
+## [2.1.0] — 2026-11-18
+
+A minor release: a capability engine in another container can add collision
+boxes to the planner over ROS, with `/rammp_curobo/add_obstacles` (#53, #71),
+and `/reset` now works on an empty boot world with config layers.
+`PlanToPose`, `PlanToJoints`, `Blend` and `SetWorld` are unchanged, so
+`kinova_arm_ros2` needs no adoption commit. The new service's types are the
+shared `rammp_arm_interfaces` (rammp-interfaces-ros2 v2.2.0): the image builds
+them, and a workspace that builds this repo from source imports them first
+(`rammp.repos`). A caller needs them too, from rammp-interfaces-ros2 v2.2.0 or
+a rammp-base built on it.
+
 ### Added
 
 - **`/rammp_curobo/add_obstacles`: boxes into the collision world over ROS, no
-  file** (#53). `rammp_arm_interfaces/srv/AddObstacles` carries
+  file** (#53, #71). `rammp_arm_interfaces/srv/AddObstacles` carries
   `CollisionBox[]` (name, pose, dims) in `frame_id` `arm_mount`; the boxes join
   the current world, nothing is replaced, and `/reset` (or a `set_world` push)
   is how they leave. A repeated name, another frame, a non-unit orientation or
@@ -632,4 +644,5 @@ claim about all of it:
 [2.0.0]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v1.1.0...v2.0.0
 [2.0.1]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v2.0.0...v2.0.1
 [2.0.2]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v2.0.1...v2.0.2
-[unreleased]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v2.0.2...HEAD
+[2.1.0]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v2.0.2...v2.1.0
+[unreleased]: https://github.com/rammp-org/RAMMP-CuRobo/compare/v2.1.0...HEAD
