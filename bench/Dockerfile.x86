@@ -1,0 +1,21 @@
+# x86 bench image (not shipped): cuRobo v0.7.8 for an Ampere desktop GPU, to
+# run bench/sweep_bench.py off the Jetson. The repo is bind-mounted at /work.
+#   docker build -f bench/Dockerfile.x86 -t rammp-curobo-bench:x86 bench
+FROM nvidia/cuda:12.6.3-devel-ubuntu22.04
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUTF8=1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-dev git \
+    && rm -rf /var/lib/apt/lists/*
+RUN python3 -m pip install --no-cache-dir torch==2.8.0 \
+        --index-url https://download.pytorch.org/whl/cu126
+ENV TORCH_CUDA_ARCH_LIST="8.6+PTX" MAX_JOBS=8
+RUN git clone https://github.com/NVlabs/curobo.git /opt/curobo \
+    && cd /opt/curobo \
+    && git checkout tags/v0.7.8 \
+    && test "$(git rev-parse HEAD)" = "d64c4b005459db10c5dd867d8b30a87d5bda9bdb" \
+    && python3 -m pip install --no-cache-dir -U \
+        "packaging>=24.1" "setuptools>=70,<80" \
+        "numpy==1.26.4" "warp-lang==1.5.1" ninja scipy PyYAML pytest \
+    && python3 -m pip install --no-cache-dir --no-build-isolation /opt/curobo
+WORKDIR /work
+ENV PYTHONPATH=/work/core
